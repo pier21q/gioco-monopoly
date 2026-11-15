@@ -7,7 +7,10 @@
  * e i dati di gioco come ES module generati, più il server WebSocket (`ws`)
  * su /ws che smista i messaggi del protocollo (INTERFACCE.md §3).
  *
- * Avvio: `npm start` (= node server/index.js). Variabili: PORT, HOST, PUBLIC_URL.
+ * Avvio: `npm start` (= node server/index.js). Variabili: PORT, HOST, PUBLIC_URL
+ * (se PUBLIC_URL manca, il link della stanza usa l'host con cui il browser ha
+ * raggiunto il server). Heartbeat: ping WebSocket ogni 30 s, chi non risponde
+ * viene chiuso e segnato `connesso: false` senza essere eliminato.
  * Esporta `avvia()` e `crea()` per i test; parte da solo se eseguito come main.
  */
 
@@ -55,7 +58,13 @@ const MIME = Object.freeze({
 // ---------------------------------------------------------------------------
 
 function rispondi(res, codice, corpo, tipo = 'text/plain; charset=utf-8', intestazioni = {}) {
-  res.writeHead(codice, { 'Content-Type': tipo, 'Cache-Control': 'no-cache', ...intestazioni });
+  res.writeHead(codice, {
+    'Content-Type': tipo,
+    'Cache-Control': 'no-cache',
+    'X-Content-Type-Options': 'nosniff',
+    'Referrer-Policy': 'same-origin',
+    ...intestazioni,
+  });
   res.end(corpo);
 }
 
@@ -177,8 +186,31 @@ function linkStanza(publicUrl, codice) {
   return `${publicUrl.replace(/\/+$/, '')}/?stanza=${codice}`;
 }
 
+/** Host ammesso negli header (nome o IPv4/IPv6 con porta opzionale). */
+const REGEX_HOST = /^(?:[a-z0-9.-]{1,253}|\[[0-9a-f:.]{2,45}\])(?::\d{1,5})?$/i;
+
+/**
+ * Base del link condiviso. Ordine: PUBLIC_URL configurato → host con cui il
+ * browser ha raggiunto il server (così un link aperto da 192.168.1.10:3000 o
+ * da un tunnel funziona anche per gli altri) → http://localhost:porta.
+ */
+function baseLink(configurato, req, portaLocale) {
+  if (configurato) return configurato;
+  const intestazioni = (req && req.headers) || {};
+  const inoltrato = String(intestazioni['x-forwarded-host'] || '').split(',')[0].trim();
+  const host = inoltrato || String(intestazioni.host || '').trim();
+  if (host && REGEX_HOST.test(host)) {
+    const proto = String(intestazioni['x-forwarded-proto'] || '').split(',')[0].trim().toLowerCase();
+    const cifrato = proto === 'https' || Boolean(req.socket && req.socket.encrypted);
+    return `${cifrato ? 'https' : 'http'}://${host.toLowerCase()}`;
+  }
+  return `http://localhost${portaLocale ? `:${portaLocale}` : ''}`;
+}
+
+const APERTO = 1;
+
 function invia(socket, messaggio) {
-  if (socket.readyState === 1) {
+  if (socket.readyState === APERTO) {
     try { socket.send(JSON.stringify(messaggio)); } catch { /* chiusura in corso */ }
   }
 }
@@ -187,9 +219,36 @@ function inviaErrore(socket, codice, extra) {
   invia(socket, P.errore(codice, extra));
 }
 
-/** Crea i gestori di un socket. `ctx` è lo stato per connessione. */
+/** Estrae da un esito `{ errore: { codice, messaggio, dettagli } }` i campi per P.errore. */
+function extraErrore(errore, rif) {
+  const extra = { rif };
+  if (errore.messaggio) extra.messaggio = errore.messaggio;
+  if (errore.dettagli !== undefined) extra.dettagli = errore.dettagli;
+  return extra;
+}
+
+/**
+ * Collega i gestori di protocollo a un socket. `ctx` è lo stato per connessione.
+ * @param {import('ws').WebSocket} socket
+ * @param {{publicUrl: string, random: Function, ora: Function}} opzioni
+ */
 function collegaSocket(socket, { publicUrl, random, ora }) {
-  const ctx = { stanza: null, giocatoreId: null, erroriConsecutivi: 0 };
+  const ctx = {
+    stanza: null,
+    giocatoreId: null,
+    erroriConsecutivi: 0,
+    finestra: { inizio: 0, conteggio: 0, avvisato: false },
+  };
+  socket.vivo = true;
+
+  /** Il socket è in una stanza ancora registrata? (pulisci() può chiuderla) */
+  const inStanza = () => {
+    if (ctx.stanza && ctx.stanza.chiusa) {
+      ctx.stanza = null;
+      ctx.giocatoreId = null;
+    }
+    return Boolean(ctx.stanza);
+  };
 
   const messaggioEntrato = (stanza, giocatore) => ({
     tipo: 'entrato',
@@ -200,19 +259,29 @@ function collegaSocket(socket, { publicUrl, random, ora }) {
     hostId: stanza.hostId,
   });
 
+  const statoAlMittente = (stanza) => {
+    const stato = stanze.statoPerClient(stanza);
+    invia(socket, { tipo: 'stato', versione: stato.versione, stato });
+  };
+
   const gestori = {
     creaStanza(m) {
-      if (ctx.stanza) return inviaErrore(socket, 'GIA_IN_STANZA', { rif: m.rif });
+      if (inStanza()) return inviaErrore(socket, 'GIA_IN_STANZA', { rif: m.rif });
       const stanza = stanze.crea({ ora, random });
       return invia(socket, { tipo: 'stanzaCreata', codice: stanza.codice, link: linkStanza(publicUrl, stanza.codice) });
     },
 
     entraStanza(m) {
-      if (ctx.stanza) return inviaErrore(socket, 'GIA_IN_STANZA', { rif: m.rif });
+      if (inStanza()) return inviaErrore(socket, 'GIA_IN_STANZA', { rif: m.rif });
       const stanza = stanze.trova(m.codice);
-      if (!stanza) return inviaErrore(socket, 'STANZA_INESISTENTE', { rif: m.rif });
+      if (!stanza) {
+        return inviaErrore(socket, 'STANZA_INESISTENTE', {
+          rif: m.rif,
+          messaggio: `La stanza ${m.codice} non esiste o è stata chiusa`,
+        });
+      }
       const esito = stanze.entra(stanza, { nome: m.nome, colore: m.colore, socket, ora });
-      if (esito.errore) return inviaErrore(socket, esito.errore.codice, { rif: m.rif, dettagli: esito.errore.dettagli });
+      if (esito.errore) return inviaErrore(socket, esito.errore.codice, extraErrore(esito.errore, m.rif));
       ctx.stanza = stanza;
       ctx.giocatoreId = esito.giocatore.id;
       invia(socket, messaggioEntrato(stanza, esito.giocatore));
@@ -220,43 +289,56 @@ function collegaSocket(socket, { publicUrl, random, ora }) {
     },
 
     riconnetti(m) {
-      if (ctx.stanza) return inviaErrore(socket, 'GIA_IN_STANZA', { rif: m.rif });
+      if (inStanza()) {
+        // Stesso giocatore che ripete riconnetti sullo stesso socket: rimandiamo
+        // semplicemente entrato + stato invece di rispondere con un errore.
+        const g = ctx.stanza.giocatori.get(ctx.giocatoreId);
+        if (g && ctx.stanza.codice === m.codice && g.token === m.token) {
+          invia(socket, messaggioEntrato(ctx.stanza, g));
+          return statoAlMittente(ctx.stanza);
+        }
+        return inviaErrore(socket, 'GIA_IN_STANZA', { rif: m.rif });
+      }
       const esito = stanze.riconnetti(m.codice, m.token, socket, { ora });
-      if (esito.errore) return inviaErrore(socket, esito.errore.codice, { rif: m.rif });
+      if (esito.errore) {
+        const messaggio = esito.errore.codice === 'STANZA_INESISTENTE'
+          ? 'La stanza non esiste più: creane una nuova o entra con un altro codice'
+          : undefined;
+        return inviaErrore(socket, esito.errore.codice, { ...extraErrore(esito.errore, m.rif), ...(messaggio ? { messaggio } : {}) });
+      }
       ctx.stanza = esito.stanza;
       ctx.giocatoreId = esito.giocatore.id;
       invia(socket, messaggioEntrato(esito.stanza, esito.giocatore));
+      // Il broadcast include anche questo socket: riceve evento connessione + stato.
       return stanze.diffondiAggiornamento(esito.stanza, esito.eventi);
     },
 
     avviaPartita(m) {
-      if (!ctx.stanza) return inviaErrore(socket, 'NON_IN_STANZA', { rif: m.rif });
+      if (!inStanza()) return inviaErrore(socket, 'NON_IN_STANZA', { rif: m.rif });
       const esito = stanze.avvia(ctx.stanza, ctx.giocatoreId, { random, ora });
-      if (esito.errore) return inviaErrore(socket, esito.errore.codice, { rif: m.rif, dettagli: esito.errore.dettagli });
+      if (esito.errore) return inviaErrore(socket, esito.errore.codice, extraErrore(esito.errore, m.rif));
       return stanze.diffondiAggiornamento(ctx.stanza, esito.eventi);
     },
 
     azione(m) {
-      if (!ctx.stanza) return inviaErrore(socket, 'NON_IN_STANZA', { rif: m.rif });
+      if (!inStanza()) return inviaErrore(socket, 'NON_IN_STANZA', { rif: m.rif });
+      // giocatoreId viene dal socket, mai dal messaggio (INTERFACCE.md §3.2).
       const esito = stanze.applica(ctx.stanza, ctx.giocatoreId, m.azione, { random, ora });
-      if (esito.errore) {
-        return inviaErrore(socket, esito.errore.codice, {
-          rif: m.rif,
-          messaggio: esito.errore.messaggio,
-          dettagli: esito.errore.dettagli,
-        });
-      }
+      if (esito.errore) return inviaErrore(socket, esito.errore.codice, extraErrore(esito.errore, m.rif));
       return stanze.diffondiAggiornamento(ctx.stanza, esito.eventi);
     },
 
     esciStanza(m) {
-      if (!ctx.stanza) return inviaErrore(socket, 'NON_IN_STANZA', { rif: m.rif });
+      if (!inStanza()) return inviaErrore(socket, 'NON_IN_STANZA', { rif: m.rif });
       const stanza = ctx.stanza;
       const esito = stanze.esci(stanza, ctx.giocatoreId, { ora });
-      if (esito.errore) return inviaErrore(socket, esito.errore.codice, { rif: m.rif });
+      if (esito.errore) return inviaErrore(socket, esito.errore.codice, extraErrore(esito.errore, m.rif));
       ctx.stanza = null;
       ctx.giocatoreId = null;
-      return stanze.diffondiAggiornamento(stanza, esito.eventi);
+      // Chi esce non è più tra i destinatari: gli confermiamo l'uscita con l'evento.
+      for (const ev of esito.eventi) invia(socket, { tipo: 'evento', versione: stanza.stato.versione, evento: ev });
+      if (!esito.chiusa) stanze.diffondiAggiornamento(stanza, esito.eventi);
+      return undefined;
     },
 
     ping() {
@@ -264,23 +346,46 @@ function collegaSocket(socket, { publicUrl, random, ora }) {
     },
   };
 
+  /** Anti-flood: true se il messaggio va scartato. */
+  const troppiMessaggi = () => {
+    const t = Date.now();
+    const f = ctx.finestra;
+    if (t - f.inizio >= 1000) {
+      f.inizio = t;
+      f.conteggio = 0;
+      f.avvisato = false;
+    }
+    f.conteggio += 1;
+    if (f.conteggio <= P.LIMITI.MESSAGGI_AL_SECONDO_MAX) return false;
+    if (f.conteggio > P.LIMITI.MESSAGGI_AL_SECONDO_MAX * 4) {
+      socket.close(1008, 'Troppi messaggi');
+    } else if (!f.avvisato) {
+      f.avvisato = true;
+      inviaErrore(socket, 'TROPPI_MESSAGGI');
+    }
+    return true;
+  };
+
   socket.on('message', (grezzo, eBinario) => {
+    socket.vivo = true;
+    if (troppiMessaggi()) return;
     if (eBinario) {
       ctx.erroriConsecutivi += 1;
-      inviaErrore(socket, 'MESSAGGIO_NON_VALIDO');
+      inviaErrore(socket, 'MESSAGGIO_NON_VALIDO', { messaggio: 'Messaggio non valido: sono ammessi solo frame di testo JSON' });
     } else {
-      const esito = P.analizza(grezzo.toString('utf8'));
+      const testo = Array.isArray(grezzo) ? Buffer.concat(grezzo).toString('utf8') : Buffer.from(grezzo).toString('utf8');
+      const esito = P.analizza(testo);
       if (!esito.ok) {
         ctx.erroriConsecutivi += 1;
-        inviaErrore(socket, esito.errore, { rif: esito.rif });
+        inviaErrore(socket, esito.errore, { rif: esito.rif, messaggio: esito.messaggio, dettagli: esito.dettagli });
       } else {
         ctx.erroriConsecutivi = 0;
         try {
           gestori[esito.messaggio.tipo](esito.messaggio);
         } catch (e) {
-          // Un bug nel motore non deve abbattere il server: lo logghiamo e rispondiamo.
+          // Un bug non deve abbattere il server: lo logghiamo e rispondiamo al mittente.
           console.error('[ws] errore nel gestore', esito.messaggio.tipo, e);
-          inviaErrore(socket, 'MESSAGGIO_NON_VALIDO', { rif: esito.messaggio.rif, messaggio: 'Errore interno del server' });
+          inviaErrore(socket, 'ERRORE_INTERNO', { rif: esito.messaggio.rif });
         }
       }
     }
@@ -289,14 +394,21 @@ function collegaSocket(socket, { publicUrl, random, ora }) {
     }
   });
 
+  // Risposta al ping di heartbeat (livello WebSocket, gestito dal browser).
+  socket.on('pong', () => { socket.vivo = true; });
+
   socket.on('close', () => {
-    if (ctx.stanza && ctx.giocatoreId) {
+    if (ctx.stanza && ctx.giocatoreId && !ctx.stanza.chiusa) {
       const stanza = ctx.stanza;
       const g = stanza.giocatori.get(ctx.giocatoreId);
       // Se il giocatore si è già riconnesso con un altro socket, non toccarlo.
       if (g && g.socket === socket) {
-        const esito = stanze.disconnetti(stanza, ctx.giocatoreId, { ora });
-        stanze.diffondiAggiornamento(stanza, esito.eventi);
+        try {
+          const esito = stanze.disconnetti(stanza, ctx.giocatoreId, { ora });
+          stanze.diffondiAggiornamento(stanza, esito.eventi);
+        } catch (e) {
+          console.error('[ws] errore alla disconnessione', e);
+        }
       }
     }
     ctx.stanza = null;
@@ -310,32 +422,65 @@ function collegaSocket(socket, { publicUrl, random, ora }) {
   return ctx;
 }
 
+/**
+ * Heartbeat: ogni `intervallo` ms manda un ping WebSocket a ogni client; chi
+ * non ha risposto (pong o qualunque messaggio) dal giro precedente viene
+ * terminato, e l'evento 'close' lo segna come non connesso nella stanza.
+ */
+function avviaHeartbeat(wss, intervallo = P.LIMITI.HEARTBEAT_MS) {
+  const timer = setInterval(() => {
+    for (const socket of wss.clients) {
+      if (socket.vivo === false) {
+        socket.terminate();
+        continue;
+      }
+      socket.vivo = false;
+      try { socket.ping(); } catch { /* il socket si sta chiudendo */ }
+    }
+  }, intervallo);
+  timer.unref();
+  return timer;
+}
+
 // ---------------------------------------------------------------------------
 // Avvio
 // ---------------------------------------------------------------------------
 
 /**
  * Crea il server HTTP (+ WebSocket se disponibile) senza metterlo in ascolto.
- * @param {{publicUrl?: string, random?: Function, ora?: Function}} [opzioni]
+ * @param {{publicUrl?: string, random?: Function, ora?: Function, heartbeatMs?: number}} [opzioni]
  */
 function crea(opzioni = {}) {
   const random = opzioni.random || Math.random;
   const ora = opzioni.ora || Date.now;
+  const configurato = opzioni.publicUrl || process.env.PUBLIC_URL || null;
   const server = http.createServer(gestoreHttp);
   let wss = null;
+  let heartbeat = null;
 
   if (WebSocketServer) {
-    wss = new WebSocketServer({ server, path: '/ws', maxPayload: P.LIMITI.MESSAGGIO_MAX_BYTE });
-    wss.on('connection', (socket) => {
-      collegaSocket(socket, { publicUrl: opzioni.publicUrl || server.publicUrl || 'http://localhost', random, ora });
+    wss = new WebSocketServer({ server, path: '/ws', maxPayload: P.LIMITI.FRAME_MAX_BYTE });
+    wss.on('connection', (socket, req) => {
+      const indirizzo = server.address();
+      const porta = indirizzo && typeof indirizzo === 'object' ? indirizzo.port : null;
+      collegaSocket(socket, { publicUrl: baseLink(configurato, req, porta), random, ora });
     });
+    wss.on('error', (e) => console.error('[ws] errore del server WebSocket', e && e.message));
+    heartbeat = avviaHeartbeat(wss, opzioni.heartbeatMs);
   }
 
   const pulizia = setInterval(() => {
     try { stanze.pulisci({ ora }); } catch (e) { console.error('[stanze] pulizia fallita', e); }
   }, 60 * 1000);
   pulizia.unref();
-  server.on('close', () => clearInterval(pulizia));
+  server.on('close', () => {
+    clearInterval(pulizia);
+    if (heartbeat) clearInterval(heartbeat);
+    if (wss) {
+      for (const s of wss.clients) s.terminate();
+      wss.close();
+    }
+  });
 
   return { server, wss };
 }
@@ -350,15 +495,30 @@ function avvia({ port = Number(process.env.PORT) || 3000, host = process.env.HOS
     server.listen(port, host, () => {
       const porta = server.address().port;
       const url = publicUrl || process.env.PUBLIC_URL || `http://localhost:${porta}`;
-      server.publicUrl = url;
       risolvi({ server, wss, porta, url });
     });
   });
 }
 
+/** Chiusura ordinata su SIGINT/SIGTERM: avvisa i client e libera la porta. */
+function arrestoOrdinato(server, wss) {
+  let inCorso = false;
+  const arresta = (segnale) => {
+    if (inCorso) process.exit(1);
+    inCorso = true;
+    console.log(`\n${segnale}: chiusura del server…`);
+    if (wss) for (const s of wss.clients) { try { s.close(1001, 'Server in arresto'); } catch { /* ignora */ } }
+    server.close(() => process.exit(0));
+    setTimeout(() => process.exit(0), 3000).unref();
+  };
+  process.on('SIGINT', () => arresta('SIGINT'));
+  process.on('SIGTERM', () => arresta('SIGTERM'));
+}
+
 if (require.main === module) {
   avvia()
-    .then(({ porta, url, wss }) => {
+    .then(({ server, porta, url, wss }) => {
+      arrestoOrdinato(server, wss);
       console.log(`Monopoly online v${pacchetto.version} in ascolto sulla porta ${porta}`);
       console.log(`Apri ${url} per creare una stanza`);
       if (!wss) {
@@ -384,6 +544,8 @@ module.exports = {
   gestoreHttp,
   moduloDatiComeEsm,
   collegaSocket,
+  avviaHeartbeat,
+  baseLink,
   linkStanza,
   RADICE_CLIENT,
   MIME,
