@@ -51,6 +51,12 @@ function generaToken() {
   return crypto.randomBytes(16).toString('hex');
 }
 
+/** Confronto a tempo costante tra due token esadecimali di 32 caratteri. */
+function tokenUguali(a, b) {
+  if (typeof a !== 'string' || typeof b !== 'string' || a.length !== b.length) return false;
+  return crypto.timingSafeEqual(Buffer.from(a), Buffer.from(b));
+}
+
 function errore(codice, dettagli) {
   const out = { codice, messaggio: P.ERRORI[codice] || codice };
   if (dettagli !== undefined) out.dettagli = dettagli;
@@ -173,7 +179,7 @@ function riconnetti(codice, token, socket, { ora = Date.now } = {}) {
   const stanza = trova(codice);
   if (!stanza) return errore('STANZA_INESISTENTE');
   const tokenOk = P.normalizzaToken(token);
-  const giocatore = tokenOk ? [...stanza.giocatori.values()].find((g) => g.token === tokenOk) : null;
+  const giocatore = tokenOk ? [...stanza.giocatori.values()].find((g) => tokenUguali(g.token, tokenOk)) : null;
   if (!giocatore) return errore('TOKEN_NON_VALIDO');
 
   const t = ora();
@@ -183,8 +189,9 @@ function riconnetti(codice, token, socket, { ora = Date.now } = {}) {
   giocatore.socket = socket || null;
   giocatore.connesso = true;
   giocatore.disconnessoIl = null;
+  stanza.vuotaDal = null;
 
-  const eventi = [evento('connessione', giocatore.id, `${giocatore.nome} si è riconnesso`, { giocatoreId: giocatore.id, connesso: true }, t)];
+  const eventi = [evento('connessione', giocatore.id, `${giocatore.nome} è di nuovo online`, { giocatoreId: giocatore.id, connesso: true }, t)];
   if (stanza.stato.fase === 'lobby') sincronizzaLobby(stanza, eventi, t);
   else sincronizzaConnessione(stanza, giocatore.id, true, eventi, t);
   return { stanza, giocatore, eventi };
@@ -201,10 +208,16 @@ function esci(stanza, giocatoreId, { ora = Date.now } = {}) {
     const primo = stanza.giocatori.values().next().value;
     stanza.hostId = primo ? primo.id : null;
   }
-  if (stanza.giocatori.size === 0) stanza.vuotaDal = t;
   const eventi = [evento('giocatoreUscito', giocatoreId, `${g.nome} ha lasciato la stanza`, { giocatoreId }, t)];
   sincronizzaLobby(stanza, eventi, t);
-  return { eventi };
+  if (stanza.giocatori.size === 0) {
+    // Tutti sono usciti: la stanza si chiude subito e il codice torna libero.
+    stanza.vuotaDal = t;
+    stanza.chiusa = true;
+    if (registro.get(stanza.codice) === stanza) registro.delete(stanza.codice);
+    return { eventi, chiusa: true };
+  }
+  return { eventi, chiusa: false };
 }
 
 /** Il socket si è chiuso: il giocatore resta, marcato come disconnesso. */
@@ -216,7 +229,7 @@ function disconnetti(stanza, giocatoreId, { ora = Date.now } = {}) {
   g.connesso = false;
   g.disconnessoIl = t;
   if ([...stanza.giocatori.values()].every((x) => !x.connesso)) stanza.vuotaDal = t;
-  const eventi = [evento('connessione', giocatoreId, `${g.nome} si è disconnesso`, { giocatoreId, connesso: false }, t)];
+  const eventi = [evento('connessione', giocatoreId, `${g.nome} ha perso la connessione`, { giocatoreId, connesso: false }, t)];
   if (stanza.stato.fase === 'lobby') sincronizzaLobby(stanza, eventi, t);
   else sincronizzaConnessione(stanza, giocatoreId, false, eventi, t);
   return { eventi };
@@ -230,19 +243,29 @@ function avvia(stanza, giocatoreId, { random = Math.random, ora = Date.now } = {
   const connessi = [...stanza.giocatori.values()].filter((g) => g.connesso);
   if (connessi.length < P.LIMITI.MIN_GIOCATORI) return errore('POCHI_GIOCATORI');
 
-  // Chi è disconnesso in lobby all'avvio viene lasciato fuori.
+  // Chi è disconnesso in lobby all'avvio viene lasciato fuori (solo se il
+  // motore accetta la partita: in caso di errore la lobby resta intatta).
+  const precedente = stanza.stato;
+  let stato;
+  try {
+    stato = motore.creaPartita({
+      codice: stanza.codice,
+      hostId: stanza.hostId,
+      giocatori: connessi.map((g) => ({ id: g.id, nome: g.nome, colore: g.colore, connesso: true })),
+      random,
+      ora,
+    });
+  } catch (e) {
+    console.error('[stanze] creaPartita fallita', stanza.codice, e);
+    return errore('ERRORE_INTERNO', { motivo: 'creaPartita' });
+  }
+  if (!stato || typeof stato !== 'object' || !Array.isArray(stato.giocatori)) {
+    return errore('ERRORE_INTERNO', { motivo: 'creaPartita' });
+  }
   for (const g of [...stanza.giocatori.values()]) {
     if (!g.connesso) stanza.giocatori.delete(g.id);
   }
-  const precedente = stanza.stato;
-  const stato = motore.creaPartita({
-    codice: stanza.codice,
-    hostId: stanza.hostId,
-    giocatori: [...stanza.giocatori.values()].map((g) => ({ id: g.id, nome: g.nome, colore: g.colore, connesso: g.connesso })),
-    random,
-    ora,
-  });
-  const eventi = stato.log.slice();
+  const eventi = Array.isArray(stato.log) ? stato.log.slice() : [];
   stato.versione = precedente.versione + 1;
   stato.creataIl = stanza.creataIl;
   stato.log = [...precedente.log, ...eventi].slice(-P.LIMITI.LOG_MAX);
@@ -254,11 +277,37 @@ function avvia(stanza, giocatoreId, { random = Math.random, ora = Date.now } = {
 /** Applica un'azione di gioco tramite il motore e aggiorna la stanza. */
 function applica(stanza, giocatoreId, azione, { random = Math.random, ora = Date.now } = {}) {
   if (!stanza) return errore('STANZA_INESISTENTE');
-  const esito = motore.applicaAzione(stanza.stato, giocatoreId, azione, { random, ora });
-  if (esito.errore) return esito;
+  if (!stanza.giocatori.has(giocatoreId)) return errore('NON_IN_STANZA');
+  if (stanza.stato.fase === 'lobby') {
+    return errore('FASE_ERRATA', { fase: 'lobby', motivo: 'La partita non è ancora iniziata' });
+  }
+  let esito;
+  try {
+    esito = motore.applicaAzione(stanza.stato, giocatoreId, azione, { random, ora });
+  } catch (e) {
+    // Un bug del motore non deve rompere la stanza: lo stato resta quello precedente.
+    console.error('[stanze] applicaAzione ha lanciato', stanza.codice, azione && azione.tipo, e);
+    return errore('ERRORE_INTERNO', { azione: azione && azione.tipo });
+  }
+  if (!esito || typeof esito !== 'object') return errore('ERRORE_INTERNO', { azione: azione && azione.tipo });
+  if (esito.errore) {
+    const { codice = 'ERRORE_INTERNO', messaggio, dettagli } = esito.errore;
+    const out = errore(codice, dettagli);
+    if (typeof messaggio === 'string' && messaggio) out.errore.messaggio = messaggio;
+    return out;
+  }
+  if (!esito.stato || typeof esito.stato !== 'object' || !Array.isArray(esito.stato.giocatori)) {
+    console.error('[stanze] applicaAzione ha ritornato uno stato malformato', stanza.codice, azione && azione.tipo);
+    return errore('ERRORE_INTERNO', { azione: azione && azione.tipo });
+  }
+  // La connessione è un dato della stanza, non del motore: lo riallineiamo.
+  for (const g of esito.stato.giocatori) {
+    const reg = stanza.giocatori.get(g.id);
+    if (reg) g.connesso = reg.connesso;
+  }
   stanza.stato = esito.stato;
-  stanza.aggiornataIl = esito.stato.aggiornataIl;
-  return { eventi: esito.eventi };
+  stanza.aggiornataIl = typeof esito.stato.aggiornataIl === 'number' ? esito.stato.aggiornataIl : ora();
+  return { eventi: Array.isArray(esito.eventi) ? esito.eventi : [] };
 }
 
 /** Lo stato come va inviato ai client (senza mazzi). */
@@ -301,6 +350,10 @@ function pulisci({ ora = Date.now } = {}) {
           if (!esito.errore) diffondiAggiornamento(stanza, esito.eventi);
         }
       }
+      if (stanza.chiusa) {
+        rimosse += 1;
+        continue;
+      }
     }
     const vuota = stanza.giocatori.size === 0 || [...stanza.giocatori.values()].every((g) => !g.connesso);
     const daRimuovere =
@@ -309,6 +362,10 @@ function pulisci({ ora = Date.now } = {}) {
       (stanza.stato.fase === 'finePartita' && t - stanza.aggiornataIl > TEMPI.FINE_PARTITA_MS);
     if (daRimuovere) {
       registro.delete(stanza.codice);
+      stanza.chiusa = true;
+      // Avvisa chi è ancora collegato (stanza inattiva o partita finita da tempo).
+      broadcast(stanza, P.errore('STANZA_INESISTENTE', { messaggio: 'La stanza è stata chiusa per inattività' }));
+      for (const g of stanza.giocatori.values()) g.socket = null;
       rimosse += 1;
     }
   }

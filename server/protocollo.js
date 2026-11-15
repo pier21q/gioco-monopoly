@@ -22,6 +22,13 @@ const LIMITI = Object.freeze({
   LOG_MAX: 200,
   ERRORI_CONSECUTIVI_MAX: 3,
   CODICE_LUNGHEZZA: 6,
+  // Oltre MESSAGGIO_MAX_BYTE il server risponde con un errore; oltre
+  // FRAME_MAX_BYTE la libreria ws chiude la connessione (codice 1009).
+  FRAME_MAX_BYTE: 64 * 1024,
+  // Ping a livello WebSocket: chi non risponde entro un intervallo è disconnesso.
+  HEARTBEAT_MS: 30 * 1000,
+  // Anti-flood: messaggi al secondo per socket prima di scartarli.
+  MESSAGGI_AL_SECONDO_MAX: 30,
 });
 
 /** Alfabeto dei codici stanza: niente I, O, 0, 1 per evitare ambiguità a voce. */
@@ -88,6 +95,8 @@ const ERRORI = Object.freeze({
   POCHI_GIOCATORI: 'Servono almeno 2 giocatori',
   TOKEN_NON_VALIDO: 'Sessione non valida o scaduta',
   SOLO_IN_LOBBY: 'Operazione possibile solo prima dell\'inizio della partita',
+  TROPPI_MESSAGGI: 'Stai inviando troppi messaggi: rallenta',
+  ERRORE_INTERNO: 'Errore interno del server: riprova',
 
   // Motore
   AZIONE_NON_VALIDA: 'Azione sconosciuta',
@@ -180,9 +189,47 @@ function eOggetto(v) {
   return v !== null && typeof v === 'object' && !Array.isArray(v);
 }
 
+function manca(v) {
+  return v === undefined || v === null || (typeof v === 'string' && v.trim() === '');
+}
+
+/** Esito negativo con codice §7 e un messaggio italiano specifico. */
+function rifiuta(errore, messaggio, dettagli) {
+  const out = { ok: false, errore, messaggio };
+  if (dettagli !== undefined) out.dettagli = dettagli;
+  return out;
+}
+
+/** Validazione del campo `codice` comune a entraStanza e riconnetti. */
+function validaCampoCodice(m) {
+  if (manca(m.codice)) {
+    return rifiuta('MESSAGGIO_NON_VALIDO', 'Manca il codice della stanza', { campo: 'codice' });
+  }
+  const codice = normalizzaCodice(m.codice);
+  if (!codice) {
+    return rifiuta('STANZA_INESISTENTE', 'Codice stanza non valido: servono 6 lettere o cifre (es. K7PQ2M)', { campo: 'codice' });
+  }
+  return { ok: true, codice };
+}
+
+/** Profondità massima di annidamento accettata nel payload di un'azione. */
+const PROFONDITA_AZIONE_MAX = 4;
+
+function profondita(v, livello = 0) {
+  if (livello > PROFONDITA_AZIONE_MAX) return livello;
+  if (v === null || typeof v !== 'object') return livello;
+  let max = livello;
+  for (const figlio of Object.values(v)) {
+    max = Math.max(max, profondita(figlio, livello + 1));
+    if (max > PROFONDITA_AZIONE_MAX) break;
+  }
+  return max;
+}
+
 /**
  * Validatori per tipo: ricevono il messaggio grezzo e ritornano
- * { ok: true, messaggio } con i campi normalizzati, oppure { ok: false, errore }.
+ * { ok: true, messaggio } con i campi normalizzati, oppure
+ * { ok: false, errore, messaggio?, dettagli? }.
  */
 const VALIDATORI = {
   creaStanza() {
@@ -190,16 +237,19 @@ const VALIDATORI = {
   },
 
   entraStanza(m) {
-    const codice = normalizzaCodice(m.codice);
-    if (!codice) return { ok: false, errore: 'STANZA_INESISTENTE' };
+    const c = validaCampoCodice(m);
+    if (!c.ok) return c;
+    if (manca(m.nome)) return rifiuta('NOME_NON_VALIDO', 'Scegli un nome per entrare nella stanza', { campo: 'nome' });
     const nome = normalizzaNome(m.nome);
-    if (!nome) return { ok: false, errore: 'NOME_NON_VALIDO' };
-    let colore = null;
-    if (m.colore !== undefined && m.colore !== null && m.colore !== '') {
-      colore = normalizzaColore(m.colore);
-      if (!colore) return { ok: false, errore: 'COLORE_NON_VALIDO' };
+    if (!nome) {
+      return rifiuta('NOME_NON_VALIDO', `Il nome deve avere da ${LIMITI.NOME_MIN} a ${LIMITI.NOME_MAX} caratteri`, { campo: 'nome' });
     }
-    return { ok: true, messaggio: { tipo: 'entraStanza', codice, nome, colore } };
+    let colore = null;
+    if (!manca(m.colore)) {
+      colore = normalizzaColore(m.colore);
+      if (!colore) return rifiuta('COLORE_NON_VALIDO', 'Colore non valido: usa il formato #rrggbb', { campo: 'colore' });
+    }
+    return { ok: true, messaggio: { tipo: 'entraStanza', codice: c.codice, nome, colore } };
   },
 
   avviaPartita() {
@@ -207,8 +257,14 @@ const VALIDATORI = {
   },
 
   azione(m) {
-    if (!eOggetto(m.azione) || typeof m.azione.tipo !== 'string') {
-      return { ok: false, errore: 'MESSAGGIO_NON_VALIDO' };
+    if (m.azione === undefined || m.azione === null) {
+      return rifiuta('MESSAGGIO_NON_VALIDO', 'Manca il campo "azione"', { campo: 'azione' });
+    }
+    if (!eOggetto(m.azione) || typeof m.azione.tipo !== 'string' || m.azione.tipo === '') {
+      return rifiuta('MESSAGGIO_NON_VALIDO', 'Il campo "azione" deve essere un oggetto con un "tipo"', { campo: 'azione' });
+    }
+    if (profondita(m.azione) > PROFONDITA_AZIONE_MAX) {
+      return rifiuta('MESSAGGIO_NON_VALIDO', 'Azione troppo annidata', { campo: 'azione' });
     }
     // La validazione dei parametri è compito del motore (AZIONE_NON_VALIDA /
     // PARAMETRI_NON_VALIDI): qui garantiamo solo la forma.
@@ -216,9 +272,14 @@ const VALIDATORI = {
   },
 
   riconnetti(m) {
+    if (manca(m.codice) || manca(m.token)) {
+      return rifiuta('TOKEN_NON_VALIDO', 'Per riconnettersi servono codice della stanza e token di sessione', {
+        campo: manca(m.codice) ? 'codice' : 'token',
+      });
+    }
     const codice = normalizzaCodice(m.codice);
     const token = normalizzaToken(m.token);
-    if (!codice || !token) return { ok: false, errore: 'TOKEN_NON_VALIDO' };
+    if (!codice || !token) return rifiuta('TOKEN_NON_VALIDO', 'Sessione non valida: entra di nuovo nella stanza');
     return { ok: true, messaggio: { tipo: 'riconnetti', codice, token } };
   },
 
@@ -235,31 +296,39 @@ const VALIDATORI = {
  * Analizza un frame di testo ricevuto dal client.
  *
  * @param {string|Buffer} testo
- * @returns {{ok: true, messaggio: object} | {ok: false, errore: string, rif?: string}}
+ * @returns {{ok: true, messaggio: object}
+ *   | {ok: false, errore: string, messaggio?: string, dettagli?: object, rif?: string}}
  */
 function analizza(testo) {
   const stringa = typeof testo === 'string' ? testo : String(testo ?? '');
   if (Buffer.byteLength(stringa, 'utf8') > LIMITI.MESSAGGIO_MAX_BYTE) {
-    return { ok: false, errore: 'MESSAGGIO_NON_VALIDO' };
+    return rifiuta('MESSAGGIO_NON_VALIDO', `Messaggio troppo grande (massimo ${LIMITI.MESSAGGIO_MAX_BYTE} byte)`);
   }
 
   let grezzo;
   try {
     grezzo = JSON.parse(stringa);
   } catch {
-    return { ok: false, errore: 'MESSAGGIO_NON_VALIDO' };
+    return rifiuta('MESSAGGIO_NON_VALIDO', 'Messaggio non valido: non è JSON');
   }
-  if (!eOggetto(grezzo) || typeof grezzo.tipo !== 'string') {
-    return { ok: false, errore: 'MESSAGGIO_NON_VALIDO' };
+  if (!eOggetto(grezzo)) {
+    return rifiuta('MESSAGGIO_NON_VALIDO', 'Messaggio non valido: serve un oggetto JSON');
+  }
+  if (typeof grezzo.tipo !== 'string' || grezzo.tipo === '') {
+    return rifiuta('MESSAGGIO_NON_VALIDO', 'Messaggio non valido: manca il campo "tipo"', { campo: 'tipo' });
   }
 
   const rif = typeof grezzo.rif === 'string' && grezzo.rif.length <= LIMITI.RIF_MAX
     ? grezzo.rif
     : undefined;
 
-  const validatore = VALIDATORI[grezzo.tipo];
+  // hasOwn evita che tipi come "toString" o "__proto__" peschino dal prototipo.
+  const validatore = Object.hasOwn(VALIDATORI, grezzo.tipo) ? VALIDATORI[grezzo.tipo] : null;
   if (!validatore) {
-    return { ok: false, errore: 'TIPO_SCONOSCIUTO', rif };
+    return {
+      ...rifiuta('TIPO_SCONOSCIUTO', `Tipo di messaggio sconosciuto: "${grezzo.tipo.slice(0, 32)}"`),
+      rif,
+    };
   }
 
   const esito = validatore(grezzo);
