@@ -5,37 +5,67 @@
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <meta name="description" content="Monopoly multigiocatore online: crea una partita, condividi il link con gli amici e giocate dal browser, fino a 6 giocatori.">
   <meta name="color-scheme" content="light dark">
-  <meta name="theme-color" content="#1E8E3E">
+  <meta name="theme-color" content="#1e8e3e" media="(prefers-color-scheme: light)">
+  <meta name="theme-color" content="#12261a" media="(prefers-color-scheme: dark)">
   <title>Monopoly online · gioca con gli amici</title>
 
   <!-- Favicon inline: una casetta verde su sfondo chiaro, niente file esterni da servire. -->
   <link rel="icon" type="image/svg+xml"
         href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='12' fill='%23F3F1E7'/%3E%3Cpath d='M32 12 10 32h6v18h32V32h6z' fill='%231E8E3E'/%3E%3Crect x='27' y='36' width='10' height='14' fill='%23F3F1E7'/%3E%3C/svg%3E">
 
-  <!-- Percorsi assoluti: il server serve la cartella client/ come radice web. -->
+  <!-- Percorsi assoluti: l'URL può contenere ?stanza=… e il server serve client/ come radice web. -->
   <link rel="stylesheet" href="/css/base.css">
   <link rel="stylesheet" href="/css/tabellone.css">
   <link rel="stylesheet" href="/css/pannelli.css">
+
+  <!-- I moduli vengono scaricati in parallelo, prima che app.js li importi. -->
+  <link rel="modulepreload" href="/js/rete.js">
+  <link rel="modulepreload" href="/js/lobby.js">
+  <link rel="modulepreload" href="/js/tabellone.js">
+  <link rel="modulepreload" href="/js/pannelli.js">
+  <link rel="modulepreload" href="/js/dialoghi.js">
 </head>
 <body>
-  <a class="salta-contenuto" href="#tabellone">Vai al tabellone</a>
+  <!-- Link "salta al contenuto": il primo elemento raggiungibile con Tab. -->
+  <a class="salta-contenuto" href="#app">Salta al contenuto principale</a>
+
+  <!-- Barra superiore: nome del gioco, stanza corrente e stato della connessione. -->
+  <header class="barra">
+    <p class="barra__marchio">
+      <svg class="barra__logo" viewBox="0 0 64 64" aria-hidden="true" focusable="false">
+        <rect width="64" height="64" rx="12" fill="currentColor" opacity=".14"/>
+        <path d="M32 12 10 32h6v18h32V32h6z" fill="currentColor"/>
+      </svg>
+      <span>Monopoly online</span>
+    </p>
+    <p id="barra-stanza" class="barra__stanza" hidden></p>
+    <p id="connessione" class="indicatore-connessione" data-stato="connessione" role="status" aria-live="polite">
+      <span class="indicatore-connessione__punto" aria-hidden="true"></span>
+      <span class="indicatore-connessione__testo">Connessione in corso…</span>
+    </p>
+    <div id="barra-azioni" class="barra__azioni"></div>
+  </header>
 
   <noscript>
     <p class="avviso-noscript">Per giocare serve JavaScript attivo nel browser.</p>
   </noscript>
 
-  <!-- Schermata iniziale: crea/entra in una stanza, scegli nome e pedina, vedi chi c'è. -->
-  <main id="lobby" aria-labelledby="lobby-titolo">
-    <h1 id="lobby-titolo" class="visivamente-nascosto">Monopoly online</h1>
+  <!-- Contenitori definiti in INTERFACCE.md §4.1. -->
+  <main id="app" tabindex="-1" data-vista="lobby">
+    <!-- Schermata iniziale: crea/entra in una stanza, nome e colore, sala d'attesa. -->
+    <section id="lobby" aria-labelledby="lobby-titolo">
+      <h1 id="lobby-titolo" class="visivamente-nascosto">Monopoly online</h1>
+      <p class="lobby__caricamento">Caricamento…</p>
+    </section>
+
+    <!-- Tabellone con le 40 caselle e le pedine dei giocatori (tabellone.js). -->
+    <section id="tabellone" aria-label="Tabellone" hidden></section>
+
+    <!-- Giocatori, proprietà, azioni del turno e cronaca (pannelli.js). -->
+    <aside id="pannelli" aria-label="Giocatori e azioni" hidden></aside>
   </main>
 
-  <!-- Tabellone con le 40 caselle e le pedine dei giocatori. -->
-  <section id="tabellone" aria-label="Tabellone di gioco" hidden></section>
-
-  <!-- Pannelli laterali: giocatori, proprietà, azioni del turno, registro eventi. -->
-  <aside id="pannelli" aria-label="Pannelli di gioco" hidden></aside>
-
-  <!-- Punto di montaggio delle finestre di dialogo (acquisti, aste, scambi, carte). -->
+  <!-- Punto di montaggio delle finestre <dialog> native (dialoghi.js). -->
   <div id="dialoghi"></div>
 
   <!-- Notifiche brevi non bloccanti, lette dagli screen reader man mano che arrivano. -->
