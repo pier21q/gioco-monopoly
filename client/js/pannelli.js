@@ -1,25 +1,835 @@
 /**
  * client/js/pannelli.js
  *
- * Pannelli laterali montati in #pannelli: elenco giocatori (nome, pedina,
- * saldo, proprietà, stato prigione/bancarotta), controlli del turno (tira i
- * dadi, compra, costruisci, ipoteca, proponi scambio, passa il turno),
- * risultato dei dadi, registro cronologico degli eventi della partita e
- * scheda della casella selezionata sul tabellone.
+ * Pannelli di gioco montati in #pannelli:
+ *   - il turno: chi gioca, cosa deve fare, ultimo lancio, il mio denaro,
+ *     avvisi (scambio in attesa, asta, debito) e la barra delle azioni;
+ *   - i giocatori: colore, nome, denaro, posizione, stato (prigione,
+ *     disconnesso, bancarotta) e proprietà raggruppate per colore;
+ *   - la cronaca degli eventi (role=log, aria-live=polite).
  *
- * Come la lobby, il modulo è senza stato: riceve lo stato e usa `dispatch`.
+ * render(radice, statoClient, dispatch) è idempotente: costruisce il DOM una
+ * volta e poi aggiorna solo ciò che cambia, conservando il focus.
+ *
+ * Su schermi stretti giocatori e cronaca diventano schede, mentre il turno con
+ * le azioni diventa un cassetto fisso in basso (chiuso mostra solo l'azione
+ * principale, aperto tutte).
+ *
+ * Il modulo apre anche i dialoghi automatici (acquisto, asta, debito, scambio
+ * ricevuto, prigione, fine partita) e il dettaglio casella all'evento
+ * 'casella-selezionata' del tabellone.
  */
 
+import { CASELLE, GRUPPI } from '/dati/tabellone.js';
+import * as dialoghi from '/js/dialoghi.js';
+
+const {
+  el, euro, pulsante, aggiornaPulsante, pallino, segniCase, partitaDi, mioIdDi, giocatoreDa, nomeDi,
+  statoProp, proprietaDi, possiedeGruppo, indiciGruppo, nomeGruppo, descriviCostruzioni,
+  motivoAzione, motivoCostruisci, motivoVendi, motivoIpoteca, motivoDisipoteca, nuovoId,
+} = dialoghi;
+
+const CAUZIONE = 50;
+const MAX_VOCI_CRONACA = 200;
+const QUERY_STRETTO = '(max-width: 63.99rem)';
+
+// ---------------------------------------------------------------------------
+// Stato del modulo (solo interfaccia, mai di gioco)
+// ---------------------------------------------------------------------------
+
+let ui = null;
+let dispatchCorrente = () => {};
+let codicePartita = null;
+let ultimaChiaveLog = null;
+const dialoghiMostrati = new Set();
+let ascoltoCaselle = false;
+
+function invia(azione) {
+  dispatchCorrente(azione);
+}
+
+// ---------------------------------------------------------------------------
+// Definizione dei pulsanti della barra azioni
+// ---------------------------------------------------------------------------
+
+const GRUPPI_AZIONI = [
+  {
+    etichetta: 'Turno',
+    pulsanti: [
+      { id: 'lancia', testo: 'Lancia i dadi', tipo: 'lanciaDadi' },
+      { id: 'compra', testo: 'Compra', tipo: 'compra' },
+      { id: 'asta', testo: 'Metti all’asta', tipo: 'rifiutaAcquisto' },
+      { id: 'finisci', testo: 'Finisci il turno', tipo: 'finisciTurno' },
+    ],
+  },
+  {
+    etichetta: 'Proprietà',
+    pulsanti: [
+      { id: 'costruisci', testo: 'Costruisci', tipo: 'costruisci', gestione: 'costruisci' },
+      { id: 'vendi', testo: 'Vendi case', tipo: 'vendiCasa', gestione: 'vendi' },
+      { id: 'ipoteca', testo: 'Ipoteca', tipo: 'ipoteca', gestione: 'ipoteca' },
+      { id: 'disipoteca', testo: 'Riscatta ipoteca', tipo: 'disipoteca', gestione: 'disipoteca' },
+      { id: 'scambio', testo: 'Proponi scambio', tipo: 'proponiScambio' },
+    ],
+  },
+  {
+    etichetta: 'Prigione e debiti',
+    pulsanti: [
+      { id: 'cauzione', testo: 'Paga la cauzione', tipo: 'pagaCauzione' },
+      { id: 'carta', testo: 'Usa la carta prigione', tipo: 'usaCartaPrigione' },
+      { id: 'bancarotta', testo: 'Dichiara bancarotta', tipo: 'dichiaraBancarotta', pericolo: true },
+    ],
+  },
+];
+
+/** Prima proprietà idonea per una modalità di gestione, o il motivo per cui non ce n'è. */
+function idoneitaGestione(p, mio, modalita) {
+  const mie = proprietaDi(p, mio);
+  let candidate;
+  let controllo;
+  let vuoto;
+  if (modalita === 'costruisci') {
+    candidate = mie.filter((c) => c.tipo === 'proprieta' && possiedeGruppo(p, c.gruppo, mio));
+    controllo = motivoCostruisci;
+    vuoto = 'Ti serve un gruppo colore completo';
+  } else if (modalita === 'vendi') {
+    candidate = mie.filter((c) => c.tipo === 'proprieta' && statoProp(p, c.indice).caseCostruite > 0);
+    controllo = motivoVendi;
+    vuoto = 'Non hai case né alberghi da vendere';
+  } else if (modalita === 'ipoteca') {
+    candidate = mie.filter((c) => !statoProp(p, c.indice).ipotecata);
+    controllo = motivoIpoteca;
+    vuoto = mie.length ? 'Le tue proprietà sono già tutte ipotecate' : 'Non hai proprietà da ipotecare';
+  } else {
+    candidate = mie.filter((c) => statoProp(p, c.indice).ipotecata);
+    controllo = motivoDisipoteca;
+    vuoto = 'Nessuna delle tue proprietà è ipotecata';
+  }
+  if (!candidate.length) return vuoto;
+  let primoMotivo = null;
+  for (const c of candidate) {
+    const m = controllo(p, mio, c.indice);
+    if (!m) return null;
+    if (!primoMotivo) primoMotivo = m;
+  }
+  return primoMotivo;
+}
+
+function casellaCorrente(p, mio) {
+  const io = giocatoreDa(p, mio);
+  return io ? CASELLE[io.posizione] : null;
+}
+
+/** Stato di ciascun pulsante: { motivo, dettaglio, onclick }. */
+function statoPulsante(def, p, mio) {
+  const io = giocatoreDa(p, mio);
+  const base = motivoAzione(p, mio, def.tipo);
+  switch (def.id) {
+    case 'lancia':
+      return {
+        motivo: base,
+        dettaglio: !base && io.inPrigione ? 'tenta il doppio' : (!base && p.turno.doppiConsecutivi > 0 ? 'hai fatto un doppio' : null),
+        onclick: () => invia({ tipo: 'lanciaDadi' }),
+      };
+    case 'compra': {
+      const c = casellaCorrente(p, mio);
+      const prezzo = c && c.prezzo;
+      const motivo = base || (prezzo && io.denaro < prezzo ? `Ti mancano ${euro(prezzo - io.denaro)}: ipoteca o vendi, oppure mettila all’asta` : null);
+      return { motivo, dettaglio: !base && prezzo ? euro(prezzo) : null, onclick: () => invia({ tipo: 'compra' }) };
+    }
+    case 'asta':
+      return { motivo: base, onclick: () => invia({ tipo: 'rifiutaAcquisto' }) };
+    case 'finisci':
+      return { motivo: base, onclick: () => invia({ tipo: 'finisciTurno' }) };
+    case 'costruisci':
+    case 'vendi':
+    case 'ipoteca':
+    case 'disipoteca':
+      return {
+        motivo: base || idoneitaGestione(p, mio, def.gestione),
+        onclick: () => dialoghi.apri('gestione', { modalita: def.gestione }, dispatchCorrente),
+      };
+    case 'scambio': {
+      const altri = p.giocatori.filter((g) => g.id !== mio && !g.fallito);
+      return {
+        motivo: base || (altri.length ? null : 'Non c’è nessuno con cui scambiare'),
+        onclick: () => dialoghi.apri('scambio', { nuovo: true }, dispatchCorrente),
+      };
+    }
+    case 'cauzione':
+      return {
+        motivo: base || (io.denaro < CAUZIONE ? `Ti servono ${euro(CAUZIONE)}` : null),
+        dettaglio: euro(CAUZIONE),
+        onclick: () => invia({ tipo: 'pagaCauzione' }),
+      };
+    case 'carta':
+      return {
+        motivo: base,
+        dettaglio: io.cartePrigione ? `ne hai ${io.cartePrigione}` : null,
+        onclick: () => invia({ tipo: 'usaCartaPrigione' }),
+      };
+    case 'bancarotta':
+      return { motivo: base, onclick: () => dialoghi.apri('bancarotta', {}, dispatchCorrente) };
+    default:
+      return { motivo: base, onclick: () => {} };
+  }
+}
+
+/** L'azione principale suggerita adesso (id di pulsante) o null. */
+function azionePrincipale(p, mio) {
+  if (!p.turno || p.turno.giocatoreId !== mio) return null;
+  const io = giocatoreDa(p, mio);
+  if (!io || io.fallito) return null;
+  if (p.fase === 'daLanciare') return 'lancia';
+  if (p.fase === 'mossa') return 'finisci';
+  if (p.fase === 'daDecidereAcquisto') {
+    const c = CASELLE[io.posizione];
+    return c && c.prezzo && io.denaro >= c.prezzo ? 'compra' : 'asta';
+  }
+  return null;
+}
+
+// ---------------------------------------------------------------------------
+// Montaggio
+// ---------------------------------------------------------------------------
+
+function monta(radice) {
+  const idTitoloTurno = nuovoId('pn-titolo');
+  const idAzioni = nuovoId('pn-azioni');
+  const idSezG = nuovoId('pn-sez');
+  const idSezC = nuovoId('pn-sez');
+
+  const titolo = el('h2', { class: 'pn-turno__titolo', id: idTitoloTurno });
+  const guida = el('p', { class: 'pn-turno__guida' });
+  const dadi = el('div', { class: 'pn-dadi', role: 'img' });
+  const mioDenaro = el('p', { class: 'pn-turno__denaro' });
+  const avvisi = el('div', { class: 'pn-avvisi' });
+
+  const pulsanti = new Map();
+  const azioni = el('div', { class: 'pn-azioni', id: idAzioni },
+    GRUPPI_AZIONI.map((g) => el('div', { class: 'pn-azioni__gruppo', role: 'group', 'aria-label': g.etichetta },
+      g.pulsanti.map((def) => {
+        const b = pulsante({ testo: def.testo, chiave: `pn-${def.id}`, pericolo: !!def.pericolo });
+        b.classList.add(`azione--${def.id}`);
+        pulsanti.set(def.id, { def, nodo: b });
+        return b;
+      }))));
+
+  const maniglia = el('button', {
+    type: 'button', class: 'pn-cassetto__maniglia', 'aria-expanded': 'false', 'aria-controls': idAzioni,
+  }, el('span', { class: 'pn-cassetto__tacca', 'aria-hidden': 'true' }), el('span', { class: 'pn-cassetto__testo', text: 'Tutte le azioni' }));
+
+  const turno = el('section', { class: 'pn-turno', 'aria-labelledby': idTitoloTurno },
+    el('div', { class: 'pn-turno__testa' },
+      el('div', { class: 'pn-turno__intestazione' }, titolo, guida),
+      dadi),
+    mioDenaro,
+    avvisi,
+    maniglia,
+    azioni);
+
+  const tabG = el('button', { type: 'button', class: 'pn-scheda', id: nuovoId('pn-tab'), dataset: { sezione: 'giocatori' }, 'aria-controls': idSezG, text: 'Giocatori' });
+  const tabC = el('button', { type: 'button', class: 'pn-scheda', id: nuovoId('pn-tab'), dataset: { sezione: 'cronaca' }, 'aria-controls': idSezC },
+    'Cronaca', el('span', { class: 'pn-scheda__nuovi', hidden: true }));
+  const schede = el('div', { class: 'pn-schede', 'aria-label': 'Sezioni del pannello' }, tabG, tabC);
+
+  const elencoGiocatori = el('ul', { class: 'pn-giocatori', 'aria-label': 'Giocatori in ordine di turno' });
+  const sezGiocatori = el('section', { class: 'pn-sezione pn-sezione--giocatori', id: idSezG, dataset: { sezione: 'giocatori' } },
+    el('h2', { class: 'pn-sezione__titolo', text: 'Giocatori' }), elencoGiocatori);
+
+  const cronaca = el('ol', {
+    class: 'pn-cronaca', role: 'log', 'aria-live': 'off', 'aria-relevant': 'additions', tabindex: '0',
+    'aria-label': 'Cronaca della partita',
+  });
+  const sezCronaca = el('section', { class: 'pn-sezione pn-sezione--cronaca', id: idSezC, dataset: { sezione: 'cronaca' } },
+    el('h2', { class: 'pn-sezione__titolo', text: 'Cronaca' }), cronaca);
+
+  const nodo = el('div', { class: 'pn' }, turno, schede, sezGiocatori, sezCronaca);
+  radice.replaceChildren(nodo);
+  radice.classList.add('pannelli-pronti');
+
+  ui = {
+    radice, nodo, turno, titolo, guida, dadi, mioDenaro, avvisi, azioni, maniglia, pulsanti,
+    schede, tab: { giocatori: tabG, cronaca: tabC }, sezioni: { giocatori: sezGiocatori, cronaca: sezCronaca },
+    elencoGiocatori, cronaca, schedaAttiva: 'giocatori', firmaAvvisi: '', firmeGiocatori: new Map(),
+    stretto: window.matchMedia ? window.matchMedia(QUERY_STRETTO) : { matches: false, addEventListener() {} },
+  };
+
+  // Cassetto delle azioni (schermi stretti).
+  maniglia.addEventListener('click', () => impostaCassetto(maniglia.getAttribute('aria-expanded') !== 'true'));
+  turno.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && ui.stretto.matches && maniglia.getAttribute('aria-expanded') === 'true') {
+      impostaCassetto(false);
+      maniglia.focus();
+    }
+  });
+  // Dopo un'azione sul cassetto aperto lo richiudiamo, così il tabellone torna visibile.
+  azioni.addEventListener('click', (e) => {
+    const b = e.target.closest('.btn');
+    if (b && !b.hasAttribute('aria-disabled') && ui.stretto.matches) setTimeout(() => impostaCassetto(false), 0);
+  });
+
+  // Schede (schermi stretti): frecce, Home, Fine.
+  for (const t of [tabG, tabC]) {
+    t.addEventListener('click', () => attivaScheda(t.dataset.sezione));
+    t.addEventListener('keydown', (e) => {
+      const ordine = ['giocatori', 'cronaca'];
+      let k = ordine.indexOf(t.dataset.sezione);
+      if (e.key === 'ArrowRight' || e.key === 'ArrowDown') k = (k + 1) % ordine.length;
+      else if (e.key === 'ArrowLeft' || e.key === 'ArrowUp') k = (k - 1 + ordine.length) % ordine.length;
+      else if (e.key === 'Home') k = 0;
+      else if (e.key === 'End') k = ordine.length - 1;
+      else return;
+      e.preventDefault();
+      attivaScheda(ordine[k]);
+      ui.tab[ordine[k]].focus();
+    });
+  }
+  const cambio = () => applicaLayout();
+  if (ui.stretto.addEventListener) ui.stretto.addEventListener('change', cambio);
+  else if (ui.stretto.addListener) ui.stretto.addListener(cambio);
+  applicaLayout();
+
+  // Altezza del cassetto → variabile CSS (spazio in fondo e posizione dei toast).
+  if (window.ResizeObserver) {
+    new ResizeObserver(() => {
+      const h = ui.stretto.matches ? Math.ceil(turno.getBoundingClientRect().height) : 0;
+      document.documentElement.style.setProperty('--pn-cassetto', `${h}px`);
+    }).observe(turno);
+  }
+
+  cronaca.addEventListener('scroll', () => {
+    if (vicinoAlFondo(cronaca)) segnaCronacaLetta();
+  });
+}
+
+function impostaCassetto(aperto) {
+  if (!ui) return;
+  ui.maniglia.setAttribute('aria-expanded', aperto ? 'true' : 'false');
+  ui.turno.classList.toggle('pn-turno--aperto', aperto);
+  ui.maniglia.querySelector('.pn-cassetto__testo').textContent = aperto ? 'Nascondi le azioni' : 'Tutte le azioni';
+}
+
+/** Ruoli ARIA delle schede solo quando le schede sono davvero visibili. */
+function applicaLayout() {
+  if (!ui) return;
+  const stretto = ui.stretto.matches;
+  ui.nodo.classList.toggle('pn--stretto', stretto);
+  if (stretto) {
+    ui.schede.setAttribute('role', 'tablist');
+    for (const [nome, t] of Object.entries(ui.tab)) {
+      t.setAttribute('role', 'tab');
+      ui.sezioni[nome].setAttribute('role', 'tabpanel');
+      ui.sezioni[nome].setAttribute('aria-labelledby', t.id);
+    }
+    attivaScheda(ui.schedaAttiva);
+  } else {
+    ui.schede.removeAttribute('role');
+    for (const [nome, t] of Object.entries(ui.tab)) {
+      t.removeAttribute('role');
+      t.removeAttribute('aria-selected');
+      t.removeAttribute('tabindex');
+      ui.sezioni[nome].removeAttribute('role');
+      ui.sezioni[nome].removeAttribute('aria-labelledby');
+      ui.sezioni[nome].hidden = false;
+    }
+    impostaCassetto(false);
+  }
+}
+
+function attivaScheda(nome) {
+  if (!ui) return;
+  ui.schedaAttiva = nome;
+  if (!ui.stretto.matches) return;
+  for (const [n, t] of Object.entries(ui.tab)) {
+    const attiva = n === nome;
+    t.setAttribute('aria-selected', attiva ? 'true' : 'false');
+    t.setAttribute('tabindex', attiva ? '0' : '-1');
+    ui.sezioni[n].hidden = !attiva;
+  }
+  if (nome === 'cronaca') {
+    ui.cronaca.scrollTop = ui.cronaca.scrollHeight;
+    segnaCronacaLetta();
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Sezione turno
+// ---------------------------------------------------------------------------
+
+const FACCE = ['', '⚀', '⚁', '⚂', '⚃', '⚄', '⚅'];
+
+function testoGuida(p, mio) {
+  const diTurno = giocatoreDa(p, p.turno && p.turno.giocatoreId);
+  const mioTurno = diTurno && diTurno.id === mio;
+  const nome = diTurno ? diTurno.nome : '';
+  const io = giocatoreDa(p, mio);
+  const casella = diTurno ? CASELLE[diTurno.posizione] : null;
+  switch (p.fase) {
+    case 'daLanciare':
+      if (!mioTurno) return diTurno && diTurno.inPrigione ? `${nome} è in prigione e sceglie come uscire.` : `${nome} deve lanciare i dadi.`;
+      if (io.inPrigione) return 'Sei in prigione: tenta il doppio, paga la cauzione o usa la carta.';
+      return p.turno.doppiConsecutivi > 0 ? 'Hai fatto un doppio: lancia di nuovo.' : 'Lancia i dadi per muovere la tua pedina.';
+    case 'mossa':
+      return mioTurno ? 'Costruisci, scambia o ipoteca se vuoi, poi finisci il turno.' : `${nome} sta gestendo le sue proprietà.`;
+    case 'daDecidereAcquisto':
+      return mioTurno ? `Sei su ${casella ? casella.nome : 'una proprietà libera'}: comprala o mettila all’asta.` : `${nome} decide se comprare ${casella ? casella.nome : 'la proprietà'}.`;
+    case 'asta': {
+      const a = p.asta;
+      if (!a) return 'Asta in corso.';
+      const c = CASELLE[a.casella];
+      return a.migliorOfferenteId
+        ? `Asta per ${c.nome}: in testa ${a.migliorOfferenteId === mio ? 'tu' : nomeDi(p, a.migliorOfferenteId)} con ${euro(a.offertaMassima)}.`
+        : `Asta per ${c.nome}: ancora nessuna offerta.`;
+    }
+    case 'debito': {
+      const d = p.debito;
+      if (!d) return 'Un giocatore deve saldare un debito.';
+      if (d.giocatoreId === mio) return `Devi ${euro(d.importo)} a ${nomeDi(p, d.creditoreId)}: vendi o ipoteca per pagare.`;
+      return `${nomeDi(p, d.giocatoreId)} deve ${euro(d.importo)} a ${d.creditoreId === mio ? 'te' : nomeDi(p, d.creditoreId)}.`;
+    }
+    case 'finePartita':
+      return p.vincitoreId ? `Vince ${p.vincitoreId === mio ? 'tu' : nomeDi(p, p.vincitoreId)}.` : 'La partita è finita.';
+    default:
+      return '';
+  }
+}
+
+function disegnaTurno(p, mio) {
+  const diTurno = giocatoreDa(p, p.turno && p.turno.giocatoreId);
+  const io = giocatoreDa(p, mio);
+  const mioTurno = diTurno && diTurno.id === mio;
+
+  // Titolo
+  let firmaTitolo;
+  let contenutoTitolo;
+  if (p.fase === 'finePartita') {
+    firmaTitolo = 'fine';
+    contenutoTitolo = ['Partita finita'];
+  } else if (mioTurno) {
+    firmaTitolo = `mio|${p.turno.numero}`;
+    contenutoTitolo = ['Tocca a te', el('span', { class: 'pn-turno__numero', text: `Turno ${p.turno.numero}` })];
+  } else {
+    firmaTitolo = `altro|${diTurno ? diTurno.id : ''}|${diTurno && diTurno.connesso}|${p.turno && p.turno.numero}`;
+    contenutoTitolo = [
+      diTurno ? pallino(diTurno.colore) : null,
+      `Tocca a ${diTurno ? diTurno.nome : '…'}`,
+      diTurno && !diTurno.connesso ? el('span', { class: 'distintivo distintivo--avviso', text: 'disconnesso' }) : null,
+      el('span', { class: 'pn-turno__numero', text: `Turno ${p.turno ? p.turno.numero : ''}` }),
+    ];
+  }
+  if (ui.titolo.dataset.firma !== firmaTitolo) {
+    ui.titolo.replaceChildren(...contenutoTitolo.filter(Boolean).map((x) => (typeof x === 'string' ? document.createTextNode(x) : x)));
+    ui.titolo.dataset.firma = firmaTitolo;
+  }
+  ui.turno.classList.toggle('pn-turno--mio', !!mioTurno && p.fase !== 'finePartita');
+  ui.turno.style.setProperty('--colore-turno', diTurno ? diTurno.colore : 'transparent');
+
+  const guida = testoGuida(p, mio);
+  if (ui.guida.textContent !== guida) ui.guida.textContent = guida;
+
+  // Dadi
+  const d = Array.isArray(p.dadi) ? p.dadi : null;
+  const firmaDadi = d ? `${d[0]}-${d[1]}-${p.versione}` : 'nessuno';
+  if (ui.dadi.dataset.firma !== firmaDadi) {
+    ui.dadi.dataset.firma = firmaDadi;
+    if (d) {
+      const doppio = d[0] === d[1];
+      ui.dadi.setAttribute('aria-label', `Ultimo lancio: ${d[0]} e ${d[1]}${doppio ? ', doppio' : ''}`);
+      const prima = ui.dadi.dataset.valori;
+      ui.dadi.dataset.valori = `${d[0]}-${d[1]}`;
+      ui.dadi.replaceChildren(
+        el('span', { class: 'pn-dado', 'aria-hidden': 'true', text: FACCE[d[0]] || '' }),
+        el('span', { class: 'pn-dado', 'aria-hidden': 'true', text: FACCE[d[1]] || '' }));
+      ui.dadi.classList.toggle('pn-dadi--doppio', doppio);
+      if (prima && prima !== ui.dadi.dataset.valori) {
+        ui.dadi.classList.remove('pn-dadi--nuovo');
+        void ui.dadi.offsetWidth;
+        ui.dadi.classList.add('pn-dadi--nuovo');
+      }
+      ui.dadi.hidden = false;
+    } else {
+      ui.dadi.hidden = true;
+      ui.dadi.replaceChildren();
+    }
+  }
+
+  // Il mio denaro
+  const testoDenaro = io ? (io.fallito ? 'Sei uscito dalla partita' : euro(io.denaro)) : '';
+  if (ui.mioDenaro.dataset.firma !== testoDenaro) {
+    ui.mioDenaro.dataset.firma = testoDenaro;
+    ui.mioDenaro.replaceChildren(...(io && !io.fallito
+      ? [el('span', { class: 'pn-turno__denaro-etichetta', text: 'Il tuo denaro' }), el('strong', { class: 'importo', text: testoDenaro })]
+      : [testoDenaro]));
+    ui.mioDenaro.hidden = !io;
+  }
+
+  disegnaAvvisi(p, mio);
+
+  // Pulsanti
+  const principale = azionePrincipale(p, mio);
+  const fuori = !io || io.fallito || p.fase === 'finePartita';
+  ui.azioni.hidden = fuori;
+  ui.maniglia.hidden = fuori;
+  for (const { def, nodo } of ui.pulsanti.values()) {
+    const st = io ? statoPulsante(def, p, mio) : { motivo: 'Non partecipi a questa partita', onclick: () => {} };
+    aggiornaPulsante(nodo, { testo: def.testo, dettaglio: st.dettaglio || null, motivo: st.motivo, onclick: st.onclick, primario: def.id === principale });
+    nodo.classList.toggle('azione--principale', def.id === principale);
+  }
+  ui.turno.classList.toggle('pn-turno--con-principale', !!principale);
+}
+
+function disegnaAvvisi(p, mio) {
+  const voci = [];
+  const s = p.scambio;
+  if (s && p.fase !== 'finePartita') {
+    if (s.aId === mio) voci.push(['scambio', 'info', `${nomeDi(p, s.daId)} ti propone uno scambio`, 'Vedi la proposta', () => dialoghi.apri('scambio', {}, dispatchCorrente)]);
+    else if (s.daId === mio) voci.push(['scambio', 'neutro', `Hai proposto uno scambio a ${nomeDi(p, s.aId)}`, 'Vedi o ritira', () => dialoghi.apri('scambio', {}, dispatchCorrente)]);
+    else voci.push(['scambio', 'neutro', `Scambio in attesa tra ${nomeDi(p, s.daId)} e ${nomeDi(p, s.aId)}`, 'Vedi', () => dialoghi.apri('scambio', {}, dispatchCorrente)]);
+  }
+  if (p.fase === 'asta' && p.asta) {
+    const partecipo = p.asta.partecipanti.includes(mio) && !p.asta.passati.includes(mio);
+    voci.push(['asta', partecipo ? 'info' : 'neutro', `Asta per ${CASELLE[p.asta.casella].nome}`, partecipo ? 'Fai un’offerta' : 'Segui l’asta', () => dialoghi.apri('asta', {}, dispatchCorrente)]);
+  }
+  if (p.fase === 'debito' && p.debito && p.debito.giocatoreId === mio) {
+    voci.push(['debito', 'pericolo', `Devi pagare ${euro(p.debito.importo)}`, 'Gestisci il debito', () => dialoghi.apri('debito', {}, dispatchCorrente)]);
+  }
+  if (p.fase === 'finePartita') {
+    voci.push(['fine', 'info', 'La partita è finita', 'Vedi la classifica', () => dialoghi.apri('finePartita', {}, dispatchCorrente)]);
+  }
+  const diTurno = giocatoreDa(p, p.turno && p.turno.giocatoreId);
+  if (diTurno && !diTurno.connesso && p.fase !== 'finePartita' && diTurno.id !== mio) {
+    voci.push(['attesa', 'avviso', `${diTurno.nome} si è disconnesso: il turno riprende quando torna.`, null, null]);
+  }
+  const io = giocatoreDa(p, mio);
+  if (io && io.fallito && p.fase !== 'finePartita') {
+    voci.push(['fallito', 'neutro', 'Sei in bancarotta: puoi continuare a guardare la partita.', null, null]);
+  }
+
+  const firma = voci.map((v) => `${v[0]}|${v[2]}|${v[3]}`).join('§');
+  if (firma === ui.firmaAvvisi) {
+    // Aggiorniamo solo i gestori (le closure fanno riferimento allo stato corrente).
+    return;
+  }
+  ui.firmaAvvisi = firma;
+  const attivo = document.activeElement;
+  const chiaveAttiva = ui.avvisi.contains(attivo) ? attivo.dataset.chiave : null;
+  ui.avvisi.replaceChildren(...voci.map(([id, livello, testo, etichetta, azione]) => el('div', { class: `pn-avviso pn-avviso--${livello}` },
+    el('p', { class: 'pn-avviso__testo', text: testo }),
+    etichetta ? el('button', { type: 'button', class: 'btn btn--piccolo', dataset: { chiave: `avv-${id}` }, text: etichetta, onclick: azione }) : null)));
+  ui.avvisi.hidden = voci.length === 0;
+  if (chiaveAttiva) {
+    const dest = ui.avvisi.querySelector(`[data-chiave="${chiaveAttiva}"]`);
+    if (dest) dest.focus({ preventScroll: true });
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Sezione giocatori
+// ---------------------------------------------------------------------------
+
+function firmaGiocatore(p, g, mio) {
+  const props = proprietaDi(p, g.id).map((c) => {
+    const s = statoProp(p, c.indice);
+    return `${c.indice}:${s.caseCostruite}:${s.ipotecata ? 1 : 0}`;
+  }).join(',');
+  const diTurno = p.turno && p.turno.giocatoreId === g.id && p.fase !== 'finePartita';
+  return [g.nome, g.colore, g.denaro, g.posizione, g.inPrigione, g.turniInPrigione, g.cartePrigione,
+    g.connesso, g.fallito, diTurno, g.id === mio, g.id === p.vincitoreId, p.hostId === g.id, props].join('|');
+}
+
+function voceGiocatore(p, g, mio) {
+  const diTurno = p.turno && p.turno.giocatoreId === g.id && p.fase !== 'finePartita';
+  const casella = CASELLE[g.posizione];
+  const distintivi = [];
+  if (g.id === p.vincitoreId) distintivi.push(['ok', 'vincitore']);
+  if (diTurno) distintivi.push(['turno', 'di turno']);
+  if (g.fallito) distintivi.push(['pericolo', 'in bancarotta']);
+  if (g.inPrigione && !g.fallito) distintivi.push(['avviso', `in prigione, tentativo ${Math.min(3, (g.turniInPrigione || 0) + 1)} di 3`]);
+  if (!g.connesso && !g.fallito) distintivi.push(['neutro', 'disconnesso']);
+  if (g.cartePrigione > 0) distintivi.push(['neutro', g.cartePrigione === 1 ? '1 carta esci gratis' : `${g.cartePrigione} carte esci gratis`]);
+
+  const mie = proprietaDi(p, g.id);
+  const perGruppo = new Map();
+  for (const c of mie) {
+    if (!perGruppo.has(c.gruppo)) perGruppo.set(c.gruppo, []);
+    perGruppo.get(c.gruppo).push(c);
+  }
+
+  const proprieta = mie.length
+    ? el('ul', { class: 'pn-gruppi', 'aria-label': `Proprietà di ${g.nome}` },
+      [...perGruppo.entries()].map(([gruppo, caselle]) => {
+        const totale = indiciGruppo(gruppo).length;
+        const completo = caselle.length === totale;
+        const colore = (GRUPPI[gruppo] && GRUPPI[gruppo].colore) || '#4a6168';
+        return el('li', { class: `pn-gruppo${completo ? ' pn-gruppo--completo' : ''}`, style: { '--colore': colore } },
+          el('span', { class: 'pn-gruppo__nome' },
+            nomeGruppo(gruppo),
+            el('span', { class: 'pn-gruppo__conteggio', text: `${caselle.length} di ${totale}` })),
+          el('ul', { class: 'pn-gruppo__caselle' }, caselle.map((c) => {
+            const s = statoProp(p, c.indice);
+            const stato = [];
+            if (c.tipo === 'proprieta' && s.caseCostruite) stato.push(descriviCostruzioni(s.caseCostruite));
+            if (s.ipotecata) stato.push('ipotecata');
+            return el('li', null, el('button', {
+              type: 'button',
+              class: `pn-prop${s.ipotecata ? ' pn-prop--ipotecata' : ''}`,
+              dataset: { chiave: `prop-${c.indice}` },
+              'aria-label': `${c.nome}${stato.length ? `, ${stato.join(', ')}` : ''}. Apri il contratto`,
+              onclick: () => {
+                invia({ tipo: 'ui:seleziona', indice: c.indice });
+                dialoghi.apri('dettaglioCasella', { indice: c.indice }, dispatchCorrente);
+              },
+            },
+            el('span', { class: 'pn-prop__nome', text: c.nome }),
+            c.tipo === 'proprieta' && s.caseCostruite ? segniCase(s.caseCostruite) : null,
+            s.ipotecata ? el('span', { class: 'pn-prop__ipoteca', 'aria-hidden': 'true', text: 'ipotecata' }) : null));
+          })));
+      }))
+    : el('p', { class: 'pn-giocatore__vuoto', text: g.fallito ? 'Nessun bene' : 'Ancora nessuna proprietà' });
+
+  const iniziale = (g.nome || '?').trim().charAt(0).toUpperCase();
+  return el('li', {
+    class: ['pn-giocatore', diTurno && 'pn-giocatore--turno', g.fallito && 'pn-giocatore--fallito', !g.connesso && 'pn-giocatore--disconnesso', g.id === mio && 'pn-giocatore--mio'].filter(Boolean).join(' '),
+    style: { '--colore': g.colore, '--su-colore': dialoghi.testoSu(g.colore) },
+    'aria-current': diTurno ? 'true' : null,
+    dataset: { id: g.id },
+  },
+  el('div', { class: 'pn-giocatore__testa' },
+    el('span', { class: 'pn-pedina', 'aria-hidden': 'true', text: iniziale }),
+    el('div', { class: 'pn-giocatore__chi' },
+      el('h3', { class: 'pn-giocatore__nome' }, g.nome, g.id === mio ? el('span', { class: 'pn-giocatore__tu', text: ' (tu)' }) : null),
+      el('p', { class: 'pn-giocatore__dove', text: g.fallito ? 'fuori dalla partita' : (g.inPrigione ? 'in prigione' : `su ${casella ? casella.nome : '…'}`) })),
+    el('p', { class: 'pn-giocatore__denaro' },
+      el('span', { class: 'visivamente-nascosto', text: 'Denaro: ' }),
+      el('span', { class: 'importo', text: euro(g.denaro) }))),
+  distintivi.length ? el('ul', { class: 'pn-distintivi', 'aria-label': 'Stato' },
+    distintivi.map(([liv, t]) => el('li', { class: `distintivo distintivo--${liv}`, text: t }))) : null,
+  proprieta);
+}
+
+function disegnaGiocatori(p, mio) {
+  const lista = ui.elencoGiocatori;
+  const ids = p.giocatori.map((g) => g.id);
+  // Rimuove chi non c'è più.
+  for (const li of [...lista.children]) {
+    if (!ids.includes(li.dataset.id)) {
+      li.remove();
+      ui.firmeGiocatori.delete(li.dataset.id);
+    }
+  }
+  p.giocatori.forEach((g, k) => {
+    const firma = firmaGiocatore(p, g, mio);
+    let li = lista.querySelector(`:scope > [data-id="${CSS.escape(g.id)}"]`);
+    if (!li || ui.firmeGiocatori.get(g.id) !== firma) {
+      const nuovo = voceGiocatore(p, g, mio);
+      const attivo = document.activeElement;
+      const chiave = li && li.contains(attivo) ? attivo.dataset.chiave : null;
+      if (li) li.replaceWith(nuovo);
+      else lista.append(nuovo);
+      li = nuovo;
+      ui.firmeGiocatori.set(g.id, firma);
+      if (chiave) {
+        const dest = li.querySelector(`[data-chiave="${CSS.escape(chiave)}"]`);
+        if (dest) dest.focus({ preventScroll: true });
+      }
+    }
+    if (lista.children[k] !== li) lista.insertBefore(li, lista.children[k] || null);
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Cronaca
+// ---------------------------------------------------------------------------
+
+function chiaveEvento(ev) {
+  return `${ev.t}|${ev.tipo}|${ev.giocatoreId || ''}|${ev.testo || ''}`;
+}
+
+function nomeCasella(i) {
+  return CASELLE[i] ? CASELLE[i].nome : `casella ${i}`;
+}
+
+/** Testo leggibile di un evento: quello del server se c'è, altrimenti composto qui. */
+export function testoEvento(ev, p) {
+  if (ev.testo) return ev.testo;
+  const d = ev.dati || {};
+  const chi = nomeDi(p, ev.giocatoreId, { banca: 'La banca' });
+  switch (ev.tipo) {
+    case 'giocatoreEntrato': return `${d.nome || chi} entra nella stanza`;
+    case 'giocatoreUscito': return `${chi} esce dalla stanza`;
+    case 'connessione': return d.connesso ? `${chi} si è riconnesso` : `${chi} si è disconnesso`;
+    case 'partitaIniziata': return `La partita comincia: ${d.denaroIniziale ? `${euro(d.denaroIniziale)} a testa` : 'buon divertimento'}`;
+    case 'turno': return `Turno ${d.numero}: tocca a ${chi}`;
+    case 'dadi': return d.dadi ? `${chi} lancia ${d.dadi[0]} e ${d.dadi[1]}${d.doppio ? ' (doppio)' : ''}` : `${chi} lancia i dadi`;
+    case 'movimento': return `${chi} va su ${nomeCasella(d.a)}`;
+    case 'passaggioVia': return `${chi} passa dal Via e ritira ${euro(d.importo)}`;
+    case 'acquisto': return `${chi} compra ${nomeCasella(d.casella)} per ${euro(d.prezzo)}${d.tramite === 'asta' ? ' all’asta' : ''}`;
+    case 'affitto': return `${nomeDi(p, d.daId)} paga ${euro(d.importo)} di affitto a ${nomeDi(p, d.aId)} per ${nomeCasella(d.casella)}`;
+    case 'tassa': return `${chi} paga ${euro(d.importo)} di ${nomeCasella(d.casella).toLowerCase()}`;
+    case 'carta': return `${chi} pesca ${d.mazzo === 'imprevisti' ? 'Imprevisti' : 'Probabilità'}: ${(d.carta && d.carta.testo) || ''}`;
+    case 'pagamento': return `${nomeDi(p, d.daId)} paga ${euro(d.importo)} a ${nomeDi(p, d.aId)}`;
+    case 'prigione': return d.motivo === 'treDoppi' ? `${chi} fa tre doppi e finisce in prigione` : `${chi} va in prigione`;
+    case 'uscitaPrigione': return `${chi} esce di prigione`;
+    case 'astaInizio': return `Si apre l’asta per ${nomeCasella(d.casella)}`;
+    case 'astaOfferta': return `${chi} offre ${euro(d.importo)} per ${nomeCasella(d.casella)}`;
+    case 'astaPasso': return `${chi} passa`;
+    case 'astaFine': return d.vincitoreId ? `${nomeDi(p, d.vincitoreId)} vince l’asta per ${nomeCasella(d.casella)} con ${euro(d.importo)}` : `Nessuna offerta: ${nomeCasella(d.casella)} resta alla banca`;
+    case 'costruzione': return `${chi} costruisce su ${nomeCasella(d.casella)} (${descriviCostruzioni(d.caseCostruite)})`;
+    case 'vendita': return `${chi} vende una costruzione su ${nomeCasella(d.casella)} e incassa ${euro(d.ricavo)}`;
+    case 'ipoteca': return `${chi} ipoteca ${nomeCasella(d.casella)} e incassa ${euro(d.importo)}`;
+    case 'disipoteca': return `${chi} riscatta ${nomeCasella(d.casella)} per ${euro(d.importo)}`;
+    case 'scambioProposto': return `${chi} propone uno scambio a ${nomeDi(p, d.scambio && d.scambio.aId)}`;
+    case 'scambioAccettato': return `Scambio concluso tra ${nomeDi(p, d.scambio && d.scambio.daId)} e ${nomeDi(p, d.scambio && d.scambio.aId)}`;
+    case 'scambioRifiutato': return `Scambio annullato da ${nomeDi(p, d.daId)}`;
+    case 'debito': return `${chi} deve ${euro(d.importo)} a ${nomeDi(p, d.creditoreId)}`;
+    case 'debitoSaldato': return `${chi} salda il debito di ${euro(d.importo)}`;
+    case 'bancarotta': return `${chi} dichiara bancarotta`;
+    case 'finePartita': return `Partita finita: vince ${nomeDi(p, d.vincitoreId)}`;
+    default: return `${chi}: ${ev.tipo}`;
+  }
+}
+
+const TIPI_RILIEVO = new Set(['acquisto', 'astaFine', 'bancarotta', 'finePartita', 'scambioAccettato', 'prigione', 'debito']);
+
+function voceCronaca(ev, p) {
+  const g = giocatoreDa(p, ev.giocatoreId);
+  const t = Number(ev.t);
+  const data = new Date(Number.isFinite(t) && t > 0 ? t : Date.now());
+  const ora = `${String(data.getHours()).padStart(2, '0')}:${String(data.getMinutes()).padStart(2, '0')}`;
+  return el('li', { class: `pn-evento pn-evento--${ev.tipo}${TIPI_RILIEVO.has(ev.tipo) ? ' pn-evento--rilievo' : ''}`, style: { '--colore': g ? g.colore : 'var(--colore-bordo-forte, #8f8a74)' } },
+    el('time', { class: 'pn-evento__ora', datetime: data.toISOString(), text: ora }),
+    el('span', { class: 'pn-evento__testo', text: testoEvento(ev, p) }));
+}
+
+function vicinoAlFondo(n) {
+  return n.scrollHeight - n.scrollTop - n.clientHeight < 48;
+}
+
+function segnaCronacaLetta() {
+  const badge = ui && ui.tab.cronaca.querySelector('.pn-scheda__nuovi');
+  if (badge) {
+    badge.hidden = true;
+    badge.textContent = '';
+    ui.nonLetti = 0;
+  }
+}
+
+function disegnaCronaca(p) {
+  const lista = ui.cronaca;
+  const log = Array.isArray(p.log) ? p.log : [];
+  const chiavi = log.map(chiaveEvento);
+  let da = 0;
+  if (ultimaChiaveLog !== null) {
+    const k = chiavi.lastIndexOf(ultimaChiaveLog);
+    if (k === -1) lista.replaceChildren();
+    else da = k + 1;
+  }
+  const nuovi = log.slice(da);
+  if (!nuovi.length) return;
+  const primoGiro = ultimaChiaveLog === null;
+  const inFondo = primoGiro || vicinoAlFondo(lista);
+  const frammento = document.createDocumentFragment();
+  for (const ev of nuovi) frammento.append(voceCronaca(ev, p));
+  lista.append(frammento);
+  while (lista.children.length > MAX_VOCI_CRONACA) lista.firstElementChild.remove();
+  ultimaChiaveLog = chiavi[chiavi.length - 1];
+  if (inFondo) lista.scrollTop = lista.scrollHeight;
+
+  if (primoGiro) {
+    // La cronaca iniziale (anche 200 eventi dopo una riconnessione) non va letta tutta:
+    // la regione diventa "viva" solo dopo il primo riempimento.
+    requestAnimationFrame(() => lista.setAttribute('aria-live', 'polite'));
+  } else if (ui.stretto.matches && ui.schedaAttiva !== 'cronaca') {
+    ui.nonLetti = (ui.nonLetti || 0) + nuovi.length;
+    const badge = ui.tab.cronaca.querySelector('.pn-scheda__nuovi');
+    badge.hidden = false;
+    badge.textContent = String(Math.min(99, ui.nonLetti));
+    badge.setAttribute('aria-label', `${ui.nonLetti} nuovi eventi`);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Dialoghi automatici
+// ---------------------------------------------------------------------------
+
+/** Il dialogo che lo stato richiede adesso, in ordine di priorità. */
+function dialogoRichiesto(p, mio) {
+  const io = giocatoreDa(p, mio);
+  if (!io) return null;
+  if (p.fase === 'finePartita') return { chiave: `fine|${p.codice}`, tipo: 'finePartita', forte: true };
+  if (io.fallito) return null;
+  if (p.fase === 'debito' && p.debito && p.debito.giocatoreId === mio) {
+    return { chiave: `debito|${p.turno.numero}|${p.debito.importo}|${p.debito.motivo}|${p.debito.creditoreId}`, tipo: 'debito', forte: true };
+  }
+  if (p.fase === 'asta' && p.asta && p.asta.partecipanti.includes(mio) && !p.asta.passati.includes(mio)) {
+    return { chiave: `asta|${p.asta.iniziataIl}|${p.asta.casella}`, tipo: 'asta', forte: true };
+  }
+  if (p.fase === 'daDecidereAcquisto' && p.turno.giocatoreId === mio) {
+    return { chiave: `acquisto|${p.turno.numero}|${p.turno.doppiConsecutivi}|${io.posizione}`, tipo: 'acquisto', forte: true };
+  }
+  if (p.scambio && p.scambio.aId === mio) return { chiave: `scambio|${p.scambio.id}`, tipo: 'scambio', forte: false };
+  if (p.fase === 'daLanciare' && p.turno.giocatoreId === mio && io.inPrigione) {
+    return { chiave: `prigione|${p.turno.numero}|${io.turniInPrigione}`, tipo: 'prigione', forte: false };
+  }
+  return null;
+}
+
+function apriAutomatici(p, mio) {
+  const richiesto = dialogoRichiesto(p, mio);
+  if (!richiesto || dialoghiMostrati.has(richiesto.chiave)) return;
+  const aperto = dialoghi.aperto();
+  if (aperto === richiesto.tipo) {
+    dialoghiMostrati.add(richiesto.chiave);
+    return;
+  }
+  if (aperto && !richiesto.forte) return; // riproviamo quando l'utente chiude il dialogo attuale
+  dialoghiMostrati.add(richiesto.chiave);
+  dialoghi.apri(richiesto.tipo, {}, dispatchCorrente);
+}
+
+// ---------------------------------------------------------------------------
+// Punto d'ingresso
+// ---------------------------------------------------------------------------
+
 /**
- * Disegna (o ridisegna) i pannelli.
+ * Disegna (o aggiorna) i pannelli.
  *
  * @param {HTMLElement} radice  Contenitore #pannelli.
- * @param {object} stato        Stato corrente dello store.
+ * @param {object} stato        StatoClient dello store (accetta anche uno StatoPartita).
  * @param {(azione: object) => void} dispatch
  */
 export function render(radice, stato, dispatch) {
-  // TODO (fase 2): giocatori, azioni del turno, dadi, registro eventi.
-  void radice;
-  void stato;
-  void dispatch;
+  if (!radice) return;
+  if (typeof dispatch === 'function') dispatchCorrente = dispatch;
+  dialoghi.aggiorna(stato, dispatchCorrente);
+
+  if (!ascoltoCaselle) {
+    ascoltoCaselle = true;
+    document.addEventListener('casella-selezionata', (e) => {
+      const i = e.detail && Number.isInteger(e.detail.indice) ? e.detail.indice : null;
+      if (i !== null) dialoghi.apri('dettaglioCasella', { indice: i }, dispatchCorrente);
+    });
+  }
+
+  const p = partitaDi(stato);
+  if (!p || p.fase === 'lobby' || !Array.isArray(p.giocatori)) return;
+  const mio = mioIdDi(stato);
+
+  if (!ui || ui.radice !== radice || !radice.contains(ui.nodo)) {
+    monta(radice);
+    ultimaChiaveLog = null;
+  }
+  if (p.codice !== codicePartita) {
+    codicePartita = p.codice;
+    dialoghiMostrati.clear();
+    ultimaChiaveLog = null;
+    ui.cronaca.replaceChildren();
+    ui.cronaca.setAttribute('aria-live', 'off');
+  }
+
+  disegnaTurno(p, mio);
+  disegnaGiocatori(p, mio);
+  disegnaCronaca(p);
+  apriAutomatici(p, mio);
 }
