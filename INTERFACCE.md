@@ -1,0 +1,1030 @@
+# INTERFACCE — contratti condivisi del Monopoly online
+
+Questo documento è la fonte di verità per tutto ciò che attraversa un confine
+tra moduli: forma dello stato, API del motore, protocollo WebSocket, moduli del
+client e dati statici. Chi modifica un contratto aggiorna prima questo file.
+
+Indice
+
+0. Convenzioni generali (moduli, denaro, codici stanza, identificatori)
+1. Stato di partita (`StatoPartita`) in JSON
+2. API del motore (`server/gioco/motore.js`, `scambi.js`, `bancarotta.js`)
+3. Protocollo WebSocket e rotte HTTP (`server/index.js`, `stanze.js`, `protocollo.js`)
+4. Moduli del client (`client/`)
+5. Dati statici condivisi (`tabellone.js`, `carte.js`)
+6. Eventi di gioco
+7. Codici di errore
+8. Regole implementate e semplificazioni dichiarate
+
+---
+
+## 0. Convenzioni generali
+
+### 0.1 Tecnologie e sistema di moduli
+
+| Ambito | Scelta |
+|---|---|
+| Runtime server | Node.js **>= 20**, nessun transpiler, nessun bundler |
+| Moduli server | **CommonJS** (`'use strict'`, `require`, `module.exports`). In `package.json` **non** c'è `"type": "module"`. |
+| Dipendenze | **una sola**: `ws` (WebSocket). File statici serviti con il modulo nativo `http`. |
+| Client | HTML + CSS + JavaScript puro, **ES module nel browser** (`<script type="module">`), nessun build step |
+| Test | `node:test` + `node:assert/strict`, file `tests/*.test.js`, comando `npm test` (= `node --test tests/`) |
+| Avvio | `npm start` (= `node server/index.js`) |
+
+Variabili d'ambiente lette dal server (nessuna è un segreto; non serve `.env`):
+
+| Variabile | Default | Significato |
+|---|---|---|
+| `PORT` | `3000` | porta HTTP/WebSocket |
+| `HOST` | `0.0.0.0` | interfaccia di ascolto |
+| `PUBLIC_URL` | `http://localhost:PORT` | base del link condiviso (es. dietro un tunnel/proxy) |
+
+Se in futuro servissero segreti vanno in `.env` (già in `.gitignore`) e nel
+repository entra solo `.env.example` con valori finti.
+
+### 0.2 Struttura delle cartelle
+
+```
+package.json
+INTERFACCE.md
+server/
+  index.js            avvio: http statico + WebSocket, smista i messaggi
+  stanze.js           stanze (lobby, giocatori, token, stato di partita)
+  protocollo.js       costanti, tipi di messaggio, validazione, codici errore
+  gioco/
+    motore.js         creaPartita / applicaAzione: regole del gioco, funzione pura
+    scambi.js         proposta/accettazione scambi (usato dal motore)
+    bancarotta.js     liquidazione e trasferimento beni (usato dal motore)
+    tabellone.js      [claude-2] CASELLE, GRUPPI e costanti (dati puri)
+    carte.js          [claude-2] PROBABILITA, IMPREVISTI (dati puri)
+client/               [claude-2] web root servito su /
+  index.html
+  css/…
+  js/app.js (entry + creaStore)  rete.js  lobby.js  tabellone.js  pannelli.js  dialoghi.js
+tests/
+```
+
+### 0.3 Denaro
+
+* Tutti gli importi sono **numeri interi in euro** (`Number`, mai stringhe, mai
+  decimali, mai simboli). Esempio: `1500`, non `"1.500 €"` né `1500.0`.
+* Il server non arrotonda mai a metà: ogni valore di regolamento è già intero
+  (ipoteca = prezzo/2 è intero per tutte le caselle; interesse di disipoteca =
+  ipoteca + 10% arrotondato per eccesso con `Math.ceil`).
+* Un importo negativo in un **effetto carta** (`denaro`) significa "paga".
+  In ogni altro punto (stato, azioni, eventi) gli importi sono sempre >= 0 e la
+  direzione è data dai campi `daId`/`aId`.
+* La formattazione (`1.500 €`) è compito esclusivo del client.
+
+### 0.4 Codici stanza
+
+* **6 caratteri maiuscoli**, generati dall'alfabeto
+  `ABCDEFGHJKLMNPQRSTUVWXYZ23456789` (senza `I`, `O`, `0`, `1` per evitare
+  ambiguità a voce). Esempio: `K7PQ2M`.
+* Validazione in ingresso: regex `^[A-Z0-9]{6}$` dopo `trim()` e
+  `toUpperCase()`; il server normalizza, il client può accettare minuscole.
+* Il link condiviso è `PUBLIC_URL + '/?stanza=' + codice`, es.
+  `http://localhost:3000/?stanza=K7PQ2M`.
+
+### 0.5 Identificatori, tempi, colori, nomi
+
+| Cosa | Formato | Esempio |
+|---|---|---|
+| `giocatoreId` | 8 caratteri `[a-z0-9]`, generato dal server, pubblico | `"a7k2x9pq"` |
+| `token` | 32 caratteri hex, generato dal server, **segreto** del singolo client, mai nello stato | `"3f1a…"` |
+| `scambio.id` | `"s" + contatore` per partita | `"s3"` |
+| Timestamp | millisecondi Unix (`Date.now()`) | `1763204073000` |
+| Indice casella | intero 0–39, Via = 0, senso orario | `11` |
+| `colore` | stringa `#rrggbb` minuscola | `"#d62828"` |
+| `nome` | 1–16 caratteri dopo `trim()`, unico nella stanza (case-insensitive) | `"Anna"` |
+
+Palette consigliata per i giocatori (il server accetta qualunque `#rrggbb`
+ma rifiuta un colore già preso nella stanza; se il colore manca ne assegna uno
+libero da questa lista in ordine):
+
+```
+#d62828 rosso · #1d4ed8 blu · #1e8e3e verde · #f28c28 arancione
+#7c3aed viola · #0891b2 azzurro · #db2777 rosa · #a16207 ocra
+```
+
+Esportata da `server/protocollo.js` come `COLORI_GIOCATORE`.
+
+---
+
+## 1. Stato di partita (`StatoPartita`)
+
+Un unico oggetto JSON-serializzabile descrive **tutto** ciò che il client deve
+sapere. Lo stesso shape è usato in lobby (campi di gioco a valori neutri) e in
+partita. Il server invia sempre lo stato completo (non diff); il client
+sostituisce il proprio.
+
+```json
+{
+  "versione": 42,
+  "codice": "K7PQ2M",
+  "hostId": "a7k2x9pq",
+  "fase": "mossa",
+  "creataIl": 1763204073000,
+  "aggiornataIl": 1763204099000,
+
+  "giocatori": [
+    {
+      "id": "a7k2x9pq",
+      "nome": "Anna",
+      "colore": "#d62828",
+      "denaro": 1340,
+      "posizione": 11,
+      "inPrigione": false,
+      "turniInPrigione": 0,
+      "cartePrigione": 1,
+      "connesso": true,
+      "fallito": false
+    },
+    {
+      "id": "b3m8w1zt",
+      "nome": "Bruno",
+      "colore": "#1d4ed8",
+      "denaro": 1500,
+      "posizione": 0,
+      "inPrigione": false,
+      "turniInPrigione": 0,
+      "cartePrigione": 0,
+      "connesso": false,
+      "fallito": false
+    }
+  ],
+
+  "turno": {
+    "giocatoreId": "a7k2x9pq",
+    "numero": 7,
+    "doppiConsecutivi": 0
+  },
+  "dadi": [5, 6],
+
+  "proprieta": {
+    "1":  { "proprietario": "a7k2x9pq", "caseCostruite": 2, "ipotecata": false },
+    "3":  { "proprietario": "a7k2x9pq", "caseCostruite": 2, "ipotecata": false },
+    "5":  { "proprietario": null,       "caseCostruite": 0, "ipotecata": false },
+    "6":  { "proprietario": "b3m8w1zt", "caseCostruite": 0, "ipotecata": true  },
+    "…":  "una voce per ciascuna delle 28 caselle acquistabili"
+  },
+  "caseDisponibili": 28,
+  "alberghiDisponibili": 12,
+
+  "asta": null,
+  "scambio": null,
+  "debito": null,
+
+  "mazzi": { "probabilita": ["P03", "P11", "P01"], "imprevisti": ["I07", "I02"] },
+
+  "log": [
+    {
+      "t": 1763204099000,
+      "tipo": "affitto",
+      "giocatoreId": "a7k2x9pq",
+      "testo": "Anna paga 50 € a Bruno per Via Accademia",
+      "dati": { "daId": "a7k2x9pq", "aId": "b3m8w1zt", "casella": 11, "importo": 50 }
+    }
+  ],
+  "vincitoreId": null
+}
+```
+
+### 1.1 Campi di testa
+
+| Campo | Tipo | Note |
+|---|---|---|
+| `versione` | intero | parte da 0, +1 a ogni `applicaAzione` riuscita e a ogni cambio in lobby. Il client ignora stati con versione < quella corrente. |
+| `codice` | stringa | codice stanza (§0.4) |
+| `hostId` | `giocatoreId` | chi può avviare la partita. Se l'host esce in lobby, passa al primo giocatore rimasto. |
+| `fase` | enum | vedi §1.2 |
+| `creataIl`, `aggiornataIl` | timestamp | |
+| `vincitoreId` | `giocatoreId` \| `null` | valorizzato solo in `finePartita` |
+
+### 1.2 Fasi
+
+| `fase` | Significato | Azioni ammesse (chi) |
+|---|---|---|
+| `lobby` | partita non iniziata; `turno.giocatoreId` è `null`, `dadi` è `null`, denaro 0 | nessuna azione di gioco; messaggi `entraStanza`, `avviaPartita`, `esciStanza` |
+| `daLanciare` | il giocatore di turno deve lanciare (o, se in prigione, scegliere come uscire) | `lanciaDadi`, `pagaCauzione`, `usaCartaPrigione` (turno) · gestione (§2.4) |
+| `mossa` | lancio fatto e casella risolta; il giocatore può gestire proprietà e poi chiudere il turno | `finisciTurno` (turno) · gestione |
+| `daDecidereAcquisto` | il giocatore di turno è su una casella libera | `compra`, `rifiutaAcquisto` (turno) · gestione |
+| `asta` | asta in corso per `asta.casella` | `offertaAsta`, `passaAsta` (ogni partecipante) · `vendiCasa`, `ipoteca` (tutti) |
+| `debito` | `debito.giocatoreId` deve pagare `debito.importo` e non ha liquidità | `vendiCasa`, `ipoteca`, `proponiScambio`, `dichiaraBancarotta` (debitore) · `accettaScambio`/`rifiutaScambio` (destinatario) |
+| `finePartita` | resta un solo giocatore non fallito | nessuna |
+
+Con un **doppio** (e senza finire in prigione) la fase torna a `daLanciare`
+per lo stesso giocatore, con `turno.doppiConsecutivi` incrementato; al terzo
+doppio consecutivo il giocatore va in prigione e la fase è `mossa`.
+
+### 1.3 Giocatori
+
+Array **nell'ordine di turno** (fissato all'avvio; con `opzioni.ordineCasuale`
+viene mescolato). Il turno passa al prossimo giocatore con `fallito: false`.
+
+| Campo | Tipo | Note |
+|---|---|---|
+| `id` | `giocatoreId` | |
+| `nome` | stringa | |
+| `colore` | `#rrggbb` | |
+| `denaro` | intero >= 0 | può scendere a 0 ma mai sotto: se manca liquidità si entra in `debito` |
+| `posizione` | 0–39 | in prigione è sempre `10` |
+| `inPrigione` | bool | |
+| `turniInPrigione` | 0–3 | tentativi di lancio falliti in prigione; al terzo si paga 50 e si esce |
+| `cartePrigione` | 0–2 | carte "Uscite gratis di prigione" possedute (una per mazzo) |
+| `connesso` | bool | socket attivo; chi è disconnesso resta in partita e può riconnettersi col token |
+| `fallito` | bool | eliminato; non ha più beni né turni |
+
+### 1.4 Turno e dadi
+
+```json
+"turno": { "giocatoreId": "a7k2x9pq", "numero": 7, "doppiConsecutivi": 0 },
+"dadi": [5, 6]
+```
+
+* `turno.numero` parte da 1 e cresce a ogni `finisciTurno` (o fine turno
+  automatica dopo prigione / bancarotta).
+* `dadi` è l'ultimo lancio `[d1, d2]` (ciascuno 1–6) o `null` prima del primo
+  lancio della partita. Non viene azzerato a fine turno: il client lo usa per
+  mostrare l'ultimo lancio.
+
+### 1.5 Proprietà
+
+Oggetto indicizzato per **indice di casella come stringa** (JSON non ha chiavi
+numeriche). Contiene **sempre tutte e 28** le caselle acquistabili (22
+proprietà, 4 stazioni, 2 società), anche quando nessuno le possiede: il client
+non deve gestire voci mancanti.
+
+| Campo | Tipo | Note |
+|---|---|---|
+| `proprietario` | `giocatoreId` \| `null` | `null` = banca |
+| `caseCostruite` | 0–5 | **5 = albergo**. Coincide con l'indice di `CASELLE[i].affitti`. Sempre 0 per stazioni e società. |
+| `ipotecata` | bool | se vera non si incassa affitto e non si costruisce nel gruppo |
+
+`caseDisponibili` (max 32) e `alberghiDisponibili` (max 12) sono le scorte
+della banca.
+
+### 1.6 Asta
+
+`null` fuori dalla fase `asta`.
+
+```json
+"asta": {
+  "casella": 39,
+  "offertaMassima": 120,
+  "migliorOfferenteId": "b3m8w1zt",
+  "partecipanti": ["a7k2x9pq", "b3m8w1zt", "c9r4n2vd"],
+  "passati": ["c9r4n2vd"],
+  "incrementoMinimo": 1,
+  "iniziataIl": 1763204080000
+}
+```
+
+* Asta all'inglese libera: chiunque in `partecipanti` e non in `passati` può
+  offrire un importo `>= offertaMassima + incrementoMinimo` e `<=` del proprio
+  denaro. Il miglior offerente non può passare.
+* Partecipano tutti i giocatori non falliti, incluso chi ha rifiutato
+  l'acquisto. `partecipanti` è nell'ordine dei giocatori.
+* Termina quando tutti tranne il miglior offerente hanno passato (la proprietà
+  va a lui per `offertaMassima`), oppure quando tutti hanno passato senza
+  offerte (resta alla banca). Poi la fase torna a `mossa` del giocatore di
+  turno.
+
+### 1.7 Scambio
+
+`null` se nessuna proposta è pendente. **Al massimo uno** alla volta per partita.
+
+```json
+"scambio": {
+  "id": "s3",
+  "daId": "a7k2x9pq",
+  "aId": "b3m8w1zt",
+  "offre":  { "denaro": 100, "proprieta": [1, 3], "cartePrigione": 0 },
+  "chiede": { "denaro": 0,   "proprieta": [6],    "cartePrigione": 1 },
+  "propostoIl": 1763204090000
+}
+```
+
+* `proprieta` sono indici di casella (numeri). Si possono scambiare solo
+  caselle **senza costruzioni** (`caseCostruite === 0`). Le ipotecate sì: chi
+  le riceve paga subito alla banca il 10% del valore d'ipoteca (interesse).
+* Almeno una delle due parti deve offrire qualcosa; non si può scambiare con
+  sé stessi né con un fallito.
+
+### 1.8 Debito
+
+`null` fuori dalla fase `debito`.
+
+```json
+"debito": {
+  "giocatoreId": "a7k2x9pq",
+  "creditoreId": "b3m8w1zt",
+  "importo": 350,
+  "motivo": "affitto",
+  "faseDopo": "mossa"
+}
+```
+
+* `creditoreId` `null` = banca (tasse, carte, cauzione).
+* `motivo` ∈ `affitto` · `tassa` · `carta` · `cauzione` · `pagaATutti` ·
+  `interesseScambio`.
+* Dopo **ogni** azione in fase `debito`, se `denaro >= importo` il motore salda
+  automaticamente il debito (evento `debitoSaldato`) e passa a `faseDopo`.
+* `dichiaraBancarotta` è ammessa solo in questa fase: i beni vanno al
+  creditore (o alla banca), il giocatore diventa `fallito`.
+
+### 1.9 Mazzi (solo server)
+
+`mazzi.probabilita` e `mazzi.imprevisti` sono array di `id` carta nell'ordine
+di pesca (si pesca in testa, si rimette in coda). Le carte `esciGratis`
+escono dal mazzo finché il giocatore non le usa. **Il server rimuove `mazzi`
+dallo stato inviato ai client** (`motore.statoPubblico`): il client non deve
+dipendere da questo campo.
+
+### 1.10 Log
+
+`log` contiene gli ultimi **200** eventi (§6) in ordine cronologico, stesso
+shape dei messaggi `evento`. Serve a chi si riconnette per ricostruire la
+cronaca.
+
+---
+
+## 2. API del motore
+
+Il motore è una **funzione pura**: non ha stato interno, non muta gli input,
+non fa I/O, non usa `Math.random` o `Date.now()` direttamente (vengono
+iniettati). Questo lo rende testabile in modo deterministico.
+
+```js
+const motore = require('./server/gioco/motore');
+```
+
+### 2.1 `creaPartita(opzioni) → StatoPartita`
+
+```js
+const stato = motore.creaPartita({
+  codice: 'K7PQ2M',                 // obbligatorio
+  hostId: 'a7k2x9pq',               // obbligatorio
+  giocatori: [                      // 2..6, nell'ordine di ingresso in stanza
+    { id: 'a7k2x9pq', nome: 'Anna',  colore: '#d62828', connesso: true },
+    { id: 'b3m8w1zt', nome: 'Bruno', colore: '#1d4ed8', connesso: true },
+  ],
+  random: Math.random,              // () => [0,1): mescola mazzi e ordine; default Math.random
+  ora: Date.now,                    // () => timestamp; default Date.now
+  opzioni: {
+    denaroIniziale: 1500,           // default 1500
+    ordineCasuale: true,            // default true: mescola l'ordine di turno
+  },
+});
+```
+
+Ritorna uno stato in fase `daLanciare`, `versione: 0`, `turno.numero: 1`,
+tutte le proprietà alla banca, mazzi mescolati, un evento `partitaIniziata`
+in `log`. Lancia `TypeError` se le opzioni sono malformate (meno di 2 o più di
+6 giocatori, id duplicati).
+
+### 2.2 `creaStatoLobby({ codice, hostId, giocatori, ora }) → StatoPartita`
+
+Stesso shape di §1 ma `fase: 'lobby'`, `turno.giocatoreId: null`, `dadi:
+null`, denaro 0, `proprieta` tutte alla banca, `log` con gli ingressi. Usato
+da `stanze.js` finché la partita non è avviata.
+
+### 2.3 `applicaAzione(stato, giocatoreId, azione, contesto?) → Risultato`
+
+```js
+const ris = motore.applicaAzione(stato, 'a7k2x9pq', { tipo: 'lanciaDadi' }, {
+  random: Math.random,   // default Math.random
+  ora: Date.now,         // default Date.now
+});
+
+if (ris.errore) {
+  // { errore: { codice: 'NON_IL_TUO_TURNO', messaggio: 'Non è il tuo turno', dettagli?: {...} } }
+} else {
+  // { stato: StatoPartita, eventi: Evento[] }  — stato è un NUOVO oggetto, versione+1
+}
+```
+
+Garanzie:
+
+* `stato` in ingresso non viene mai mutato (clone profondo con
+  `structuredClone`).
+* In caso di errore non viene emesso alcun evento e lo stato non cambia.
+* Ogni evento ritornato è anche appeso a `stato.log`.
+* Le conseguenze automatiche (affitto, carta, prigione, passaggio di turno dopo
+  prigione, saldo automatico del debito, fine partita) sono applicate nella
+  stessa chiamata e producono eventi propri.
+* `azione.tipo` deve essere uno dei valori di `motore.AZIONI` (sotto), altrimenti
+  errore `AZIONE_NON_VALIDA`. Parametri in eccesso sono ignorati; parametri
+  mancanti o del tipo sbagliato danno `PARAMETRI_NON_VALIDI`.
+
+### 2.4 Elenco completo delle azioni
+
+Legenda "chi": **T** = solo giocatore di turno · **D** = solo debitore ·
+**P** = ogni partecipante all'asta · **X** = ogni giocatore non fallito.
+"Gestione" = `costruisci`, `vendiCasa`, `ipoteca`, `disipoteca`,
+`proponiScambio`; sono ammesse al giocatore di turno nelle fasi
+`daLanciare`, `mossa`, `daDecidereAcquisto`, con le eccezioni indicate.
+
+| `tipo` | Parametri | Chi | Fasi | Effetto | Errori tipici |
+|---|---|---|---|---|---|
+| `lanciaDadi` | — | T | `daLanciare` | Tira due dadi (`contesto.random`). Se libero: avanza, +200 se passa dal Via, risolve la casella (§8). Se in prigione: col doppio esce e avanza (senza secondo lancio); altrimenti `turniInPrigione+1`; al terzo fallimento paga 50 (o `debito`) e avanza. Doppio → `daLanciare` di nuovo; terzo doppio → prigione, fase `mossa`. | `FASE_ERRATA`, `NON_IL_TUO_TURNO` |
+| `compra` | — | T | `daDecidereAcquisto` | Paga il prezzo di listino, diventa proprietario. Fase → `mossa` (o `daLanciare` se il lancio era doppio). | `FONDI_INSUFFICIENTI` |
+| `rifiutaAcquisto` | — | T | `daDecidereAcquisto` | Avvia l'asta (`asta` valorizzata, fase `asta`). Se è l'unico giocatore non fallito la casella resta alla banca. | |
+| `offertaAsta` | `importo` intero | P | `asta` | Offerta `>= offertaMassima + incrementoMinimo` e `<= denaro`. | `OFFERTA_BASSA`, `FONDI_INSUFFICIENTI`, `GIA_PASSATO` |
+| `passaAsta` | — | P | `asta` | Esce dall'asta. Il miglior offerente non può passare. Chiude l'asta quando resta uno solo. | `MIGLIOR_OFFERENTE`, `GIA_PASSATO` |
+| `costruisci` | `casella` | T | gestione | Costruisce una casa (o l'albergo se a 4 case) su `casella`. Richiede gruppo completo, nessuna ipoteca nel gruppo, costruzione uniforme (differenza max 1 nel gruppo), scorte in banca, denaro. | `GRUPPO_INCOMPLETO`, `COSTRUZIONE_NON_UNIFORME`, `CASE_ESAURITE`, `ALBERGHI_ESAURITI`, `IPOTECATA`, `FONDI_INSUFFICIENTI`, `NON_EDIFICABILE` |
+| `vendiCasa` | `casella` | T, D, P | gestione + `debito` + `asta` | Vende una casa (o l'albergo → 4 case, se ci sono 4 case disponibili in banca; altrimenti `CASE_ESAURITE`) alla banca a **metà** del `costoCasa`, rispettando l'uniformità. | `NESSUNA_COSTRUZIONE`, `COSTRUZIONE_NON_UNIFORME` |
+| `ipoteca` | `casella` | T, D, P | gestione + `debito` + `asta` | Incassa `CASELLE[i].ipoteca`; richiede `caseCostruite === 0` su **tutto il gruppo**. | `HA_COSTRUZIONI`, `GIA_IPOTECATA` |
+| `disipoteca` | `casella` | T | gestione | Paga `ipoteca + ceil(10%)`, toglie l'ipoteca. | `NON_IPOTECATA`, `FONDI_INSUFFICIENTI` |
+| `proponiScambio` | `aId`, `offre: {denaro, proprieta[], cartePrigione}`, `chiede: {…}` | X | tutte tranne `lobby`, `asta`, `finePartita` | Crea `stato.scambio`. Campi mancanti valgono 0 / `[]`. Il proponente deve possedere ciò che offre; il destinatario ciò che gli viene chiesto. | `SCAMBIO_IN_CORSO`, `PROPRIETA_NON_TUA`, `HA_COSTRUZIONI`, `SCAMBIO_VUOTO`, `GIOCATORE_NON_VALIDO` |
+| `accettaScambio` | `scambioId` | destinatario | come sopra | Verifica di nuovo denaro e possessi, trasferisce tutto, applica l'interesse del 10% sulle ipotecate ricevute (se non pagabile → `debito` con `motivo: 'interesseScambio'`). `scambio` → `null`. | `SCAMBIO_NON_TROVATO`, `NON_DESTINATARIO`, `FONDI_INSUFFICIENTI` |
+| `rifiutaScambio` | `scambioId` | destinatario **o** proponente (ritiro) | come sopra | `scambio` → `null`. | `SCAMBIO_NON_TROVATO`, `NON_COINVOLTO` |
+| `pagaCauzione` | — | T | `daLanciare` (in prigione) | Paga 50, esce; resta in `daLanciare` per lanciare normalmente. | `NON_IN_PRIGIONE`, `FONDI_INSUFFICIENTI` |
+| `usaCartaPrigione` | — | T | `daLanciare` (in prigione) | `cartePrigione-1`, la carta torna in coda al suo mazzo, esce; resta in `daLanciare`. | `NON_IN_PRIGIONE`, `NESSUNA_CARTA_PRIGIONE` |
+| `finisciTurno` | — | T | `mossa` | Passa al prossimo giocatore non fallito, `turno.numero+1`, `doppiConsecutivi: 0`, fase `daLanciare`. Uno `scambio` pendente non blocca il cambio di turno (resta pendente). | `FASE_ERRATA` |
+| `dichiaraBancarotta` | — | D | `debito` | Vede `server/gioco/bancarotta.js`: case vendute alla banca a metà prezzo, denaro e proprietà al creditore (o alla banca, che le libera dall'ipoteca e le rimette in vendita), carte prigione al creditore. `fallito: true`. Se resta un solo giocatore → `finePartita`. Se il fallito era di turno → passa il turno. | `FASE_ERRATA`, `NON_DEBITORE` |
+
+Esempi di oggetto `azione`:
+
+```json
+{ "tipo": "lanciaDadi" }
+{ "tipo": "offertaAsta", "importo": 150 }
+{ "tipo": "costruisci", "casella": 1 }
+{ "tipo": "proponiScambio", "aId": "b3m8w1zt",
+  "offre":  { "denaro": 100, "proprieta": [1, 3], "cartePrigione": 0 },
+  "chiede": { "denaro": 0, "proprieta": [6], "cartePrigione": 0 } }
+{ "tipo": "accettaScambio", "scambioId": "s3" }
+```
+
+**Stato di avanzamento (fase 1).** Sono operative: validazioni comuni,
+`azioniDisponibili`, `lanciaDadi` (movimento, stipendio, prigione base, tre
+doppi), `compra`, `pagaCauzione`, `finisciTurno`. Le altre azioni e la
+risoluzione di affitti, tasse, carte e debiti rispondono `NON_IMPLEMENTATO`
+e sono marcate `TODO fase 2` nel codice. Il contratto qui sopra è quello
+definitivo che la fase 2 deve rispettare.
+
+### 2.5 Altri export di `motore.js`
+
+| Export | Descrizione |
+|---|---|
+| `AZIONI` | array frozen dei 16 `tipo` ammessi |
+| `FASI` | array frozen delle 7 fasi |
+| `azioniDisponibili(stato, giocatoreId) → string[]` | i `tipo` che `giocatoreId` può eseguire adesso (per abilitare i pulsanti del client). Non valuta i parametri. |
+| `statoPubblico(stato) → StatoPartita` | copia senza `mazzi` (quella che va ai client) |
+| `prossimoGiocatore(stato) → giocatoreId` | prossimo non fallito dopo il giocatore di turno |
+
+### 2.6 `server/gioco/scambi.js`
+
+Usato dal motore; esportato per i test.
+
+| Funzione | Ritorna |
+|---|---|
+| `validaProposta(stato, daId, proposta) → { ok: true, scambio } \| { errore }` | normalizza `offre`/`chiede` e verifica possessi |
+| `applicaScambio(stato, scambio, ora) → { stato, eventi }` | trasferisce denaro, proprietà, carte; gestisce l'interesse del 10% |
+
+### 2.7 `server/gioco/bancarotta.js`
+
+| Funzione | Ritorna |
+|---|---|
+| `liquida(stato, giocatoreId, creditoreId \| null, ora) → { stato, eventi }` | vende costruzioni, trasferisce beni, marca `fallito`, verifica fine partita |
+| `patrimonioLiquidabile(stato, giocatoreId) → intero` | denaro + metà costruzioni + ipoteche ottenibili: usato per decidere se un debito è saldabile senza bancarotta |
+
+---
+
+## 3. Protocollo WebSocket e rotte HTTP
+
+### 3.1 Trasporto
+
+* Endpoint WebSocket: `ws://host:porta/ws` (`wss://` dietro HTTPS). Il client
+  lo ricava da `location`: `(location.protocol === 'https:' ? 'wss' : 'ws') +
+  '://' + location.host + '/ws'`.
+* Ogni frame è **testo JSON** con un oggetto che ha sempre il campo `tipo`
+  (stringa). Frame non JSON o senza `tipo` → `errore MESSAGGIO_NON_VALIDO`.
+* Dimensione massima di un messaggio: 16 KiB. Il server chiude la connessione
+  dopo 3 messaggi non validi consecutivi.
+* Il client può includere un campo opzionale `rif` (stringa, max 32) in
+  qualunque messaggio: il server lo riporta uguale nell'eventuale `errore`.
+* Il server invia nell'ordine: prima gli `evento` (uno per evento), poi lo
+  `stato` che li riassume. Entrambi portano `versione`.
+
+### 3.2 Messaggi client → server
+
+| `tipo` | Campi | Risposta | Note |
+|---|---|---|---|
+| `creaStanza` | — | `stanzaCreata` al mittente | Non entra nella stanza: va seguito da `entraStanza`. |
+| `entraStanza` | `codice`, `nome`, `colore?` | `entrato` al mittente, poi `evento giocatoreEntrato` + `stato` a tutti | Solo in fase `lobby`, max 6 giocatori. |
+| `avviaPartita` | — | `evento partitaIniziata` + `stato` a tutti | Solo `hostId`, almeno 2 giocatori connessi. |
+| `azione` | `azione: { tipo, … }` (§2.4) | a tutti `evento`* + `stato`; al mittente `errore` se rifiutata | Il server ricava `giocatoreId` dal socket, mai dal messaggio. |
+| `riconnetti` | `codice`, `token` | `entrato` + `stato` al mittente; `evento connessione` + `stato` a tutti | Riassocia il socket al giocatore. Funziona anche in lobby. |
+| `esciStanza` | — | `evento giocatoreUscito` + `stato` a tutti | Solo in `lobby`. In partita si usa la disconnessione (il giocatore resta, `connesso: false`). |
+| `ping` | — | `pong` | opzionale, keep-alive dal browser ogni 25 s |
+
+Esempi:
+
+```json
+{ "tipo": "creaStanza" }
+{ "tipo": "entraStanza", "codice": "K7PQ2M", "nome": "Anna", "colore": "#d62828" }
+{ "tipo": "avviaPartita" }
+{ "tipo": "azione", "rif": "a1", "azione": { "tipo": "lanciaDadi" } }
+{ "tipo": "azione", "azione": { "tipo": "costruisci", "casella": 1 } }
+{ "tipo": "riconnetti", "codice": "K7PQ2M", "token": "3f1a9c0e7b2d4f6a8c1e3b5d7f9a0c2e" }
+```
+
+### 3.3 Messaggi server → client
+
+| `tipo` | Campi | Destinatari |
+|---|---|---|
+| `stanzaCreata` | `codice`, `link` | mittente di `creaStanza` |
+| `entrato` | `giocatoreId`, `token`, `codice`, `link`, `hostId` | mittente di `entraStanza`/`riconnetti` |
+| `stato` | `stato: StatoPartita` (senza `mazzi`), `versione` | tutti i giocatori della stanza |
+| `evento` | `evento: Evento` (§6), `versione` | tutti i giocatori della stanza |
+| `errore` | `codice` (§7), `messaggio`, `rif?`, `dettagli?` | solo il mittente |
+| `pong` | — | mittente di `ping` |
+
+Esempi:
+
+```json
+{ "tipo": "stanzaCreata", "codice": "K7PQ2M", "link": "http://localhost:3000/?stanza=K7PQ2M" }
+
+{ "tipo": "entrato", "giocatoreId": "a7k2x9pq",
+  "token": "3f1a9c0e7b2d4f6a8c1e3b5d7f9a0c2e",
+  "codice": "K7PQ2M", "link": "http://localhost:3000/?stanza=K7PQ2M", "hostId": "a7k2x9pq" }
+
+{ "tipo": "evento", "versione": 43,
+  "evento": { "t": 1763204099000, "tipo": "dadi", "giocatoreId": "a7k2x9pq",
+              "testo": "Anna lancia 5 e 6", "dati": { "dadi": [5, 6], "doppio": false } } }
+
+{ "tipo": "stato", "versione": 43, "stato": { "versione": 43, "codice": "K7PQ2M", "…": "…" } }
+
+{ "tipo": "errore", "codice": "NON_IL_TUO_TURNO", "messaggio": "Non è il tuo turno", "rif": "a1" }
+```
+
+### 3.4 Ciclo di vita della connessione
+
+1. Il client apre `/ws`. Se in `sessionStorage` c'è una sessione
+   (`{codice, giocatoreId, token}`) invia subito `riconnetti`; altrimenti
+   mostra la lobby (con il codice precompilato se l'URL ha `?stanza=`).
+2. Alla chiusura del socket il server marca il giocatore `connesso: false` e
+   manda `evento connessione` + `stato` agli altri. In **lobby** il giocatore
+   viene rimosso dopo 60 s senza riconnessione; in **partita** resta per sempre
+   (il suo turno può essere giocato quando torna).
+3. Una stanza viene eliminata quando è vuota da 10 minuti o inattiva da 2 ore,
+   o quando la partita è in `finePartita` da 30 minuti.
+4. Un socket appartiene al massimo a una stanza. `creaStanza`/`entraStanza` da
+   un socket già in stanza → `errore GIA_IN_STANZA`.
+
+### 3.5 Rotte HTTP (`server/index.js`)
+
+| Metodo e percorso | Risposta |
+|---|---|
+| `GET /` | `client/index.html` |
+| `GET /<file>` | file statico sotto `client/` (MIME per `.html .css .js .mjs .json .svg .png .jpg .webp .woff2 .ico`); percorsi con `..` → 403; non trovato → 404. Cache: `no-cache` in sviluppo. |
+| `GET /dati/tabellone.js` | ES module **generato** dal CommonJS `server/gioco/tabellone.js`: una riga `export const NOME = <JSON>;` per ogni export JSON-serializzabile (funzioni escluse). Il client fa `import { CASELLE, GRUPPI } from '/dati/tabellone.js'`. |
+| `GET /dati/carte.js` | idem per `server/gioco/carte.js`: `import { PROBABILITA, IMPREVISTI } from '/dati/carte.js'`. |
+| `GET /salute` | `{ "ok": true, "stanze": 3, "versione": "0.1.0" }` |
+| `GET /ws` con Upgrade | WebSocket |
+
+### 3.6 `server/stanze.js`
+
+Registro in memoria delle stanze (nessuna persistenza in fase 1).
+
+```js
+const stanze = require('./stanze');
+stanze.crea({ ora }) → Stanza                              // genera codice unico
+stanze.trova(codice) → Stanza | undefined                  // codice normalizzato
+stanze.entra(stanza, { nome, colore, socket, ora }) → { giocatore, token } | { errore }
+stanze.riconnetti(codice, token, socket) → { stanza, giocatore } | { errore }
+stanze.esci(stanza, giocatoreId) → void                    // solo in lobby
+stanze.disconnetti(stanza, giocatoreId) → void             // connesso=false
+stanze.avvia(stanza, giocatoreId, { random, ora }) → { eventi } | { errore }
+stanze.applica(stanza, giocatoreId, azione, { random, ora }) → { eventi } | { errore }
+stanze.statoPerClient(stanza) → StatoPartita               // senza mazzi
+stanze.broadcast(stanza, messaggio) → void                 // a tutti i socket connessi
+stanze.pulisci({ ora }) → numero stanze rimosse            // chiamata da un timer in index.js
+stanze.generaCodice(random) → 'K7PQ2M'
+stanze.tutte() → Stanza[]
+```
+
+`Stanza = { codice, hostId, creataIl, aggiornataIl, stato: StatoPartita,
+giocatori: Map<giocatoreId, { id, nome, colore, token, connesso, socket }> }`.
+I `token` e i `socket` **non** finiscono mai nello stato.
+
+### 3.7 `server/protocollo.js`
+
+```js
+const P = require('./protocollo');
+P.MESSAGGI_CLIENT      // ['creaStanza','entraStanza','avviaPartita','azione','riconnetti','esciStanza','ping']
+P.MESSAGGI_SERVER      // ['stanzaCreata','entrato','stato','evento','errore','pong']
+P.ERRORI               // { NON_IL_TUO_TURNO: 'Non è il tuo turno', ... } (§7)
+P.COLORI_GIOCATORE     // palette §0.5
+P.LIMITI               // { MAX_GIOCATORI: 6, MIN_GIOCATORI: 2, NOME_MAX: 16, MESSAGGIO_MAX_BYTE: 16384, LOG_MAX: 200 }
+P.REGEX_CODICE         // /^[A-Z0-9]{6}$/
+P.REGEX_COLORE         // /^#[0-9a-f]{6}$/
+P.analizza(testo) → { ok: true, messaggio } | { ok: false, errore }   // JSON.parse + validazione shape per tipo
+P.errore(codice, extra?) → { tipo: 'errore', codice, messaggio, ...extra }
+P.normalizzaCodice(str) → 'K7PQ2M' | null
+P.normalizzaNome(str) → 'Anna' | null
+P.normalizzaColore(str) → '#d62828' | null
+```
+
+---
+
+## 4. Moduli del client (`client/`, di claude-2)
+
+Tutti ES module. Nessun framework. Ogni funzione `render` è **idempotente**:
+può essere richiamata a ogni nuovo stato e aggiorna il DOM esistente senza
+perdere focus o selezione quando possibile.
+
+### 4.1 `index.html` — contenitori
+
+```html
+<body>
+  <main id="app">
+    <section id="lobby"     aria-labelledby="lobby-titolo"></section>
+    <section id="tabellone" aria-label="Tabellone" hidden></section>
+    <aside   id="pannelli"  aria-label="Giocatori e azioni" hidden></aside>
+  </main>
+  <div id="dialoghi"></div>                       <!-- contiene <dialog> nativi -->
+  <div id="toast" role="status" aria-live="polite" aria-atomic="false"></div>
+  <script type="module" src="/js/app.js"></script>
+</body>
+```
+
+| Id | Contenuto | Visibile quando |
+|---|---|---|
+| `#lobby` | form crea/entra, elenco giocatori, scelta colore, pulsante avvia (host), copia link | nessuna stanza oppure `fase === 'lobby'` |
+| `#tabellone` | le 40 caselle, pedine, segnaposti proprietà, case/alberghi, dadi | `fase !== 'lobby'` |
+| `#pannelli` | giocatori (denaro, posizione, stato), le mie proprietà, pulsanti azione, cronaca eventi | `fase !== 'lobby'` |
+| `#dialoghi` | finestre modali (`<dialog>`) aperte da `dialoghi.apri` | a richiesta |
+| `#toast` | notifiche brevi non modali | a richiesta |
+
+Gli asset usano percorsi **assoluti** (`/js/app.js`, `/css/base.css`) perché
+l'URL può contenere `?stanza=…`.
+
+### 4.2 `app.js` — `creaStore(iniziale?)`
+
+Lo store vive in `app.js` (esportato per i test e per gli altri moduli).
+
+```js
+import { creaStore } from '/js/app.js';
+const store = creaStore();
+store.getState()                      // → StatoClient
+store.setState(parziale)              // merge superficiale + notifica
+store.subscribe(fn) → annulla         // fn(stato, precedente) a ogni cambio
+store.dispatch(azione)                // vedi sotto
+```
+
+`StatoClient`:
+
+```json
+{
+  "connessione": "disconnesso | connessione | connesso | riconnessione",
+  "io": { "giocatoreId": "a7k2x9pq", "token": "…", "codice": "K7PQ2M" },
+  "partita": null,
+  "eventi": [],
+  "errore": null,
+  "selezione": null,
+  "dialogo": null
+}
+```
+
+* `io` è `null` finché non si riceve `entrato`; viene salvato in
+  `sessionStorage` con chiave `monopoly.sessione` per la riconnessione dopo
+  un refresh.
+* `partita` è l'ultimo `StatoPartita` ricevuto (o `null`).
+* `eventi` sono gli ultimi 100 `Evento` ricevuti (per toast e cronaca).
+* `selezione` è l'indice della casella evidenziata nel tabellone o `null`.
+
+`dispatch(azione)` smista per `azione.tipo`:
+
+| `azione.tipo` | Comportamento |
+|---|---|
+| uno dei 16 tipi di §2.4 | invia `{ tipo: 'azione', azione }` al server |
+| `creaStanza`, `entraStanza`, `avviaPartita`, `riconnetti`, `esciStanza` | invia l'oggetto così com'è come messaggio di protocollo |
+| `ui:seleziona` `{ indice }` | `selezione = indice` |
+| `ui:apriDialogo` `{ dialogo, dati }` | `dialoghi.apri(dialogo, dati, dispatch)` |
+| `ui:chiudiDialogo` | chiude il dialogo corrente |
+| `ui:toast` `{ testo, livello }` | mostra un toast |
+
+Il `dispatch` passato ai moduli di rendering è sempre `store.dispatch`.
+
+### 4.3 `rete.js` — `connetti(url, callbacks)`
+
+```js
+import * as rete from '/js/rete.js';
+const conn = rete.connetti(url, {
+  onApertura()            {},   // socket aperto (anche dopo una riconnessione)
+  onMessaggio(msg)        {},   // oggetto già JSON.parse-ato (§3.3)
+  onChiusura(evento)      {},   // CloseEvent
+  onErrore(err)           {},
+  onRiconnessione(n, ms)  {},   // tentativo n, prossimo tra ms
+});
+conn.invia(messaggio)      // JSON.stringify + send; se chiuso accoda (max 20) e invia alla riapertura
+conn.chiudi()              // chiusura volontaria, niente riconnessione
+conn.stato()               // 'connessione' | 'connesso' | 'riconnessione' | 'chiuso'
+```
+
+Riconnessione automatica con backoff esponenziale 1 s → 30 s (×2, con jitter
+±20%). Dopo la riapertura, `app.js` reinvia `riconnetti` con il token salvato.
+`rete.urlPredefinito()` ritorna l'URL del §3.1 a partire da `location`.
+
+### 4.4 `tabellone.js` — `render(radice, stato, opzioni)` e `aggiorna(stato)`
+
+```js
+import * as tabellone from '/js/tabellone.js';
+tabellone.render(document.getElementById('tabellone'), stato, {
+  caselle: CASELLE,        // da /dati/tabellone.js
+  gruppi: GRUPPI,
+  mioId: 'a7k2x9pq',       // per evidenziare la mia pedina
+  animazioni: true,        // false con prefers-reduced-motion
+});
+tabellone.aggiorna(stato); // aggiornamento incrementale: pedine, proprietari, case, ipoteche, dadi, turno
+```
+
+* `render` costruisce il DOM una sola volta (40 caselle in griglia 11×11,
+  area centrale con dadi e mazzi). Chiamarlo di nuovo ricostruisce tutto.
+* `aggiorna` muove le pedine da `posizione` precedente a quella nuova
+  (percorrendo le caselle intermedie se `animazioni`), aggiorna il bordo colore
+  del proprietario, il numero di case/albergo, la fascia "ipotecata" e la
+  pedina evidenziata del giocatore di turno.
+* Ogni casella è un `<button class="casella" data-indice="N">` con
+  `aria-label` = nome + proprietario + affitto corrente, navigabile con
+  Tab/freccette.
+* **Evento DOM personalizzato** `casella-selezionata`: emesso sulla `radice`
+  (con `bubbles: true`) al click/Enter/Space su una casella.
+
+```js
+radice.addEventListener('casella-selezionata', (e) => {
+  e.detail.indice;   // numero 0–39
+  e.detail.casella;  // l'oggetto CASELLE[indice] (comodità)
+});
+```
+
+### 4.5 `pannelli.js` — `render(radice, stato, dispatch)`
+
+Disegna in `#pannelli`: elenco giocatori (colore, nome, denaro, posizione,
+prigione, connesso, fallito, evidenza del turno), le proprietà di ciascun
+giocatore raggruppate per colore, i pulsanti azione **abilitati solo se
+ammessi** (riproducendo lato client la tabella §2.4; il server resta
+l'autorità), i dadi dell'ultimo lancio, la cronaca (`stato.log`) con
+`aria-live="polite"`. I pulsanti chiamano `dispatch({ tipo: 'lanciaDadi' })`
+ecc. Per le azioni con parametri aprono un dialogo (`ui:apriDialogo`).
+
+### 4.6 `dialoghi.js` — `apri(tipo, dati, dispatch)`
+
+```js
+import * as dialoghi from '/js/dialoghi.js';
+const d = dialoghi.apri('acquisto', { casella: CASELLE[11], denaro: 1340 }, dispatch);
+d.chiudi();
+dialoghi.chiudiTutti();
+dialoghi.toast('Anna compra Via Accademia', { livello: 'info', durata: 4000 });  // livello: info | successo | avviso | errore
+```
+
+| `tipo` | `dati` | Azioni emesse |
+|---|---|---|
+| `acquisto` | `{ casella, denaro }` | `compra` / `rifiutaAcquisto` |
+| `asta` | `{ asta, casella, mioId, giocatori, denaro }` | `offertaAsta {importo}` / `passaAsta` |
+| `scambio` | `{ mioId, giocatori, proprieta, caselle, scambio? }` (proposta nuova o ricevuta) | `proponiScambio` / `accettaScambio` / `rifiutaScambio` |
+| `costruzioni` | `{ casella, proprieta, denaro, caseDisponibili, alberghiDisponibili }` | `costruisci` / `vendiCasa` |
+| `ipoteca` | `{ casella, proprieta, denaro }` | `ipoteca` / `disipoteca` |
+| `prigione` | `{ denaro, cartePrigione, turniInPrigione }` | `lanciaDadi` / `pagaCauzione` / `usaCartaPrigione` |
+| `debito` | `{ debito, proprieta, caselle, denaro }` | `vendiCasa` / `ipoteca` / `proponiScambio` / `dichiaraBancarotta` |
+| `carta` | `{ mazzo, carta }` (sola lettura) | — |
+| `dettaglioCasella` | `{ casella, proprieta, proprietario }` | eventuale `costruisci` / `ipoteca` tramite sottodialoghi |
+| `finePartita` | `{ vincitore, giocatori }` | — |
+| `conferma` | `{ titolo, testo, conferma, annulla }` + `onConferma()` | — |
+
+Usa `<dialog>` nativo con `showModal()`, focus trap del browser, chiusura con
+Esc, `aria-labelledby`. Un solo dialogo modale alla volta; aprirne un altro
+chiude il precedente.
+
+### 4.7 `lobby.js` — `render(radice, stato, dispatch)`
+
+Disegna in `#lobby`: se `stato.partita` è `null` → due form ("Crea una
+stanza" / "Entra con codice" con `codice` precompilato da `?stanza=`), nome e
+colore; se in `lobby` → codice grande, pulsante "Copia link", elenco
+giocatori con colori, "Avvia partita" (solo host, abilitato con >= 2
+giocatori), "Esci". Emette `creaStanza`, `entraStanza {codice, nome, colore}`,
+`avviaPartita`, `esciStanza`.
+
+### 4.8 `app.js` — orchestrazione
+
+Legge `?stanza=`, crea lo store, apre la rete, smista i messaggi in ingresso
+(`entrato` → salva `io`; `stato` → `partita`; `evento` → `eventi` + toast
+quando rilevante; `errore` → toast di errore), mostra/nasconde `#lobby`,
+`#tabellone`, `#pannelli` in base a `fase`, e chiama i `render`.
+
+---
+
+## 5. Dati statici condivisi (di claude-2)
+
+Entrambi i moduli sono **CommonJS puri**: nessuna dipendenza, nessuno stato,
+oggetti congelati. Il server li rende disponibili al browser come ES module
+generati (§3.5), quindi tutto ciò che deve arrivare al client deve essere
+**JSON-serializzabile** (le funzioni di utilità restano solo lato server).
+
+### 5.1 `server/gioco/tabellone.js`
+
+```js
+module.exports = {
+  CASELLE,                    // array di 40 Casella, indice = posizione
+  GRUPPI,                     // { marrone: { nome, colore, caselle: 2 }, celeste, rosa, arancione, rosso, giallo, verde, blu, stazione, societa }
+  STIPENDIO_VIA,              // 200
+  INDICE_VIA,                 // 0
+  INDICE_PRIGIONE,            // 10
+  INDICE_VAI_IN_PRIGIONE,     // 30
+  CAUZIONE_PRIGIONE,          // 50
+  AFFITTI_STAZIONE,           // [25, 50, 100, 200]
+  MOLTIPLICATORI_SOCIETA,     // [4, 10]
+  casella(indice),            // CASELLE[indice mod 40]
+  indiciGruppo(gruppo),       // indici delle caselle del gruppo
+  acquistabile(indice),       // tipo ∈ proprieta | stazione | societa
+  prossimaCasellaDiTipo(daIndice, tipo),  // per le carte "più vicina"
+};
+```
+
+`Casella` (tutti i campi sempre presenti, `null` dove non applicabile):
+
+| Campo | Tipo | Note |
+|---|---|---|
+| `indice` | 0–39 | |
+| `tipo` | `via` · `proprieta` · `stazione` · `societa` · `tassa` · `probabilita` · `imprevisti` · `prigione` · `parcheggio` · `vaiInPrigione` | |
+| `nome` | stringa | nome italiano ufficiale |
+| `gruppo` | chiave di `GRUPPI` \| `null` | stazioni → `'stazione'`, società → `'societa'` |
+| `prezzo` | intero \| `null` | prezzo d'acquisto dalla banca |
+| `affitti` | array \| `null` | `proprieta`: 6 valori `[0 case, 1, 2, 3, 4, albergo]` (indice = `caseCostruite`); `stazione`: 4 valori per 1–4 stazioni possedute; `societa`: `[4, 10]` moltiplicatori del tiro per 1–2 società |
+| `costoCasa` | intero \| `null` | costo di una casa; l'albergo costa `costoCasa` in più delle 4 case |
+| `importoTassa` | intero \| `null` | solo `tassa` (200 patrimoniale, 100 lusso) |
+| `ipoteca` | intero \| `null` | valore d'ipoteca = `prezzo / 2` |
+
+Esempi:
+
+```json
+{ "indice": 1,  "tipo": "proprieta", "nome": "Vicolo Corto", "gruppo": "marrone", "prezzo": 60,
+  "affitti": [2, 10, 30, 90, 160, 250], "costoCasa": 50, "importoTassa": null, "ipoteca": 30 }
+{ "indice": 5,  "tipo": "stazione",  "nome": "Stazione Sud", "gruppo": "stazione", "prezzo": 200,
+  "affitti": [25, 50, 100, 200], "costoCasa": null, "importoTassa": null, "ipoteca": 100 }
+{ "indice": 12, "tipo": "societa",   "nome": "Società Elettrica", "gruppo": "societa", "prezzo": 150,
+  "affitti": [4, 10], "costoCasa": null, "importoTassa": null, "ipoteca": 75 }
+{ "indice": 4,  "tipo": "tassa",     "nome": "Tassa patrimoniale", "gruppo": null, "prezzo": null,
+  "affitti": null, "costoCasa": null, "importoTassa": 200, "ipoteca": null }
+{ "indice": 30, "tipo": "vaiInPrigione", "nome": "In prigione!", "gruppo": null, "prezzo": null,
+  "affitti": null, "costoCasa": null, "importoTassa": null, "ipoteca": null }
+```
+
+### 5.2 `server/gioco/carte.js`
+
+```js
+module.exports = {
+  PROBABILITA,    // array di 16 Carta
+  IMPREVISTI,     // array di 16 Carta
+  TIPI_EFFETTO,   // array dei 10 valori ammessi per effetto.tipo
+};
+```
+
+`Carta = { id, mazzo, testo, effetto }` con `id` `'P01'…'P16'` (Probabilità)
+e `'I01'…'I16'` (Imprevisti), `mazzo` `'probabilita' | 'imprevisti'`, `testo`
+la frase mostrata al giocatore, `effetto` un oggetto con `tipo` obbligatorio e
+i parametri qui sotto. Ogni mazzo ha **esattamente una** carta `esciGratis`.
+
+| `effetto.tipo` | Parametri | Semantica nel motore |
+|---|---|---|
+| `denaro` | `importo` intero (positivo riscuoti dalla banca, negativo paga alla banca) | `{ "tipo": "denaro", "importo": -50 }` |
+| `vaiA` | `casella` 0–39, `incassaVia` bool | avanza **sempre in avanti** fino a `casella`; se `incassaVia` è vero **e** passa (o arriva) dal Via riscuote 200; poi risolve la casella (affitto/acquisto) |
+| `vaiInPrigione` | — | posizione 10, `inPrigione: true`, niente 200, fine della mossa |
+| `esciGratis` | — | `cartePrigione + 1`; la carta esce dal mazzo finché non viene usata |
+| `indietro` | `passi` intero > 0 | arretra di `passi` senza passare dal Via; poi risolve la casella |
+| `pagaPerCasa` | `perCasa`, `perAlbergo` interi | paga `perCasa × case + perAlbergo × alberghi` alla banca |
+| `riscuotiDaTutti` | `importo` | ogni altro giocatore non fallito paga `importo` al pescante (chi non può → `debito` verso di lui) |
+| `pagaATutti` | `importo` | il pescante paga `importo` a ogni altro giocatore non fallito |
+| `vaiAllaStazionePiuVicina` | `moltiplicatoreAffitto` (2) | avanza alla prossima stazione (200 se passa dal Via); se posseduta paga l'affitto × moltiplicatore, se libera può comprarla |
+| `vaiAllaSocietaPiuVicina` | `moltiplicatoreDadi` (10) | avanza alla prossima società; se posseduta tira i dadi e paga dadi × moltiplicatore, se libera può comprarla |
+
+Esempi:
+
+```json
+{ "id": "P01", "mazzo": "probabilita", "testo": "Andate al Via!",
+  "effetto": { "tipo": "vaiA", "casella": 0, "incassaVia": true } }
+{ "id": "P05", "mazzo": "probabilita", "testo": "Uscite gratis di prigione. Potete conservare questa carta.",
+  "effetto": { "tipo": "esciGratis" } }
+{ "id": "I03", "mazzo": "imprevisti", "testo": "Fate tre passi indietro.",
+  "effetto": { "tipo": "indietro", "passi": 3 } }
+{ "id": "I07", "mazzo": "imprevisti", "testo": "Riparazioni: pagate 25 € per casa e 100 € per albergo.",
+  "effetto": { "tipo": "pagaPerCasa", "perCasa": 25, "perAlbergo": 100 } }
+{ "id": "I10", "mazzo": "imprevisti", "testo": "È il vostro compleanno: ogni giocatore vi dà 10 €.",
+  "effetto": { "tipo": "riscuotiDaTutti", "importo": 10 } }
+```
+
+---
+
+## 6. Eventi di gioco (`Evento`)
+
+```json
+{ "t": 1763204099000, "tipo": "affitto", "giocatoreId": "a7k2x9pq",
+  "testo": "Anna paga 50 € a Bruno per Via Accademia", "dati": { "…": "…" } }
+```
+
+* `t` timestamp, `tipo` tra quelli sotto, `giocatoreId` il protagonista (può
+  essere `null` per eventi di sistema), `testo` frase italiana pronta per la
+  cronaca (il client può ignorarla e comporre la propria da `dati`).
+
+| `tipo` | `dati` |
+|---|---|
+| `giocatoreEntrato` | `{ giocatoreId, nome, colore }` |
+| `giocatoreUscito` | `{ giocatoreId }` |
+| `connessione` | `{ giocatoreId, connesso }` |
+| `partitaIniziata` | `{ ordine: [giocatoreId…], denaroIniziale }` |
+| `turno` | `{ giocatoreId, numero }` |
+| `dadi` | `{ dadi: [d1, d2], doppio, inPrigione, doppiConsecutivi }` |
+| `movimento` | `{ da, a, passi, passatoDalVia, causa: 'dadi' \| 'carta' }` (`passi` negativo per `indietro`) |
+| `passaggioVia` | `{ importo }` |
+| `acquisto` | `{ casella, prezzo, tramite: 'banca' \| 'asta' }` |
+| `affitto` | `{ daId, aId, casella, importo, moltiplicatore? }` |
+| `tassa` | `{ casella, importo }` |
+| `carta` | `{ mazzo: 'probabilita' \| 'imprevisti', carta: { id, testo, effetto } }` |
+| `pagamento` | `{ daId, aId \| null, importo, motivo }` (carte, cauzione, interessi, riparazioni) |
+| `prigione` | `{ motivo: 'casella' \| 'carta' \| 'treDoppi' }` |
+| `uscitaPrigione` | `{ modo: 'cauzione' \| 'carta' \| 'doppio' \| 'terzoTurno' }` |
+| `astaInizio` | `{ casella, partecipanti }` |
+| `astaOfferta` | `{ casella, importo }` |
+| `astaPasso` | `{ casella }` |
+| `astaFine` | `{ casella, vincitoreId \| null, importo }` |
+| `costruzione` | `{ casella, caseCostruite, costo }` |
+| `vendita` | `{ casella, caseCostruite, ricavo }` |
+| `ipoteca` | `{ casella, importo }` |
+| `disipoteca` | `{ casella, importo }` |
+| `scambioProposto` | `{ scambio }` |
+| `scambioAccettato` | `{ scambio }` |
+| `scambioRifiutato` | `{ scambio, daId }` (`daId` = chi ha rifiutato o ritirato) |
+| `debito` | `{ creditoreId \| null, importo, motivo }` |
+| `debitoSaldato` | `{ creditoreId \| null, importo }` |
+| `bancarotta` | `{ creditoreId \| null, proprieta: [indici], denaro }` |
+| `finePartita` | `{ vincitoreId }` |
+
+---
+
+## 7. Codici di errore
+
+Tutti in `protocollo.ERRORI` (codice → messaggio italiano predefinito). Il
+motore ritorna `{ errore: { codice, messaggio, dettagli? } }`; il server lo
+incapsula in un messaggio `errore`.
+
+Protocollo e stanze:
+`MESSAGGIO_NON_VALIDO` · `TIPO_SCONOSCIUTO` · `STANZA_INESISTENTE` ·
+`STANZA_PIENA` · `PARTITA_INIZIATA` · `NOME_NON_VALIDO` · `NOME_OCCUPATO` ·
+`COLORE_NON_VALIDO` · `COLORE_OCCUPATO` · `GIA_IN_STANZA` · `NON_IN_STANZA` ·
+`NON_HOST` · `POCHI_GIOCATORI` · `TOKEN_NON_VALIDO` · `SOLO_IN_LOBBY`
+
+Motore:
+`AZIONE_NON_VALIDA` · `PARAMETRI_NON_VALIDI` · `GIOCATORE_NON_VALIDO` ·
+`GIOCATORE_FALLITO` · `NON_IL_TUO_TURNO` · `FASE_ERRATA` ·
+`FONDI_INSUFFICIENTI` · `CASELLA_NON_VALIDA` · `PROPRIETA_NON_TUA` ·
+`NON_EDIFICABILE` · `GRUPPO_INCOMPLETO` · `COSTRUZIONE_NON_UNIFORME` ·
+`CASE_ESAURITE` · `ALBERGHI_ESAURITI` · `NESSUNA_COSTRUZIONE` ·
+`HA_COSTRUZIONI` · `IPOTECATA` · `GIA_IPOTECATA` · `NON_IPOTECATA` ·
+`OFFERTA_BASSA` · `GIA_PASSATO` · `MIGLIOR_OFFERENTE` · `SCAMBIO_IN_CORSO` ·
+`SCAMBIO_NON_TROVATO` · `SCAMBIO_VUOTO` · `NON_DESTINATARIO` · `NON_COINVOLTO` ·
+`NON_IN_PRIGIONE` · `NESSUNA_CARTA_PRIGIONE` · `NON_DEBITORE` ·
+`NON_IMPLEMENTATO` (solo fase 1: l'azione esiste nel contratto ma la regola
+non è ancora codificata; `dettagli.azione` dice quale)
+
+---
+
+## 8. Regole implementate e semplificazioni dichiarate
+
+Regolamento ufficiale, con queste scelte esplicite:
+
+1. **Stipendio**: 200 € ogni volta che si passa o si arriva sul Via, anche via
+   carta `vaiA`; mai andando in prigione né con `indietro`.
+2. **Parcheggio gratuito**: non succede nulla (nessun "piatto" di tasse).
+3. **Affitti**: proprietà `affitti[caseCostruite]`; con gruppo completo e
+   nessuna costruzione l'affitto base è **raddoppiato**; stazioni per numero
+   possedute; società dadi × 4 (una) o × 10 (due). Niente affitto su casella
+   ipotecata né al proprietario stesso. L'affitto si paga anche se il
+   proprietario è disconnesso.
+4. **Costruzioni**: solo con gruppo completo e non ipotecato, uniformi
+   (differenza max 1 casa tra le caselle del gruppo), limitate dalle scorte
+   (32 case, 12 alberghi). Albergo = 4 case + `costoCasa`; costruirlo
+   restituisce 4 case alla banca. Vendita a metà prezzo, sempre uniforme.
+5. **Ipoteca**: incassa `ipoteca` (= prezzo/2), richiede nessuna costruzione in
+   tutto il gruppo; disipoteca a `ipoteca + ceil(10%)`.
+6. **Prigione**: 3 tentativi con i dadi; esce col doppio (muove, nessun
+   rilancio); al terzo tentativo fallito paga 50 e muove. Cauzione 50 o carta
+   in qualunque momento del proprio `daLanciare`. In prigione si incassano
+   affitti e si può gestire il patrimonio.
+7. **Tre doppi** consecutivi → prigione.
+8. **Asta** all'inglese libera (§1.6), incremento minimo 1 €.
+9. **Scambi**: solo caselle senza costruzioni; ipotecate trasferibili con
+   interesse immediato del 10% a carico di chi riceve; carte prigione
+   scambiabili; una sola proposta pendente per partita.
+10. **Debito e bancarotta**: non si va mai in negativo; si entra in `debito` e
+    si liquida. Bancarotta verso un giocatore: tutto a lui (costruzioni
+    vendute alla banca, incasso al creditore; ipotecate restano ipotecate).
+    Bancarotta verso la banca: proprietà **tornano libere alla banca**
+    (semplificazione: niente asta immediata). Fine partita quando resta un
+    solo giocatore non fallito.
+11. **Carte**: `esciGratis` resta al giocatore e torna in coda al mazzo
+    quando usata; le altre tornano in coda subito. Nessun limite di tempo per
+    i turni (fase 1).
+12. **Disconnessioni**: in partita il giocatore resta e può riconnettersi col
+    token; il suo turno attende. Nessun kick automatico in fase 1.
