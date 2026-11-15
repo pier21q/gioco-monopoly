@@ -1,11 +1,937 @@
 /*
  * client/css/base.css
  *
- * Fondamenta visive comuni a tutta l'applicazione: reset leggero, variabili
- * (colori, spaziature, tipografia), tema chiaro/scuro, classi di utilità per
- * l'accessibilità (contenuto visivamente nascosto, link "salta al contenuto",
- * focus visibile) e layout di pagina ad alto livello.
+ * Fondamenta visive comuni a tutta l'applicazione:
+ *   1. variabili di design (palette, colori dei giocatori, spaziature,
+ *      tipografia, raggi, ombre, durate)
+ *   2. tema chiaro (predefinito) e scuro (prefers-color-scheme)
+ *   3. reset leggero
+ *   4. accessibilità: focus visibile, contenuto visivamente nascosto, link
+ *      "salta al contenuto", movimento ridotto
+ *   5. elementi comuni: pulsanti, campi, messaggi
+ *   6. layout di pagina: barra superiore, lobby, partita (tabellone + pannelli)
+ *   7. lobby (lobby.js)
+ *   8. contenitore dei toast e indicatore di connessione
  *
  * Le regole specifiche del tabellone stanno in tabellone.css, quelle dei
- * pannelli laterali e dei dialoghi in pannelli.css.
+ * pannelli e dei dialoghi in pannelli.css (caricati dopo questo file, quindi
+ * possono sovrascrivere ciò che serve).
  */
+
+/* ------------------------------------------------------------------------ */
+/* 1. Variabili di design                                                   */
+/* ------------------------------------------------------------------------ */
+
+:root {
+  /* Colori dei giocatori: stessa palette di server/protocollo.js
+     (COLORI_GIOCATORE). I primi 6 sono quelli assegnati di default. */
+  --giocatore-1: #d62828; /* rosso */
+  --giocatore-2: #1d4ed8; /* blu */
+  --giocatore-3: #1e8e3e; /* verde */
+  --giocatore-4: #f28c28; /* arancione */
+  --giocatore-5: #7c3aed; /* viola */
+  --giocatore-6: #0891b2; /* azzurro */
+  --giocatore-7: #db2777; /* rosa */
+  --giocatore-8: #a16207; /* ocra */
+
+  /* Gruppi di colore del tabellone (usati da tabellone.css e pannelli.css). */
+  --gruppo-marrone: #8b5a2b;
+  --gruppo-celeste: #8fd3f4;
+  --gruppo-rosa: #d6409f;
+  --gruppo-arancione: #f39c12;
+  --gruppo-rosso: #e53935;
+  --gruppo-giallo: #f4d03f;
+  --gruppo-verde: #2e9d4f;
+  --gruppo-blu: #1f4fbf;
+
+  /* Palette di marca. */
+  --colore-primario: #1e8e3e;
+  --colore-primario-forte: #156b2e;
+  --colore-primario-tenue: #e3f3e7;
+  --colore-su-primario: #ffffff;
+  --colore-accento: #c8102e;
+
+  /* Stati semantici (testo e sfondo tenue). */
+  --colore-successo: #1a7f37;
+  --colore-successo-tenue: #e6f4ea;
+  --colore-avviso: #8a5a00;
+  --colore-avviso-tenue: #fff4d6;
+  --colore-errore: #b42318;
+  --colore-errore-tenue: #fdecea;
+  --colore-info: #1d4ed8;
+  --colore-info-tenue: #e8efff;
+
+  /* Superfici e testo (tema chiaro). */
+  --colore-sfondo: #f3f1e7;          /* carta crema del tabellone */
+  --colore-superficie: #ffffff;
+  --colore-superficie-2: #faf9f4;
+  --colore-superficie-3: #ebe8da;
+  --colore-bordo: #cfcab5;
+  --colore-bordo-forte: #8f8a74;
+  --colore-testo: #1d1d1b;
+  --colore-testo-tenue: #55534a;
+  --colore-focus: #0b5fff;
+  --colore-ombra: 30 28 20;          /* rgb per le ombre */
+
+  /* Tipografia: solo font di sistema, nessun download. */
+  --font-testo: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue",
+    "Noto Sans", "Liberation Sans", Arial, sans-serif, "Apple Color Emoji",
+    "Segoe UI Emoji";
+  --font-titoli: ui-rounded, "SF Pro Rounded", system-ui, -apple-system,
+    "Segoe UI", Roboto, sans-serif;
+  --font-mono: ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas,
+    "Liberation Mono", monospace;
+
+  --testo-xs: 0.75rem;
+  --testo-s: 0.875rem;
+  --testo-m: 1rem;
+  --testo-l: 1.25rem;
+  --testo-xl: clamp(1.5rem, 1.2rem + 1.2vw, 2rem);
+  --testo-xxl: clamp(2rem, 1.4rem + 2.6vw, 3.25rem);
+  --interlinea: 1.5;
+  --interlinea-stretta: 1.2;
+
+  /* Spaziature su scala 4px. */
+  --spazio-1: 0.25rem;
+  --spazio-2: 0.5rem;
+  --spazio-3: 0.75rem;
+  --spazio-4: 1rem;
+  --spazio-5: 1.5rem;
+  --spazio-6: 2rem;
+  --spazio-7: 3rem;
+
+  /* Forme, ombre, movimento. */
+  --raggio-s: 6px;
+  --raggio-m: 10px;
+  --raggio-l: 16px;
+  --raggio-pieno: 999px;
+  --ombra-1: 0 1px 2px rgb(var(--colore-ombra) / 0.12), 0 1px 3px rgb(var(--colore-ombra) / 0.08);
+  --ombra-2: 0 4px 12px rgb(var(--colore-ombra) / 0.14), 0 2px 4px rgb(var(--colore-ombra) / 0.08);
+  --ombra-3: 0 12px 32px rgb(var(--colore-ombra) / 0.2);
+  --durata-breve: 120ms;
+  --durata-media: 240ms;
+  --curva: cubic-bezier(0.2, 0.7, 0.2, 1);
+
+  /* Dimensioni di layout. */
+  --altezza-barra: 3.5rem;
+  --larghezza-pannelli: 22rem;
+  --area-tocco: 44px;               /* dimensione minima dei bersagli (WCAG 2.5.5) */
+
+  color-scheme: light dark;
+}
+
+/* ------------------------------------------------------------------------ */
+/* 2. Tema scuro                                                            */
+/* ------------------------------------------------------------------------ */
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --colore-primario: #3fb866;
+    --colore-primario-forte: #6fd48d;
+    --colore-primario-tenue: #17321f;
+    --colore-su-primario: #08140c;
+    --colore-accento: #ff5a6e;
+
+    --colore-successo: #6fd48d;
+    --colore-successo-tenue: #143021;
+    --colore-avviso: #f5c451;
+    --colore-avviso-tenue: #3a2d0c;
+    --colore-errore: #ff8a80;
+    --colore-errore-tenue: #3d1614;
+    --colore-info: #8fb0ff;
+    --colore-info-tenue: #172447;
+
+    --colore-sfondo: #111613;
+    --colore-superficie: #1b211d;
+    --colore-superficie-2: #212924;
+    --colore-superficie-3: #2b352f;
+    --colore-bordo: #3c4840;
+    --colore-bordo-forte: #6d7b71;
+    --colore-testo: #ecefe9;
+    --colore-testo-tenue: #a9b3ab;
+    --colore-focus: #7fb2ff;
+    --colore-ombra: 0 0 0;
+  }
+}
+
+/* ------------------------------------------------------------------------ */
+/* 3. Reset leggero                                                         */
+/* ------------------------------------------------------------------------ */
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+* {
+  margin: 0;
+}
+
+html {
+  -webkit-text-size-adjust: 100%;
+  text-size-adjust: 100%;
+  scroll-behavior: smooth;
+}
+
+body {
+  min-height: 100vh;
+  min-height: 100dvh;
+  font-family: var(--font-testo);
+  font-size: var(--testo-m);
+  line-height: var(--interlinea);
+  color: var(--colore-testo);
+  background: var(--colore-sfondo);
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+  padding-left: env(safe-area-inset-left);
+  padding-right: env(safe-area-inset-right);
+}
+
+img,
+svg,
+video,
+canvas {
+  display: block;
+  max-width: 100%;
+}
+
+input,
+button,
+textarea,
+select {
+  font: inherit;
+  color: inherit;
+}
+
+button {
+  cursor: pointer;
+}
+
+button:disabled,
+[aria-disabled="true"] {
+  cursor: not-allowed;
+}
+
+h1, h2, h3, h4 {
+  font-family: var(--font-titoli);
+  line-height: var(--interlinea-stretta);
+  text-wrap: balance;
+}
+
+p {
+  text-wrap: pretty;
+}
+
+ul[role="list"],
+ol[role="list"] {
+  list-style: none;
+  padding: 0;
+}
+
+a {
+  color: var(--colore-primario-forte);
+  text-underline-offset: 0.15em;
+}
+
+/* L'attributo hidden vince sempre, anche contro display impostati altrove. */
+[hidden] {
+  display: none !important;
+}
+
+/* ------------------------------------------------------------------------ */
+/* 4. Accessibilità                                                         */
+/* ------------------------------------------------------------------------ */
+
+/* Focus visibile solo da tastiera, ben contrastato su entrambi i temi. */
+:focus-visible {
+  outline: 3px solid var(--colore-focus);
+  outline-offset: 2px;
+  border-radius: var(--raggio-s);
+}
+
+:focus:not(:focus-visible) {
+  outline: none;
+}
+
+/* Contenitori che ricevono il focus da script (titoli, main) senza anello. */
+[tabindex="-1"]:focus {
+  outline: none;
+}
+
+.visivamente-nascosto {
+  position: absolute !important;
+  width: 1px !important;
+  height: 1px !important;
+  padding: 0 !important;
+  margin: -1px !important;
+  overflow: hidden !important;
+  clip: rect(0 0 0 0) !important;
+  white-space: nowrap !important;
+  border: 0 !important;
+}
+
+.salta-contenuto {
+  position: absolute;
+  top: var(--spazio-2);
+  left: var(--spazio-2);
+  z-index: 1000;
+  padding: var(--spazio-2) var(--spazio-4);
+  background: var(--colore-superficie);
+  color: var(--colore-testo);
+  border: 2px solid var(--colore-focus);
+  border-radius: var(--raggio-m);
+  transform: translateY(-200%);
+  transition: transform var(--durata-breve) var(--curva);
+}
+
+.salta-contenuto:focus {
+  transform: translateY(0);
+}
+
+.avviso-noscript {
+  margin: var(--spazio-5) auto;
+  max-width: 40rem;
+  padding: var(--spazio-4);
+  background: var(--colore-avviso-tenue);
+  color: var(--colore-avviso);
+  border-radius: var(--raggio-m);
+  text-align: center;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+/* Modalità ad alto contrasto (Windows): i bordi restano visibili. */
+@media (forced-colors: active) {
+  .pulsante,
+  .campo__input,
+  .scheda {
+    border: 1px solid CanvasText;
+  }
+}
+
+/* ------------------------------------------------------------------------ */
+/* 5. Elementi comuni                                                       */
+/* ------------------------------------------------------------------------ */
+
+.pulsante {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--spazio-2);
+  min-height: var(--area-tocco);
+  padding: var(--spazio-2) var(--spazio-4);
+  border: 1px solid var(--colore-bordo-forte);
+  border-radius: var(--raggio-m);
+  background: var(--colore-superficie);
+  color: var(--colore-testo);
+  font-weight: 600;
+  line-height: 1.2;
+  text-decoration: none;
+  white-space: nowrap;
+  transition:
+    background-color var(--durata-breve) var(--curva),
+    border-color var(--durata-breve) var(--curva),
+    transform var(--durata-breve) var(--curva);
+}
+
+.pulsante:hover:not(:disabled) {
+  background: var(--colore-superficie-3);
+}
+
+.pulsante:active:not(:disabled) {
+  transform: translateY(1px);
+}
+
+.pulsante:disabled {
+  opacity: 0.55;
+}
+
+.pulsante--primario {
+  background: var(--colore-primario);
+  border-color: var(--colore-primario);
+  color: var(--colore-su-primario);
+}
+
+.pulsante--primario:hover:not(:disabled) {
+  background: var(--colore-primario-forte);
+  border-color: var(--colore-primario-forte);
+}
+
+.pulsante--secondario {
+  background: transparent;
+}
+
+.pulsante--pericolo {
+  color: var(--colore-errore);
+  border-color: currentColor;
+  background: transparent;
+}
+
+.pulsante--grande {
+  min-height: 3.25rem;
+  padding-inline: var(--spazio-5);
+  font-size: var(--testo-l);
+}
+
+.pulsante--piccolo {
+  min-height: 2.25rem;
+  padding: var(--spazio-1) var(--spazio-3);
+  font-size: var(--testo-s);
+}
+
+.campo {
+  display: grid;
+  gap: var(--spazio-1);
+}
+
+.campo__etichetta {
+  font-weight: 600;
+}
+
+.campo__aiuto {
+  font-size: var(--testo-s);
+  color: var(--colore-testo-tenue);
+}
+
+.campo__input {
+  width: 100%;
+  min-height: var(--area-tocco);
+  padding: var(--spazio-2) var(--spazio-3);
+  border: 1px solid var(--colore-bordo-forte);
+  border-radius: var(--raggio-m);
+  background: var(--colore-superficie-2);
+}
+
+.campo__input:focus-visible {
+  outline-offset: 0;
+}
+
+.campo__input[aria-invalid="true"] {
+  border-color: var(--colore-errore);
+  box-shadow: 0 0 0 1px var(--colore-errore);
+}
+
+.campo__input--codice {
+  font-family: var(--font-mono);
+  font-size: var(--testo-l);
+  letter-spacing: 0.25em;
+  text-transform: uppercase;
+}
+
+.scheda {
+  background: var(--colore-superficie);
+  border: 1px solid var(--colore-bordo);
+  border-radius: var(--raggio-l);
+  box-shadow: var(--ombra-1);
+  padding: var(--spazio-5);
+}
+
+.messaggio {
+  padding: var(--spazio-3) var(--spazio-4);
+  border-radius: var(--raggio-m);
+  border-left: 4px solid currentColor;
+}
+
+.messaggio--errore {
+  background: var(--colore-errore-tenue);
+  color: var(--colore-errore);
+}
+
+.messaggio--avviso {
+  background: var(--colore-avviso-tenue);
+  color: var(--colore-avviso);
+}
+
+.messaggio--info {
+  background: var(--colore-info-tenue);
+  color: var(--colore-info);
+}
+
+/* Pallino colore di un giocatore: style="--colore: #d62828". */
+.pedina-colore {
+  display: inline-block;
+  flex: none;
+  width: 1.1em;
+  height: 1.1em;
+  border-radius: 50%;
+  background: var(--colore, var(--colore-bordo-forte));
+  box-shadow: 0 0 0 2px var(--colore-superficie), 0 0 0 3px var(--colore-bordo-forte);
+}
+
+/* ------------------------------------------------------------------------ */
+/* 6. Layout di pagina                                                      */
+/* ------------------------------------------------------------------------ */
+
+.barra {
+  position: sticky;
+  top: 0;
+  z-index: 50;
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--spazio-2) var(--spazio-4);
+  min-height: var(--altezza-barra);
+  padding: var(--spazio-2) var(--spazio-4);
+  padding-top: max(var(--spazio-2), env(safe-area-inset-top));
+  background: color-mix(in srgb, var(--colore-superficie) 88%, transparent);
+  border-bottom: 1px solid var(--colore-bordo);
+  backdrop-filter: blur(8px);
+}
+
+.barra__marchio {
+  display: flex;
+  align-items: center;
+  gap: var(--spazio-2);
+  font-family: var(--font-titoli);
+  font-weight: 800;
+  font-size: var(--testo-l);
+  color: var(--colore-primario-forte);
+}
+
+.barra__logo {
+  width: 1.75rem;
+  height: 1.75rem;
+}
+
+.barra__stanza {
+  font-size: var(--testo-s);
+  color: var(--colore-testo-tenue);
+}
+
+.barra__stanza strong {
+  font-family: var(--font-mono);
+  color: var(--colore-testo);
+  letter-spacing: 0.12em;
+}
+
+.barra__azioni {
+  display: flex;
+  gap: var(--spazio-2);
+  margin-left: auto;
+}
+
+.barra__azioni:empty {
+  display: none;
+}
+
+#app {
+  width: 100%;
+  max-width: 100rem;
+  margin-inline: auto;
+  padding: var(--spazio-4);
+  padding-bottom: max(var(--spazio-4), env(safe-area-inset-bottom));
+}
+
+/* Vista "partita": tabellone e pannelli affiancati su schermi larghi,
+   impilati su schermi stretti. */
+#app[data-vista="partita"],
+#app[data-vista="fine"] {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: var(--spazio-4);
+  align-items: start;
+}
+
+@media (min-width: 64rem) {
+  #app[data-vista="partita"],
+  #app[data-vista="fine"] {
+    grid-template-columns: minmax(0, 1fr) var(--larghezza-pannelli);
+  }
+
+  #app[data-vista="partita"] #pannelli,
+  #app[data-vista="fine"] #pannelli {
+    position: sticky;
+    top: calc(var(--altezza-barra) + var(--spazio-4));
+    max-height: calc(100dvh - var(--altezza-barra) - var(--spazio-5));
+    overflow: auto;
+  }
+}
+
+@media (min-width: 90rem) {
+  :root {
+    --larghezza-pannelli: 26rem;
+  }
+}
+
+#tabellone {
+  min-width: 0;
+  /* tabellone.css limita la larghezza a 100dvh - questo spazio, così il
+     tabellone resta quadrato sotto la barra superiore e i margini di #app. */
+  --tab-spazio-verticale: calc(var(--altezza-barra) + var(--spazio-6));
+  justify-self: center;
+}
+
+/* ------------------------------------------------------------------------ */
+/* 7. Lobby                                                                 */
+/* ------------------------------------------------------------------------ */
+
+#lobby {
+  max-width: 60rem;
+  margin-inline: auto;
+}
+
+.lobby__caricamento {
+  padding: var(--spazio-7) 0;
+  text-align: center;
+  color: var(--colore-testo-tenue);
+}
+
+.lobby__intestazione {
+  text-align: center;
+  padding: var(--spazio-5) 0 var(--spazio-6);
+}
+
+.lobby__titolo {
+  font-size: var(--testo-xxl);
+  font-weight: 800;
+  letter-spacing: -0.02em;
+}
+
+.lobby__sottotitolo {
+  margin-top: var(--spazio-2);
+  font-size: var(--testo-l);
+  color: var(--colore-testo-tenue);
+}
+
+.lobby__form {
+  display: grid;
+  gap: var(--spazio-5);
+}
+
+.lobby__colonne {
+  display: grid;
+  gap: var(--spazio-5);
+}
+
+@media (min-width: 48rem) {
+  .lobby__colonne {
+    grid-template-columns: 1fr 1fr;
+  }
+}
+
+.lobby__riquadro {
+  display: grid;
+  gap: var(--spazio-4);
+  align-content: start;
+}
+
+.lobby__riquadro h2 {
+  font-size: var(--testo-l);
+}
+
+.lobby__riquadro p {
+  color: var(--colore-testo-tenue);
+}
+
+.lobby__errore:empty {
+  display: none;
+}
+
+/* Scelta del colore: radio nativi nascosti, etichette a pallino grande. */
+.scelta-colore {
+  border: 0;
+  padding: 0;
+  min-width: 0;
+}
+
+.scelta-colore legend {
+  font-weight: 600;
+  margin-bottom: var(--spazio-2);
+  padding: 0;
+}
+
+.scelta-colore__opzioni {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--spazio-2);
+}
+
+.scelta-colore__opzione {
+  position: relative;
+  display: inline-grid;
+  place-items: center;
+  width: var(--area-tocco);
+  height: var(--area-tocco);
+  border-radius: 50%;
+  background: var(--colore);
+  box-shadow: inset 0 0 0 2px rgb(0 0 0 / 0.15);
+  cursor: pointer;
+  transition: transform var(--durata-breve) var(--curva);
+}
+
+.scelta-colore__opzione:hover {
+  transform: scale(1.08);
+}
+
+.scelta-colore__opzione input {
+  position: absolute;
+  inset: 0;
+  margin: 0;
+  opacity: 0;
+  cursor: inherit;
+}
+
+/* Spunta sul colore scelto (non solo il colore distingue la selezione). */
+.scelta-colore__opzione:has(input:checked) {
+  box-shadow: 0 0 0 3px var(--colore-superficie), 0 0 0 5px var(--colore-testo);
+}
+
+.scelta-colore__opzione:has(input:checked)::after {
+  content: "✓";
+  color: #fff;
+  font-weight: 900;
+  font-size: 1.25rem;
+  text-shadow: 0 1px 2px rgb(0 0 0 / 0.6);
+}
+
+.scelta-colore__opzione:has(input:focus-visible) {
+  outline: 3px solid var(--colore-focus);
+  outline-offset: 5px;
+}
+
+/* Sala d'attesa. */
+.sala {
+  display: grid;
+  gap: var(--spazio-5);
+}
+
+.sala__codice {
+  display: grid;
+  gap: var(--spazio-2);
+  justify-items: center;
+  text-align: center;
+}
+
+.sala__codice-valore {
+  font-family: var(--font-mono);
+  font-size: var(--testo-xxl);
+  font-weight: 800;
+  letter-spacing: 0.2em;
+  padding: var(--spazio-2) var(--spazio-4);
+  border: 2px dashed var(--colore-bordo-forte);
+  border-radius: var(--raggio-l);
+  background: var(--colore-superficie-2);
+  user-select: all;
+}
+
+.sala__link {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--spazio-2);
+  width: 100%;
+  max-width: 36rem;
+}
+
+.sala__link .campo__input {
+  flex: 1 1 16rem;
+  font-family: var(--font-mono);
+  font-size: var(--testo-s);
+}
+
+.sala__giocatori {
+  display: grid;
+  gap: var(--spazio-2);
+}
+
+.sala__giocatore {
+  display: flex;
+  align-items: center;
+  gap: var(--spazio-3);
+  min-height: var(--area-tocco);
+  padding: var(--spazio-2) var(--spazio-3);
+  border: 1px solid var(--colore-bordo);
+  border-left: 6px solid var(--colore);
+  border-radius: var(--raggio-m);
+  background: var(--colore-superficie-2);
+}
+
+.sala__giocatore--io {
+  background: var(--colore-primario-tenue);
+}
+
+.sala__giocatore--disconnesso {
+  opacity: 0.6;
+}
+
+.sala__nome {
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.sala__etichette {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--spazio-1);
+  margin-left: auto;
+}
+
+.etichetta {
+  display: inline-block;
+  padding: 0.1em 0.6em;
+  border-radius: var(--raggio-pieno);
+  font-size: var(--testo-xs);
+  font-weight: 700;
+  background: var(--colore-superficie-3);
+  color: var(--colore-testo-tenue);
+}
+
+.etichetta--host {
+  background: var(--colore-avviso-tenue);
+  color: var(--colore-avviso);
+}
+
+.etichetta--io {
+  background: var(--colore-primario);
+  color: var(--colore-su-primario);
+}
+
+.sala__posto-libero {
+  display: flex;
+  align-items: center;
+  min-height: var(--area-tocco);
+  padding: var(--spazio-2) var(--spazio-3);
+  border: 1px dashed var(--colore-bordo);
+  border-radius: var(--raggio-m);
+  color: var(--colore-testo-tenue);
+  font-size: var(--testo-s);
+}
+
+.sala__comandi {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--spazio-3);
+  justify-content: space-between;
+  align-items: center;
+}
+
+.sala__suggerimento {
+  color: var(--colore-testo-tenue);
+  font-size: var(--testo-s);
+}
+
+/* ------------------------------------------------------------------------ */
+/* 8. Toast e indicatore di connessione                                     */
+/* ------------------------------------------------------------------------ */
+
+/* Contenitore dei toast: in basso al centro, sopra a tutto tranne i dialoghi
+   modali (che stanno nel top layer del browser). Gli elementi .toast sono
+   creati da dialoghi.toast(); qui c'è uno stile di base che pannelli.css può
+   raffinare. */
+#toast {
+  position: fixed;
+  left: 50%;
+  bottom: max(var(--spazio-4), env(safe-area-inset-bottom));
+  z-index: 900;
+  display: flex;
+  flex-direction: column-reverse;
+  align-items: center;
+  gap: var(--spazio-2);
+  width: min(32rem, calc(100vw - 2 * var(--spazio-4)));
+  transform: translateX(-50%);
+  pointer-events: none;
+}
+
+#toast > * {
+  pointer-events: auto;
+}
+
+.toast {
+  width: 100%;
+  padding: var(--spazio-3) var(--spazio-4);
+  border-radius: var(--raggio-m);
+  border-left: 5px solid var(--colore-info);
+  background: var(--colore-superficie);
+  color: var(--colore-testo);
+  box-shadow: var(--ombra-3);
+  animation: toast-entra var(--durata-media) var(--curva);
+}
+
+.toast--successo { border-left-color: var(--colore-successo); }
+.toast--avviso   { border-left-color: var(--colore-avviso); }
+.toast--errore   { border-left-color: var(--colore-errore); }
+
+.toast--uscita {
+  opacity: 0;
+  transform: translateY(8px);
+  transition: opacity var(--durata-media), transform var(--durata-media);
+}
+
+@keyframes toast-entra {
+  from { opacity: 0; transform: translateY(12px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+.indicatore-connessione {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--spazio-2);
+  padding: var(--spazio-1) var(--spazio-3);
+  border-radius: var(--raggio-pieno);
+  font-size: var(--testo-s);
+  background: var(--colore-superficie-2);
+  border: 1px solid var(--colore-bordo);
+  color: var(--colore-testo-tenue);
+}
+
+.indicatore-connessione__punto {
+  width: 0.65rem;
+  height: 0.65rem;
+  border-radius: 50%;
+  background: var(--colore-avviso);
+}
+
+.indicatore-connessione[data-stato="connesso"] .indicatore-connessione__punto {
+  background: var(--colore-successo);
+}
+
+.indicatore-connessione[data-stato="connessione"] .indicatore-connessione__punto,
+.indicatore-connessione[data-stato="riconnessione"] .indicatore-connessione__punto {
+  animation: pulsa 1.2s ease-in-out infinite;
+}
+
+.indicatore-connessione[data-stato="riconnessione"],
+.indicatore-connessione[data-stato="chiuso"] {
+  color: var(--colore-avviso);
+  background: var(--colore-avviso-tenue);
+  border-color: currentColor;
+}
+
+.indicatore-connessione[data-stato="chiuso"] .indicatore-connessione__punto {
+  background: var(--colore-errore);
+}
+
+@keyframes pulsa {
+  0%, 100% { opacity: 1; }
+  50%      { opacity: 0.3; }
+}
+
+/* Su schermi molto stretti l'indicatore mostra solo il pallino quando è tutto ok. */
+@media (max-width: 30rem) {
+  .indicatore-connessione[data-stato="connesso"] .indicatore-connessione__testo {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip: rect(0 0 0 0);
+    white-space: nowrap;
+  }
+}
+
+/* Stampa: niente barra né toast. */
+@media print {
+  .barra,
+  #toast,
+  .salta-contenuto {
+    display: none !important;
+  }
+}
