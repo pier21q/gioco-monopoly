@@ -1,0 +1,18 @@
+{
+  "name": "gioco-monopoly-creato-molto",
+  "version": "0.1.0",
+  "description": "Monopoly multigiocatore online (fino a 6 giocatori) giocabile da browser tramite link condiviso.",
+  "private": true,
+  "license": "UNLICENSED",
+  "main": "server/index.js",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "start": "node server/index.js",
+    "test": "node --test tests/"
+  },
+  "dependencies": {
+    "ws": "^8.18.0"
+  }
+}

@@ -1,0 +1,22 @@
+# Dipendenze
+node_modules/
+
+# Segreti e configurazione locale (nel repository va solo .env.example)
+.env
+.env.*
+!.env.example
+
+# Log e file temporanei
+*.log
+npm-debug.log*
+.DS_Store
+Thumbs.db
+
+# Output di test e coverage
+coverage/
+.nyc_output/
+
+# Editor
+.vscode/
+.idea/
+*.swp
