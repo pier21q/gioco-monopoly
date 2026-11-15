@@ -327,7 +327,14 @@ della banca.
 
 * `creditoreId` `null` = banca (tasse, carte, cauzione).
 * `motivo` ∈ `affitto` · `tassa` · `carta` · `cauzione` · `pagaATutti` ·
-  `interesseScambio`.
+  `interesseScambio` · `interesseBancarotta` (10% sulle ipotecate ricevute
+  dal creditore di una bancarotta). Con `motivo: 'affitto'`/`'tassa'` c'è
+  anche `casella`.
+* Se nasce un debito mentre un altro è già aperto (es. "ricevete 10 € da ogni
+  giocatore" con più giocatori senza liquidità) finisce in
+  `stato.debitiInAttesa` (stesso shape, senza `faseDopo`) e diventa il
+  `debito` corrente quando il precedente si chiude. Un giocatore con un
+  debito aperto o in coda paga i nuovi addebiti solo dopo (ordine garantito).
 * Dopo **ogni** azione in fase `debito`, se `denaro >= importo` il motore salda
   automaticamente il debito (evento `debitoSaldato`) e passa a `faseDopo`.
 * `dichiaraBancarotta` è ammessa solo in questa fase: i beni vanno al
@@ -340,6 +347,17 @@ di pesca (si pesca in testa, si rimette in coda). Le carte `esciGratis`
 escono dal mazzo finché il giocatore non le usa. **Il server rimuove `mazzi`
 dallo stato inviato ai client** (`motore.statoPubblico`): il client non deve
 dipendere da questo campo.
+
+### 1.9 bis Campi aggiuntivi (fase 2)
+
+| Campo | Tipo | Note |
+|---|---|---|
+| `debitiInAttesa` | `Debito[]` | coda dei debiti successivi (§1.8); di solito `[]` |
+| `asteInAttesa` | `number[]` | caselle da mettere all'asta dopo una bancarotta verso la banca |
+| `cartePrigioneDi` | `{ [idCarta]: giocatoreId }` | chi possiede le carte `esciGratis` (`P05`, `I08`): serve a rimetterle nel mazzo giusto |
+| `asta.faseDopo` | fase | fase a cui si torna quando l'asta si chiude |
+
+Il client può ignorarli; `statoPubblico` li lascia (non sono segreti).
 
 ### 1.10 Log
 
@@ -456,12 +474,25 @@ Esempi di oggetto `azione`:
 { "tipo": "accettaScambio", "scambioId": "s3" }
 ```
 
-**Stato di avanzamento (fase 1).** Sono operative: validazioni comuni,
-`azioniDisponibili`, `lanciaDadi` (movimento, stipendio, prigione base, tre
-doppi), `compra`, `pagaCauzione`, `finisciTurno`. Le altre azioni e la
-risoluzione di affitti, tasse, carte e debiti rispondono `NON_IMPLEMENTATO`
-e sono marcate `TODO fase 2` nel codice. Il contratto qui sopra è quello
-definitivo che la fase 2 deve rispettare.
+**Stato di avanzamento (fase 2).** Tutte le 16 azioni sono implementate;
+`NON_IMPLEMENTATO` non viene più restituito. Precisazioni:
+
+* L'ordine dei controlli è: tipo → giocatore esistente → non fallito → fase
+  `lobby`/`finePartita` → permesso (turno, fase, ruolo) → parametri → regola.
+  Quindi `pagaCauzione` fuori di prigione dà `NON_IN_PRIGIONE`, un'azione di
+  turno fatta da altri dà `NON_IL_TUO_TURNO`. I messaggi sono specifici
+  (es. "Vicolo Corto costa 60 €, ma hai solo 40 €").
+* `vendiCasa`/`ipoteca` da chi non è il debitore in fase `debito` →
+  `NON_DEBITORE`; da chi non partecipa all'asta → `GIOCATORE_NON_VALIDO`.
+* `rifiutaScambio` (rifiuto o ritiro) è ammesso anche durante un'asta.
+* Negli scambi non si può cedere una casella se nel **suo gruppo** ci sono
+  costruzioni (`HA_COSTRUZIONI`); carte prigione oltre quelle possedute →
+  `NESSUNA_CARTA_PRIGIONE`; denaro oltre quello posseduto →
+  `FONDI_INSUFFICIENTI`. I possessi si riverificano all'accettazione.
+* Asta: l'offerta deve **superare** quella corrente, quindi i pareggi sono
+  impossibili (vale l'offerta arrivata prima). Il miglior offerente può
+  rilanciare su sé stesso. I giocatori disconnessi all'avvio dell'asta
+  partono già in `passati`.
 
 ### 2.5 Altri export di `motore.js`
 
@@ -471,7 +502,15 @@ definitivo che la fase 2 deve rispettare.
 | `FASI` | array frozen delle 7 fasi |
 | `azioniDisponibili(stato, giocatoreId) → string[]` | i `tipo` che `giocatoreId` può eseguire adesso (per abilitare i pulsanti del client). Non valuta i parametri. |
 | `statoPubblico(stato) → StatoPartita` | copia senza `mazzi` (quella che va ai client) |
-| `prossimoGiocatore(stato) → giocatoreId` | prossimo non fallito dopo il giocatore di turno |
+| `prossimoGiocatore(stato) → giocatoreId` | prossimo non fallito **e connesso** dopo il giocatore di turno (se nessun altro è connesso: il prossimo non fallito) |
+| `gestisciDisconnessione(stato, giocatoreId, {random, ora}) → { stato, eventi }` | da chiamare dal server quando un disconnesso blocca la partita (es. dopo una tolleranza): annulla il suo scambio pendente, lo fa passare all'asta (se non è il miglior offerente), se è di turno in `daDecidereAcquisto` apre l'asta, in `daLanciare`/`mossa` passa il turno. Un debito resta in attesa. Se non c'è nulla da fare ritorna lo stesso `stato` ed `eventi: []` (versione invariata). |
+| `calcolaAffitto(stato, casella, opz?) → { importo, moltiplicatore? }` | affitto corrente di una casella posseduta (società: usa `stato.dadi`) |
+| `patrimonioLiquidabile(stato, giocatoreId)` | come in `bancarotta.js` |
+
+Moduli interni aggiunti in `server/gioco/`: `nucleo.js` (pagamenti, debiti,
+aste, turno: primitive mutanti usate su copie), `errori.js` (codici e
+messaggi del motore, così il motore non dipende da `protocollo.js`). Test:
+`node --test server/gioco/test/`.
 
 ### 2.6 `server/gioco/scambi.js`
 
@@ -935,6 +974,7 @@ Esempi:
 | `connessione` | `{ giocatoreId, connesso }` |
 | `partitaIniziata` | `{ ordine: [giocatoreId…], denaroIniziale }` |
 | `turno` | `{ giocatoreId, numero }` |
+| `turnoSaltato` | `{ giocatoreId, motivo: 'disconnesso' }` (fase 2) |
 | `dadi` | `{ dadi: [d1, d2], doppio, inPrigione, doppiConsecutivi }` |
 | `movimento` | `{ da, a, passi, passatoDalVia, causa: 'dadi' \| 'carta' }` (`passi` negativo per `indietro`) |
 | `passaggioVia` | `{ importo }` |
@@ -973,7 +1013,9 @@ Protocollo e stanze:
 `MESSAGGIO_NON_VALIDO` · `TIPO_SCONOSCIUTO` · `STANZA_INESISTENTE` ·
 `STANZA_PIENA` · `PARTITA_INIZIATA` · `NOME_NON_VALIDO` · `NOME_OCCUPATO` ·
 `COLORE_NON_VALIDO` · `COLORE_OCCUPATO` · `GIA_IN_STANZA` · `NON_IN_STANZA` ·
-`NON_HOST` · `POCHI_GIOCATORI` · `TOKEN_NON_VALIDO` · `SOLO_IN_LOBBY`
+`NON_HOST` · `POCHI_GIOCATORI` · `TOKEN_NON_VALIDO` · `SOLO_IN_LOBBY` ·
+`ERRORE_INTERNO` (eccezione nel motore o nel server: l'azione non è
+applicata) · `TROPPI_MESSAGGI` (anti-flood, più di 30 messaggi al secondo)
 
 Motore:
 `AZIONE_NON_VALIDA` · `PARAMETRI_NON_VALIDI` · `GIOCATORE_NON_VALIDO` ·
@@ -998,10 +1040,13 @@ Regolamento ufficiale, con queste scelte esplicite:
    carta `vaiA`; mai andando in prigione né con `indietro`.
 2. **Parcheggio gratuito**: non succede nulla (nessun "piatto" di tasse).
 3. **Affitti**: proprietà `affitti[caseCostruite]`; con gruppo completo e
-   nessuna costruzione l'affitto base è **raddoppiato**; stazioni per numero
-   possedute; società dadi × 4 (una) o × 10 (due). Niente affitto su casella
-   ipotecata né al proprietario stesso. L'affitto si paga anche se il
-   proprietario è disconnesso.
+   nessuna costruzione l'affitto base è **raddoppiato** (anche se un'altra
+   casella del gruppo è ipotecata); stazioni per numero possedute (le
+   ipotecate contano nel numero); società dadi × 4 (una) o × 10 (due). Niente
+   affitto su casella ipotecata né al proprietario stesso. L'affitto si paga
+   anche se il proprietario è disconnesso o in prigione. Carta "stazione più
+   vicina": affitto × 2; "società più vicina": nuovo lancio × 10 (il nuovo
+   lancio non cambia `stato.dadi`, è in `dati.dadi` dell'evento `affitto`).
 4. **Costruzioni**: solo con gruppo completo e non ipotecato, uniformi
    (differenza max 1 casa tra le caselle del gruppo), limitate dalle scorte
    (32 case, 12 alberghi). Albergo = 4 case + `costoCasa`; costruirlo
@@ -1019,12 +1064,21 @@ Regolamento ufficiale, con queste scelte esplicite:
    scambiabili; una sola proposta pendente per partita.
 10. **Debito e bancarotta**: non si va mai in negativo; si entra in `debito` e
     si liquida. Bancarotta verso un giocatore: tutto a lui (costruzioni
-    vendute alla banca, incasso al creditore; ipotecate restano ipotecate).
-    Bancarotta verso la banca: proprietà **tornano libere alla banca**
-    (semplificazione: niente asta immediata). Fine partita quando resta un
-    solo giocatore non fallito.
-11. **Carte**: `esciGratis` resta al giocatore e torna in coda al mazzo
+    vendute alla banca, incasso al creditore; ipotecate restano ipotecate e
+    il creditore paga subito il 10% d'interesse alla banca; carte prigione al
+    creditore). Bancarotta verso la banca: le proprietà tornano libere e senza
+    ipoteca e vanno **all'asta una dopo l'altra** tra i giocatori rimasti
+    (`asteInAttesa`); le carte prigione tornano nei mazzi. "Pagate 50 € a ogni
+    giocatore" crea un addebito separato verso ciascuno: in caso di
+    bancarotta il creditore è quello del debito aperto. Fine partita quando
+    resta un solo giocatore non fallito.
+11. **Carte**: `esciGratis` resta al giocatore e torna in coda al **suo** mazzo
     quando usata; le altre tornano in coda subito. Nessun limite di tempo per
-    i turni (fase 1).
+    i turni.
 12. **Disconnessioni**: in partita il giocatore resta e può riconnettersi col
-    token; il suo turno attende. Nessun kick automatico in fase 1.
+    token. Quando il turno passa, i disconnessi vengono **saltati** (evento
+    `turnoSaltato`); se il disconnesso è già di turno o blocca un'asta il
+    server può chiamare `motore.gestisciDisconnessione`.
+13. **Prigione al terzo tentativo** senza liquidità: il giocatore esce, si
+    muove e la cauzione diventa un `debito` (`motivo: 'cauzione'`) verso la
+    banca; gli effetti della casella d'arrivo si applicano dopo.
