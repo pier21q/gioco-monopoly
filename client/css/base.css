@@ -1,0 +1,11 @@
+/*
+ * client/css/base.css
+ *
+ * Fondamenta visive comuni a tutta l'applicazione: reset leggero, variabili
+ * (colori, spaziature, tipografia), tema chiaro/scuro, classi di utilità per
+ * l'accessibilità (contenuto visivamente nascosto, link "salta al contenuto",
+ * focus visibile) e layout di pagina ad alto livello.
+ *
+ * Le regole specifiche del tabellone stanno in tabellone.css, quelle dei
+ * pannelli laterali e dei dialoghi in pannelli.css.
+ */
