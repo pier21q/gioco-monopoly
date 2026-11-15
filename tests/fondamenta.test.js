@@ -178,14 +178,14 @@ test('motore: lanciaDadi muove il giocatore, non muta lo stato in ingresso e pro
   assert.ok(disponibili.includes('proponiScambio'));
   assert.ok(!disponibili.includes('finisciTurno'));
 
-  // Dadi forzati (random al centro dell'intervallo): 2 e 5 → posizione 7
-  // (Imprevisti, non acquistabile) → fase mossa.
-  const valori = [1.5 / 6, 4.5 / 6];
+  // Dadi forzati (random al centro dell'intervallo): 4 e 6 → posizione 10
+  // (Prigione / Transito: nessun effetto) → fase mossa.
+  const valori = [3.5 / 6, 5.5 / 6];
   const ris = motore.applicaAzione(s, primo, { tipo: 'lanciaDadi' }, { random: () => valori.shift(), ora: ORA_FISSA });
   assert.equal(ris.errore, undefined);
   assert.deepEqual(s, copia, 'lo stato originale non deve cambiare');
-  assert.deepEqual(ris.stato.dadi, [2, 5]);
-  assert.equal(ris.stato.giocatori[0].posizione, 7);
+  assert.deepEqual(ris.stato.dadi, [4, 6]);
+  assert.equal(ris.stato.giocatori[0].posizione, 10);
   assert.equal(ris.stato.fase, 'mossa');
   assert.equal(ris.stato.versione, s.versione + 1);
   assert.deepEqual(ris.eventi.map((e) => e.tipo), ['dadi', 'movimento']);
@@ -216,9 +216,9 @@ test('motore: arrivo su casella libera → daDecidereAcquisto → compra', () =>
   assert.equal(r2.stato.fase, 'mossa');
   assert.equal(r2.eventi[0].tipo, 'acquisto');
 
-  // Le azioni non ancora implementate rispondono con un errore pulito, senza lanciare.
+  // Dalla fase 2 tutte le azioni sono implementate: con un solo Vicolo non si costruisce.
   const r3 = motore.applicaAzione(r2.stato, primo, { tipo: 'costruisci', casella: 3 }, { ora: ORA_FISSA });
-  assert.equal(r3.errore.codice, 'NON_IMPLEMENTATO');
+  assert.equal(r3.errore.codice, 'GRUPPO_INCOMPLETO', 'Regola: per costruire serve tutto il gruppo di colore');
 });
 
 test('scambi e bancarotta: firme presenti e validazioni di base', () => {
@@ -228,7 +228,11 @@ test('scambi e bancarotta: firme presenti e validazioni di base', () => {
   assert.equal(typeof scambi.applicaScambio, 'function');
   assert.equal(scambi.validaProposta(s, a, { aId: b }).errore.codice, 'SCAMBIO_VUOTO');
   assert.equal(scambi.validaProposta(s, a, { aId: a, offre: { denaro: 10 } }).errore.codice, 'GIOCATORE_NON_VALIDO');
-  const ok = scambi.validaProposta(s, a, { aId: b, offre: { denaro: 100, proprieta: [3, 1, 1] } }, { ora: ORA_FISSA });
+  // Chi offre deve possedere le proprietà: a ottiene le caselle 1 e 3 in una copia dello stato.
+  const sp = structuredClone(s);
+  sp.proprieta['1'].proprietario = a;
+  sp.proprieta['3'].proprietario = a;
+  const ok = scambi.validaProposta(sp, a, { aId: b, offre: { denaro: 100, proprieta: [3, 1, 1] } }, { ora: ORA_FISSA });
   assert.equal(ok.ok, true);
   assert.deepEqual(ok.scambio.offre, { denaro: 100, proprieta: [1, 3], cartePrigione: 0 });
   assert.equal(ok.scambio.id, 's1');
