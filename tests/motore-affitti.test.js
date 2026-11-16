@@ -102,8 +102,8 @@ test('debito: senza soldi per un affitto si apre un debito (mai denaro negativo)
   assert.equal(denaro(r, A), 1500, 'finché non paga, il creditore non incassa');
   const d = r.stato.debito;
   assert.deepEqual([d.giocatoreId, d.creditoreId, d.importo, d.motivo, d.casella, d.faseDopo], [B, A, 10, 'affitto', 11, 'mossa']);
-  assert.deepEqual(motore.azioniDisponibili(r.stato, B), ['vendiCasa', 'ipoteca', 'proponiScambio', 'dichiaraBancarotta']);
-  assert.deepEqual(motore.azioniDisponibili(r.stato, A), ['proponiScambio']);
+  assert.deepEqual(motore.azioniDisponibili(r.stato, B), ['vendiCasa', 'ipoteca', 'proponiScambio', 'dichiaraBancarotta', 'abbandona']);
+  assert.deepEqual(motore.azioniDisponibili(r.stato, A), ['proponiScambio', 'abbandona']);
   H.rifiuta(r.stato, B, { tipo: 'finisciTurno' }, 'FASE_ERRATA', 'Con un debito aperto non si può finire il turno');
   H.rifiuta(r.stato, A, { tipo: 'ipoteca', casella: 11 }, 'NON_DEBITORE', 'Durante il debito di B solo B può ipotecare');
 

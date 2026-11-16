@@ -122,7 +122,7 @@ const CASELLE = [
   stazione(25, 'Stazione Nord'),
   proprieta(26, 'Viale Costantino', 'giallo', 260, [22, 110, 330, 800, 975, 1150], 150),
   proprieta(27, 'Viale Traiano', 'giallo', 260, [22, 110, 330, 800, 975, 1150], 150),
-  societa(28, 'Acquedotto'),
+  societa(28, 'Società Acqua Potabile'),
   proprieta(29, 'Piazza Giulio Cesare', 'giallo', 280, [24, 120, 360, 850, 1025, 1200], 150),
   speciale(30, 'vaiInPrigione', 'In prigione!'),
   proprieta(31, 'Via Roma', 'verde', 300, [26, 130, 390, 900, 1100, 1275], 200),

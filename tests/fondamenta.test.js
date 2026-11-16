@@ -89,11 +89,12 @@ test('protocollo: analizza accetta messaggi validi e rifiuta quelli malformati',
 // motore.js
 // ---------------------------------------------------------------------------
 
-test('motore: esporta le 16 azioni e le 7 fasi previste', () => {
+test('motore: esporta le 17 azioni e le 7 fasi previste', () => {
+  // INTERFACCE.md §2.4: le 16 azioni di gioco più `abbandona` (uscita volontaria).
   assert.deepEqual([...motore.AZIONI], [
     'lanciaDadi', 'compra', 'rifiutaAcquisto', 'offertaAsta', 'passaAsta', 'costruisci', 'vendiCasa',
     'ipoteca', 'disipoteca', 'proponiScambio', 'accettaScambio', 'rifiutaScambio', 'pagaCauzione',
-    'usaCartaPrigione', 'finisciTurno', 'dichiaraBancarotta',
+    'usaCartaPrigione', 'finisciTurno', 'dichiaraBancarotta', 'abbandona',
   ]);
   assert.deepEqual([...motore.FASI], ['lobby', 'daLanciare', 'mossa', 'daDecidereAcquisto', 'asta', 'debito', 'finePartita']);
   for (const nome of ['creaStatoLobby', 'creaPartita', 'applicaAzione', 'azioniDisponibili', 'statoPubblico', 'prossimoGiocatore']) {

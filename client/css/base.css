@@ -34,15 +34,8 @@
   --giocatore-7: #db2777; /* rosa */
   --giocatore-8: #a16207; /* ocra */
 
-  /* Gruppi di colore del tabellone (usati da tabellone.css e pannelli.css). */
-  --gruppo-marrone: #8b5a2b;
-  --gruppo-celeste: #8fd3f4;
-  --gruppo-rosa: #d6409f;
-  --gruppo-arancione: #f39c12;
-  --gruppo-rosso: #e53935;
-  --gruppo-giallo: #f4d03f;
-  --gruppo-verde: #2e9d4f;
-  --gruppo-blu: #1f4fbf;
+  /* I colori dei gruppi del tabellone arrivano dai dati di gioco
+     (GRUPPI[...].colore in /dati/tabellone.js): qui non vanno duplicati. */
 
   /* Palette di marca. */
   --colore-primario: #1e8e3e;
@@ -356,15 +349,18 @@ a {
   opacity: 0.55;
 }
 
+/* Sfondo "forte": il testo bianco sul verde base (#1e8e3e) arriva solo a
+   4,2:1, sotto il minimo AA di 4,5:1; sul verde forte (#156b2e) è 6,6:1. */
 .pulsante--primario {
-  background: var(--colore-primario);
-  border-color: var(--colore-primario);
+  background: var(--colore-primario-forte);
+  border-color: var(--colore-primario-forte);
   color: var(--colore-su-primario);
 }
 
 .pulsante--primario:hover:not(:disabled) {
   background: var(--colore-primario-forte);
   border-color: var(--colore-primario-forte);
+  filter: brightness(0.9);
 }
 
 .pulsante--secondario {

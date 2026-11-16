@@ -48,6 +48,26 @@ function invia(azione) {
   dispatchCorrente(azione);
 }
 
+/** Per quanto si ignora un secondo clic sulla stessa azione in attesa del nuovo stato. */
+const ATTESA_INVIO_MS = 800;
+let versioneCorrente = null;
+let invioInAttesa = null; // { tipo, versione, scade }
+
+/**
+ * Invia un'azione del turno ignorando il doppio clic: finché il server non
+ * risponde con un nuovo stato (o per ATTESA_INVIO_MS) la stessa azione non
+ * viene rimandata, altrimenti il secondo invio tornerebbe indietro come errore.
+ */
+function inviaUnaVolta(azione) {
+  const adesso = Date.now();
+  if (invioInAttesa && invioInAttesa.tipo === azione.tipo && invioInAttesa.versione === versioneCorrente
+    && adesso < invioInAttesa.scade) {
+    return;
+  }
+  invioInAttesa = { tipo: azione.tipo, versione: versioneCorrente, scade: adesso + ATTESA_INVIO_MS };
+  invia(azione);
+}
+
 // ---------------------------------------------------------------------------
 // Definizione dei pulsanti della barra azioni
 // ---------------------------------------------------------------------------
@@ -73,11 +93,12 @@ const GRUPPI_AZIONI = [
     ],
   },
   {
-    etichetta: 'Prigione e debiti',
+    etichetta: 'Prigione, debiti e uscita',
     pulsanti: [
       { id: 'cauzione', testo: 'Paga la cauzione', tipo: 'pagaCauzione' },
       { id: 'carta', testo: 'Usa la carta prigione', tipo: 'usaCartaPrigione' },
       { id: 'bancarotta', testo: 'Dichiara bancarotta', tipo: 'dichiaraBancarotta', pericolo: true },
+      { id: 'abbandona', testo: 'Abbandona la partita', tipo: 'abbandona', pericolo: true },
     ],
   },
 ];
@@ -129,18 +150,18 @@ function statoPulsante(def, p, mio) {
       return {
         motivo: base,
         dettaglio: !base && io.inPrigione ? 'tenta il doppio' : (!base && p.turno.doppiConsecutivi > 0 ? 'hai fatto un doppio' : null),
-        onclick: () => invia({ tipo: 'lanciaDadi' }),
+        onclick: () => inviaUnaVolta({ tipo: 'lanciaDadi' }),
       };
     case 'compra': {
       const c = casellaCorrente(p, mio);
       const prezzo = c && c.prezzo;
       const motivo = base || (prezzo && io.denaro < prezzo ? `Ti mancano ${euro(prezzo - io.denaro)}: ipoteca o vendi, oppure mettila all’asta` : null);
-      return { motivo, dettaglio: !base && prezzo ? euro(prezzo) : null, onclick: () => invia({ tipo: 'compra' }) };
+      return { motivo, dettaglio: !base && prezzo ? euro(prezzo) : null, onclick: () => inviaUnaVolta({ tipo: 'compra' }) };
     }
     case 'asta':
-      return { motivo: base, onclick: () => invia({ tipo: 'rifiutaAcquisto' }) };
+      return { motivo: base, onclick: () => inviaUnaVolta({ tipo: 'rifiutaAcquisto' }) };
     case 'finisci':
-      return { motivo: base, onclick: () => invia({ tipo: 'finisciTurno' }) };
+      return { motivo: base, onclick: () => inviaUnaVolta({ tipo: 'finisciTurno' }) };
     case 'costruisci':
     case 'vendi':
     case 'ipoteca':
@@ -160,16 +181,32 @@ function statoPulsante(def, p, mio) {
       return {
         motivo: base || (io.denaro < CAUZIONE ? `Ti servono ${euro(CAUZIONE)}` : null),
         dettaglio: euro(CAUZIONE),
-        onclick: () => invia({ tipo: 'pagaCauzione' }),
+        onclick: () => inviaUnaVolta({ tipo: 'pagaCauzione' }),
       };
     case 'carta':
       return {
         motivo: base,
         dettaglio: io.cartePrigione ? `ne hai ${io.cartePrigione}` : null,
-        onclick: () => invia({ tipo: 'usaCartaPrigione' }),
+        onclick: () => inviaUnaVolta({ tipo: 'usaCartaPrigione' }),
       };
     case 'bancarotta':
       return { motivo: base, onclick: () => dialoghi.apri('bancarotta', {}, dispatchCorrente) };
+    case 'abbandona': {
+      const conDebito = p.fase === 'debito' && p.debito && p.debito.giocatoreId === mio && p.debito.creditoreId;
+      return {
+        motivo: base,
+        onclick: () => dialoghi.apri('conferma', {
+          titolo: 'Abbandonare la partita?',
+          testo: conDebito
+            ? `Uscirai dalla partita e non potrai rientrare. Denaro e proprietà passano a ${nomeDi(p, p.debito.creditoreId)}, a cui devi dei soldi. Gli altri continuano a giocare.`
+            : 'Uscirai dalla partita e non potrai rientrare. Le tue proprietà tornano alla banca, che le mette all’asta tra gli altri giocatori. Gli altri continuano a giocare.',
+          conferma: 'Abbandono la partita',
+          annulla: 'Resto in gioco',
+          pericolo: true,
+          azione: { tipo: 'abbandona' },
+        }, dispatchCorrente),
+      };
+    }
     default:
       return { motivo: base, onclick: () => {} };
   }
@@ -499,7 +536,7 @@ function disegnaAvvisi(p, mio) {
   }
   const diTurno = giocatoreDa(p, p.turno && p.turno.giocatoreId);
   if (diTurno && !diTurno.connesso && p.fase !== 'finePartita' && diTurno.id !== mio) {
-    voci.push(['attesa', 'avviso', `${diTurno.nome} si è disconnesso: il turno riprende quando torna.`, null, null]);
+    voci.push(['attesa', 'avviso', `${diTurno.nome} si è disconnesso: se non torna entro un minuto circa il turno passa al giocatore successivo.`, null, null]);
   }
   const io = giocatoreDa(p, mio);
   if (io && io.fallito && p.fase !== 'finePartita') {
@@ -820,6 +857,7 @@ export function render(radice, stato, dispatch) {
     monta(radice);
     ultimaChiaveLog = null;
   }
+  versioneCorrente = p.versione;
   if (p.codice !== codicePartita) {
     codicePartita = p.codice;
     dialoghiMostrati.clear();

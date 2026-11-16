@@ -22,12 +22,12 @@
  *     ui:toast.
  */
 
-/** I 16 tipi di azione di gioco (§2.4): vanno al server come `{ tipo: 'azione', azione }`. */
+/** I 17 tipi di azione di gioco (§2.4): vanno al server come `{ tipo: 'azione', azione }`. */
 export const AZIONI_GIOCO = Object.freeze([
   'lanciaDadi', 'compra', 'rifiutaAcquisto', 'offertaAsta', 'passaAsta',
   'costruisci', 'vendiCasa', 'ipoteca', 'disipoteca', 'proponiScambio',
   'accettaScambio', 'rifiutaScambio', 'pagaCauzione', 'usaCartaPrigione',
-  'finisciTurno', 'dichiaraBancarotta',
+  'finisciTurno', 'dichiaraBancarotta', 'abbandona',
 ]);
 
 /** Messaggi di protocollo inviati così come sono (§3.2). */
@@ -37,6 +37,40 @@ export const MESSAGGI_PROTOCOLLO = Object.freeze([
 
 /** Quanti eventi tenere nello store (per toast e cronaca). */
 export const MAX_EVENTI = 100;
+
+/** Quanti eventi di cronaca tenere in `partita.log` (come LOG_MAX del server). */
+export const MAX_LOG = 200;
+
+function chiaveLog(ev) {
+  return `${ev.t}|${ev.tipo}|${ev.giocatoreId || ''}|${ev.testo || ''}`;
+}
+
+/**
+ * Unisce la cronaca già nota con quella di un nuovo `stato`. Negli
+ * aggiornamenti il server manda solo gli ultimi eventi (il log completo
+ * arriva all'ingresso e alla riconnessione): qui si ritrova il punto di
+ * contatto e si accodano i soli eventi nuovi, così la cronaca e la classifica
+ * finale vedono tutta la partita.
+ *
+ * @param {object[]|undefined} precedente  log dello stato che avevamo
+ * @param {object[]|undefined} nuovo       log dello stato appena ricevuto
+ * @returns {object[]}
+ */
+export function unisciLog(precedente, nuovo) {
+  const prima = Array.isArray(precedente) ? precedente : [];
+  const dopo = Array.isArray(nuovo) ? nuovo : [];
+  if (prima.length === 0) return dopo;
+  if (dopo.length === 0) return prima;
+  const ultima = chiaveLog(prima[prima.length - 1]);
+  let contatto = -1;
+  for (let i = dopo.length - 1; i >= 0; i -= 1) {
+    if (chiaveLog(dopo[i]) === ultima) {
+      contatto = i;
+      break;
+    }
+  }
+  return [...prima, ...dopo.slice(contatto + 1)].slice(-MAX_LOG);
+}
 
 /** Chiavi di salvataggio nel browser. */
 export const CHIAVE_SESSIONE = 'monopoly.sessione';
@@ -157,9 +191,6 @@ export function creaStore(iniziale = {}, gestori = {}) {
     setState,
     subscribe,
     dispatch,
-    // Alias in italiano usati negli stub della fase 1.
-    getStato: getState,
-    sottoscrivi: subscribe,
   };
 }
 
@@ -168,10 +199,10 @@ export function creaStore(iniziale = {}, gestori = {}) {
 // ---------------------------------------------------------------------------
 
 /**
- * La sessione `{ codice, giocatoreId, token }` sta in localStorage (sopravvive
- * alla chiusura della scheda) e in sessionStorage (che ha la precedenza, così
- * due schede diverse nella stessa sessione di browser restano distinte dopo
- * un refresh).
+ * La sessione `{ codice, giocatoreId, token }` sta SOLO in sessionStorage:
+ * sopravvive al refresh della scheda ma non è condivisa con le altre schede,
+ * così ogni scheda dello stesso browser è un giocatore distinto (e due schede
+ * non si rubano il posto a vicenda). Chiudendo la scheda la sessione si perde.
  */
 export function leggiSessione() {
   for (const archivio of archivi()) {
@@ -228,21 +259,67 @@ function salvaPreferenze(preferenze) {
   }
 }
 
-/** sessionStorage prima di localStorage; quelli non disponibili sono saltati. */
+/** L'archivio della sessione (solo sessionStorage), o nessuno se è bloccato. */
 function archivi() {
   const lista = [];
   try { if (globalThis.sessionStorage) lista.push(globalThis.sessionStorage); } catch { /* bloccato */ }
-  try { if (globalThis.localStorage) lista.push(globalThis.localStorage); } catch { /* bloccato */ }
   return lista;
+}
+
+/** Le versioni precedenti salvavano la sessione anche in localStorage: via. */
+function rimuoviSessioneCondivisa() {
+  try { globalThis.localStorage?.removeItem(CHIAVE_SESSIONE); } catch { /* bloccato */ }
+}
+
+/**
+ * Copia dell'ultima sessione in localStorage, usata SOLO su richiesta
+ * esplicita dell'utente ("Riprendi la partita") quando la scheda è stata
+ * chiusa per sbaglio: non viene mai ripresa in automatico, quindi due schede
+ * non si contendono lo stesso giocatore.
+ */
+export const CHIAVE_RIPRESA = 'monopoly.ripresa';
+
+export function leggiRipresa() {
+  try {
+    const s = JSON.parse(globalThis.localStorage?.getItem(CHIAVE_RIPRESA) || 'null');
+    if (s && typeof s.codice === 'string' && typeof s.token === 'string' && typeof s.giocatoreId === 'string') {
+      return { codice: s.codice, giocatoreId: s.giocatoreId, token: s.token };
+    }
+  } catch {
+    /* dato corrotto o archivio non accessibile */
+  }
+  return null;
+}
+
+function salvaRipresa(io) {
+  try {
+    globalThis.localStorage?.setItem(CHIAVE_RIPRESA,
+      JSON.stringify({ codice: io.codice, giocatoreId: io.giocatoreId, token: io.token }));
+  } catch {
+    /* ignora */
+  }
+}
+
+/** Cancella la copia di ripresa, ma solo se è quella del token indicato. */
+function dimenticaRipresa(token) {
+  const salvata = leggiRipresa();
+  if (!salvata || (token && salvata.token !== token)) return;
+  try { globalThis.localStorage?.removeItem(CHIAVE_RIPRESA); } catch { /* ignora */ }
 }
 
 // ---------------------------------------------------------------------------
 // Utilità
 // ---------------------------------------------------------------------------
 
-/** Formatta un importo intero in euro: 1500 → "1.500 €". */
+/**
+ * Formatta un importo intero in euro: 1500 → "1.500 €". Stessa regola di
+ * `euro` in dialoghi.js e tabellone.js e del server (punto delle migliaia
+ * anche sotto i 10.000, cosa che `toLocaleString('it-IT')` non garantisce).
+ */
 export function formattaEuro(importo) {
-  return `${Number(importo || 0).toLocaleString('it-IT')} €`;
+  const v = Math.round(Number(importo) || 0);
+  const cifre = String(Math.abs(v)).replace(/\B(?=(\d{3})+(?!\d))/g, '.');
+  return `${v < 0 ? '−' : ''}${cifre} €`;
 }
 
 /** Importa un modulo senza far cadere l'app se manca o ha un errore. */
@@ -269,8 +346,9 @@ const ERRORI_LOBBY = new Set([
 
 /**
  * Decide se e come notificare un evento con un toast. La cronaca completa è
- * già in #pannelli (role="log"): qui solo ciò che merita attenzione, per non
- * far leggere tutto due volte agli screen reader.
+ * già in #pannelli (role="log", regione viva): qui solo ciò che merita
+ * attenzione. Per non far leggere tutto due volte agli screen reader, in
+ * partita chi chiama mostra questi toast come `silenzioso` (solo visivi).
  *
  * @returns {{ testo: string, livello: string, durata?: number } | null}
  */
@@ -351,6 +429,7 @@ async function avvia() {
     dialoghi: document.getElementById('dialoghi'),
     toast: document.getElementById('toast'),
     connessione: document.getElementById('connessione'),
+    marchio: document.querySelector('.barra__marchio'),
     barraStanza: document.getElementById('barra-stanza'),
     barraAzioni: document.getElementById('barra-azioni'),
   };
@@ -375,20 +454,35 @@ async function avvia() {
 
   const CASELLE = dati?.CASELLE || [];
   const GRUPPI = dati?.GRUPPI || {};
+  /** Senza dati o senza i moduli di gioco la partita non si può disegnare. */
+  const giocoCaricato = CASELLE.length > 0 && Boolean(tabellone) && Boolean(pannelli);
 
   // ----- Parametri iniziali: ?stanza= e sessione salvata ------------------
   const parametri = new URLSearchParams(location.search);
   const codiceUrl = lobby.normalizzaCodice(parametri.get('stanza'));
+  rimuoviSessioneCondivisa();
   const salvata = leggiSessione();
   // Si riprende la sessione salvata solo se il link non punta a un'altra stanza.
   let daRiprendere = salvata && (!codiceUrl || codiceUrl === salvata.codice) ? salvata : null;
+  // Scheda chiusa per sbaglio: la partita si può riprendere, ma solo premendo
+  // il pulsante nella barra (mai in automatico).
+  const copiaRipresa = salvata ? null : leggiRipresa();
+  let ripresaPossibile = copiaRipresa && (!codiceUrl || codiceUrl === copiaRipresa.codice) ? copiaRipresa : null;
 
   /** @type {ReturnType<typeof rete.connetti>|null} */
   let conn = null;
   /** Nome e colore in attesa del codice dopo `creaStanza`. */
   let creazioneInAttesa = null;
+  /** Ultimo `entraStanza` inviato: serve a riprovare se il colore è già preso. */
+  let ingressoInCorso = null;
   let contatoreRif = 0;
   let eraCaduta = false;
+  /**
+   * Connessione fermata dal server: 'sostituita' (partita aperta in un'altra
+   * scheda), 'definitiva' (chiusa per errori) oppure null. Decide il pulsante
+   * mostrato nella barra ("Usa questa scheda" / "Riconnetti").
+   */
+  let fermata = null;
 
   const movimentoRidotto = globalThis.matchMedia?.('(prefers-reduced-motion: reduce)');
 
@@ -397,7 +491,11 @@ async function avvia() {
     if (!testo) return;
     if (typeof dialoghi?.toast === 'function') {
       try {
-        dialoghi.toast(testo, { livello: opzioni.livello || 'info', durata: opzioni.durata || 4000 });
+        dialoghi.toast(testo, {
+          livello: opzioni.livello || 'info',
+          durata: opzioni.durata || 4000,
+          silenzioso: Boolean(opzioni.silenzioso),
+        });
         return;
       } catch (err) {
         console.error('[app] dialoghi.toast:', err);
@@ -407,12 +505,26 @@ async function avvia() {
   }
 
   // ----- Invio verso il server --------------------------------------------
+  /** Messaggi di protocollo: se la connessione non è ancora pronta restano in coda. */
   function invia(messaggio) {
     if (!conn) return false;
     const inviato = conn.invia(messaggio);
     // Durante la prima connessione l'attesa è normale: niente avviso.
     if (!inviato && conn.stato() !== 'connessione') {
       mostraToast('Sei offline: invierò la richiesta appena torna la connessione.', { livello: 'avviso' });
+    }
+    return inviato;
+  }
+
+  /**
+   * Azioni di gioco: mai in coda. Eseguite in ritardo, a contesto cambiato,
+   * verrebbero solo rifiutate dal server con una pioggia di errori.
+   */
+  function inviaAzione(messaggio) {
+    if (!conn) return false;
+    const inviato = conn.invia(messaggio, { accoda: false });
+    if (!inviato) {
+      mostraToast('Sei offline: l\'azione non è stata inviata. Riprova appena torna la connessione.', { livello: 'avviso' });
     }
     return inviato;
   }
@@ -435,7 +547,7 @@ async function avvia() {
         salvaPreferenze({ nome: azione.nome, colore: azione.colore });
         store.setState({ errore: null, preferenze: { nome: azione.nome, colore: azione.colore } });
         aggiornaLobby({ inAttesa: true });
-        invia({ tipo: 'entraStanza', codice: azione.codice, nome: azione.nome, colore: azione.colore || undefined, rif: 'entra' });
+        entra(azione.codice, azione.nome, azione.colore);
         return;
       case 'avviaPartita':
         aggiornaLobby({ inAttesa: true });
@@ -453,11 +565,31 @@ async function avvia() {
     }
   }
 
+  /**
+   * Invia `entraStanza`. Senza colore scelto il server ne assegna uno libero;
+   * se quello scelto è già preso si riprova una volta senza (vedi gestisciErrore).
+   */
+  function entra(codice, nome, colore, { ritentato = false } = {}) {
+    ingressoInCorso = { codice, nome, colore: colore || null, ritentato };
+    invia({ tipo: 'entraStanza', codice, nome, colore: colore || undefined, rif: 'entra' });
+  }
+
+  /** La stanza non c'è più (chiusa dal server): si torna al form con un avviso. */
+  function stanzaPersa(messaggio) {
+    if (!store.getState().io && !daRiprendere) return;
+    tornaAllInizio({ mantieniConnessione: true });
+    mostraToast(messaggio || 'La stanza è stata chiusa.', { livello: 'avviso', durata: 7000 });
+  }
+
   /** Dimentica stanza e sessione e torna al form iniziale. */
   function tornaAllInizio({ mantieniConnessione = false } = {}) {
+    const corrente = store.getState().io || daRiprendere;
+    if (corrente) dimenticaRipresa(corrente.token);
+    ripresaPossibile = null;
     cancellaSessione();
     daRiprendere = null;
     creazioneInAttesa = null;
+    ingressoInCorso = null;
     history.replaceState(null, '', location.pathname);
     if (!mantieniConnessione) {
       // Un socket già associato a una stanza non può crearne un'altra
@@ -484,7 +616,7 @@ async function avvia() {
     {
       invia: (messaggio) => {
         contatoreRif += 1;
-        invia({ ...messaggio, rif: `a${contatoreRif}` });
+        inviaAzione({ ...messaggio, rif: `a${contatoreRif}` });
       },
       protocollo: gestisciProtocollo,
       apriDialogo: (tipo, datiDialogo, dispatch) => {
@@ -513,7 +645,7 @@ async function avvia() {
         const dati = creazioneInAttesa;
         creazioneInAttesa = null;
         if (dati) {
-          invia({ tipo: 'entraStanza', codice: msg.codice, nome: dati.nome, colore: dati.colore || undefined, rif: 'entra' });
+          entra(msg.codice, dati.nome, dati.colore);
         } else {
           aggiornaLobby({ inAttesa: false });
         }
@@ -523,13 +655,24 @@ async function avvia() {
       case 'entrato': {
         const io = { giocatoreId: msg.giocatoreId, token: msg.token, codice: msg.codice };
         salvaSessione(io);
+        salvaRipresa(io);
         daRiprendere = io;
+        ripresaPossibile = null;
+        ingressoInCorso = null;
         const cambioStanza = !s.io || s.io.codice !== io.codice;
+        const senzaPartita = cambioStanza || !s.partita;
         store.setState({
           io,
           errore: null,
           ...(cambioStanza ? { partita: null, eventi: [] } : {}),
-          lobby: { ...s.lobby, inAttesa: false, ripresa: false, link: msg.link || s.lobby.link, codiceUrl: io.codice },
+          // Finché non arriva lo `stato` (subito dopo) la vista resta quella di
+          // attesa: niente lampo del modulo d'ingresso dopo un refresh.
+          lobby: {
+            ...s.lobby,
+            inAttesa: senzaPartita ? true : s.lobby.inAttesa,
+            link: msg.link || s.lobby.link,
+            codiceUrl: io.codice,
+          },
         });
         // L'URL diventa il link della stanza: un refresh o un copia-incolla
         // dalla barra degli indirizzi portano allo stesso posto.
@@ -542,9 +685,12 @@ async function avvia() {
         const nuova = msg.stato;
         if (!nuova || !s.io) return; // non siamo (più) in una stanza
         if (nuova.codice && nuova.codice !== s.io.codice) return;
-        if (s.partita && s.partita.codice === nuova.codice && nuova.versione < s.partita.versione) return;
-        const parziale = { partita: nuova };
-        if (s.lobby.inAttesa && nuova.fase !== 'lobby') parziale.lobby = { ...s.lobby, inAttesa: false };
+        const stessa = Boolean(s.partita) && s.partita.codice === nuova.codice;
+        if (stessa && nuova.versione < s.partita.versione) return;
+        // Negli aggiornamenti il log è accorciato: lo si ricuce con quello noto.
+        const partita = stessa ? { ...nuova, log: unisciLog(s.partita.log, nuova.log) } : nuova;
+        const parziale = { partita };
+        if (s.lobby.inAttesa || s.lobby.ripresa) parziale.lobby = { ...s.lobby, inAttesa: false, ripresa: false };
         store.setState(parziale);
         return;
       }
@@ -555,7 +701,9 @@ async function avvia() {
         const eventi = [...s.eventi, evento].slice(-MAX_EVENTI);
         store.setState({ eventi });
         const t = toastPerEvento(evento, s.partita, s.io?.giocatoreId);
-        if (t) mostraToast(t.testo, t);
+        // Tutti gli eventi finiscono anche in una regione viva (cronaca in
+        // partita, elenco giocatori in sala): il toast è solo visivo.
+        if (t) mostraToast(t.testo, { ...t, silenzioso: true });
         return;
       }
 
@@ -580,6 +728,8 @@ async function avvia() {
     // Ripresa fallita: la stanza non c'è più o il token è scaduto.
     if (msg.rif === 'riconnetti' || msg.codice === 'TOKEN_NON_VALIDO') {
       const eraInPartita = Boolean(s.partita);
+      const fallita = s.io || daRiprendere;
+      if (fallita) dimenticaRipresa(fallita.token);
       cancellaSessione();
       daRiprendere = null;
       store.setState({
@@ -597,9 +747,30 @@ async function avvia() {
       return;
     }
 
+    // Il colore scelto è già di un altro giocatore: invece di fermare l'ingresso
+    // si riprova una volta lasciando che il server ne assegni uno libero.
+    if (msg.codice === 'COLORE_OCCUPATO' && msg.rif === 'entra' && ingressoInCorso && !ingressoInCorso.ritentato) {
+      const { codice, nome } = ingressoInCorso;
+      entra(codice, nome, null, { ritentato: true });
+      mostraToast('Il colore che avevi scelto è già preso: te ne è stato assegnato un altro.', { livello: 'info', durata: 6000 });
+      return;
+    }
+
+    // La stanza in cui eravamo non esiste più (chiusa per inattività) o il
+    // server non ci riconosce più al suo interno: si torna al form iniziale.
+    if (s.io && !msg.rif && msg.codice === 'STANZA_INESISTENTE') {
+      stanzaPersa(errore.messaggio);
+      return;
+    }
+    if (s.io && msg.codice === 'NON_IN_STANZA') {
+      stanzaPersa('Non sei più in questa stanza: puoi crearne una nuova o rientrare con il codice.');
+      return;
+    }
+
     // Errori del form d'ingresso: mostrati accanto ai campi (role="alert").
     if (msg.rif === 'crea' || msg.rif === 'entra' || (ERRORI_LOBBY.has(msg.codice) && !s.io)) {
       creazioneInAttesa = null;
+      ingressoInCorso = null;
       store.setState({ errore, lobby: { ...s.lobby, inAttesa: false } });
       return;
     }
@@ -640,6 +811,17 @@ async function avvia() {
       el.lobby.hidden = vista !== 'lobby';
       el.tabellone.hidden = vista === 'lobby';
       el.pannelli.hidden = vista === 'lobby';
+      // In partita la lobby (con il suo <h1>) è nascosta: il titolo della
+      // pagina diventa il marchio nella barra, così la gerarchia parte da 1.
+      if (el.marchio) {
+        if (vista === 'lobby') {
+          el.marchio.removeAttribute('role');
+          el.marchio.removeAttribute('aria-level');
+        } else {
+          el.marchio.setAttribute('role', 'heading');
+          el.marchio.setAttribute('aria-level', '1');
+        }
+      }
       if (vista === 'lobby') {
         tabelloneDi = null;
         dialoghi?.chiudiTutti?.();
@@ -651,6 +833,8 @@ async function avvia() {
 
     if (vista === 'lobby') {
       lobby.render(el.lobby, stato, dispatch);
+    } else if (!giocoCaricato) {
+      mostraErroreCaricamento();
     } else {
       // Tabellone: costruito una volta per stanza, poi aggiornato.
       if (tabellone && tabelloneDi !== partita.codice) {
@@ -673,6 +857,22 @@ async function avvia() {
 
     disegnaBarra(stato, vista);
     aggiornaTitolo(stato, vista);
+  }
+
+  /** Dati o moduli di gioco non caricati: messaggio visibile con "Ricarica". */
+  function mostraErroreCaricamento() {
+    if (el.tabellone.dataset.errore === 'caricamento') return;
+    el.tabellone.dataset.errore = 'caricamento';
+    const testo = document.createElement('p');
+    testo.className = 'messaggio messaggio--errore';
+    testo.setAttribute('role', 'alert');
+    testo.textContent = 'Non riesco a caricare il tabellone: controlla la connessione e ricarica la pagina. La partita continua e ritroverai il tuo posto.';
+    const ricarica = document.createElement('button');
+    ricarica.type = 'button';
+    ricarica.className = 'pulsante pulsante--primario';
+    ricarica.textContent = 'Ricarica la pagina';
+    ricarica.addEventListener('click', () => location.reload());
+    el.tabellone.replaceChildren(testo, ricarica);
   }
 
   /** Esegue un render di un altro modulo isolando eventuali eccezioni. */
@@ -703,18 +903,40 @@ async function avvia() {
       delete el.barraStanza.dataset.firma;
     }
 
-    const voluto = vista === 'fine' ? 'fine' : '';
+    // Pulsanti della barra: prima la connessione fermata dal server, poi la
+    // "Nuova partita" a fine gioco.
+    const offriRipresa = Boolean(ripresaPossibile) && !stato.io && !stato.lobby.ripresa;
+    const voluto = [fermata || '', vista === 'fine' ? 'fine' : '', offriRipresa ? 'ripresa' : ''].join('|');
     if (el.barraAzioni.dataset.contenuto !== voluto) {
       el.barraAzioni.dataset.contenuto = voluto;
-      el.barraAzioni.replaceChildren();
-      if (voluto === 'fine') {
+      const pulsanteBarra = (testo, onclick) => {
         const b = document.createElement('button');
         b.type = 'button';
         b.className = 'pulsante pulsante--primario pulsante--piccolo';
-        b.textContent = 'Nuova partita';
-        b.addEventListener('click', () => dispatch({ tipo: 'ui:nuovaPartita' }));
-        el.barraAzioni.append(b);
+        b.textContent = testo;
+        b.addEventListener('click', onclick);
+        return b;
+      };
+      const nodi = [];
+      if (fermata) {
+        nodi.push(pulsanteBarra(fermata === 'sostituita' ? 'Usa questa scheda' : 'Riconnetti', () => {
+          fermata = null;
+          conn?.riprovaOra();
+          pianificaRender();
+        }));
       }
+      if (vista === 'fine') nodi.push(pulsanteBarra('Nuova partita', () => dispatch({ tipo: 'ui:nuovaPartita' })));
+      if (offriRipresa) {
+        nodi.push(pulsanteBarra(`Riprendi la partita ${ripresaPossibile.codice}`, () => {
+          const io = ripresaPossibile;
+          if (!io) return;
+          ripresaPossibile = null;
+          daRiprendere = io;
+          aggiornaLobby({ ripresa: true });
+          invia({ tipo: 'riconnetti', codice: io.codice, token: io.token, rif: 'riconnetti' });
+        }));
+      }
+      el.barraAzioni.replaceChildren(...nodi);
     }
   }
 
@@ -760,8 +982,28 @@ async function avvia() {
       }
     },
     onMessaggio: gestisciMessaggio,
-    onErrore(err) {
-      console.warn('[rete]', err);
+    onErrore() {
+      // Gli errori di rete sono già mostrati dall'indicatore di connessione e
+      // seguiti dalla riconnessione automatica: niente rumore in console.
+    },
+    onChiusura(evento) {
+      const codice = evento && evento.code;
+      if (codice === rete.CHIUSURE.SOSTITUITO) {
+        // Lo stesso giocatore è stato aperto altrove: questa scheda si ferma
+        // (niente riconnessione automatica, altrimenti le due si ruberebbero
+        // il posto all'infinito) e offre di riprendersi la partita.
+        fermata = 'sostituita';
+        mostraToast('Questa partita è stata aperta in un\'altra scheda o finestra. Per continuare qui premi «Usa questa scheda».',
+          { livello: 'avviso', durata: 10000 });
+        pianificaRender();
+      } else if (codice === rete.CHIUSURE.STANZA_CHIUSA) {
+        stanzaPersa('La stanza è stata chiusa.');
+        conn?.riprovaOra();
+      } else if (codice === 1008 || codice === 1009) {
+        fermata = 'definitiva';
+        mostraToast('Il server ha chiuso la connessione. Premi «Riconnetti» per riprovare.', { livello: 'errore', durata: 8000 });
+        pianificaRender();
+      }
     },
     onRiconnessione(tentativo) {
       if (tentativo === 1 && store.getState().io) {
@@ -778,9 +1020,15 @@ async function avvia() {
 
   // Primo disegno (la lobby o la schermata di ripresa).
   disegna();
+  if (ripresaPossibile) {
+    mostraToast(`Avevi una partita in corso nella stanza ${ripresaPossibile.codice}: per rientrare al tuo posto premi «Riprendi la partita» in alto.`,
+      { livello: 'info', durata: 10000 });
+  }
 
-  // Accesso comodo dalla console per il debug.
-  globalThis.monopoly = { store, conn };
+  // Accesso dalla console per il debug: solo in locale o con ?debug nell'URL.
+  if (['localhost', '127.0.0.1', '[::1]'].includes(location.hostname) || parametri.has('debug')) {
+    globalThis.monopoly = { store, conn };
+  }
 }
 
 /**

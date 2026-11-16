@@ -280,7 +280,7 @@ test('riconnessione: con il token si torna nella partita, con token sbagliati si
   } finally { await srv.chiudi(); }
 });
 
-test('riconnessione: un nuovo socket con lo stesso token sostituisce quello vecchio (chiuso con codice 4000)', { skip: SALTA, timeout: 30000 }, async () => {
+test('riconnessione: un nuovo socket con lo stesso token sostituisce quello vecchio (chiuso con codice 4001)', { skip: SALTA, timeout: 30000 }, async () => {
   const srv = await avviaServer();
   try {
     const { codice, giocatori } = await stanzaConGiocatori(srv, ['Anna', 'Bruno']);
@@ -288,7 +288,8 @@ test('riconnessione: un nuovo socket con lo stesso token sostituisce quello vecc
     const nuovo = await srv.cliente();
     nuovo.invia({ tipo: 'riconnetti', codice, token: anna.token });
     await nuovo.attendi((m) => m.tipo === 'entrato', 'riconnessione');
-    assert.equal(await anna.c.fine, 4000, 'il vecchio socket deve essere chiuso con codice 4000');
+    // INTERFACCE.md §3.4: codice dedicato, così la vecchia scheda non si riconnette in loop.
+    assert.equal(await anna.c.fine, P.CHIUSURE.SOSTITUITO, 'il vecchio socket deve essere chiuso con codice 4001');
     await pausa(100);
     assert.equal(stanze.trova(codice).giocatori.get(anna.id).connesso, true,
       'la chiusura del vecchio socket non deve segnare il giocatore come disconnesso');

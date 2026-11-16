@@ -413,7 +413,12 @@ test('alberghi e vendita a metà prezzo, uniforme', () => {
   ko(r.stato, A, { tipo: 'ipoteca', casella: 1 }, 'HA_COSTRUZIONI');
   const pocheCase = structuredClone(r.stato);
   pocheCase.caseDisponibili = 3;
-  ko(pocheCase, A, { tipo: 'vendiCasa', casella: 1 }, 'CASE_ESAURITE');
+  // Senza 4 case in banca l'albergo si vende per intero: 5 × 50 / 2 = 125 €.
+  const intero = ok(pocheCase, A, { tipo: 'vendiCasa', casella: 1 });
+  assert.equal(intero.stato.proprieta['1'].caseCostruite, 0);
+  assert.equal(intero.stato.alberghiDisponibili, 12);
+  assert.equal(intero.stato.caseDisponibili, 3);
+  assert.equal(gioc(intero.stato, A).denaro, gioc(pocheCase, A).denaro + 125);
 
   const denaro = gioc(r.stato, A).denaro;
   r = ok(r.stato, A, { tipo: 'vendiCasa', casella: 1 });
@@ -737,8 +742,8 @@ test('permessi: turno sbagliato, fase errata, giocatore sconosciuto', () => {
   assert.match(err.messaggio, /Anna/);
 
   const disp = motore.azioniDisponibili(s, A);
-  assert.deepEqual(disp.sort(), ['costruisci', 'disipoteca', 'ipoteca', 'lanciaDadi', 'proponiScambio', 'vendiCasa']);
-  assert.deepEqual(motore.azioniDisponibili(s, B), ['proponiScambio']);
+  assert.deepEqual(disp.sort(), ['abbandona', 'costruisci', 'disipoteca', 'ipoteca', 'lanciaDadi', 'proponiScambio', 'vendiCasa']);
+  assert.deepEqual(motore.azioniDisponibili(s, B), ['proponiScambio', 'abbandona']);
 
   const pub = motore.statoPubblico(s);
   assert.equal('mazzi' in pub, false);

@@ -11,7 +11,11 @@
  *   visibile.
  * - Coda dei messaggi (max 20) mentre si è offline: vengono inviati alla
  *   riapertura, DOPO il callback onApertura (così app.js può mandare per primo
- *   `riconnetti` con il token salvato e il server sa chi siamo).
+ *   `riconnetti` con il token salvato e il server sa chi siamo). Chi invia può
+ *   rinunciare alla coda con `{ accoda: false }`: app.js lo fa per le azioni di
+ *   gioco, che eseguite in ritardo non avrebbero più senso.
+ * - Dopo una chiusura definitiva (1008, 1009, 4001 "aperto in un'altra
+ *   scheda", 4002 "stanza chiusa") non riprova da solo: serve `riprovaOra()`.
  * - Keep-alive con `ping` ogni 25 s.
  * - Indicatore di connessione accessibile (`aggiornaIndicatore`).
  *
@@ -33,10 +37,22 @@ export const TEMPI = Object.freeze({
 /** Numero massimo di messaggi tenuti in coda mentre si è offline. */
 export const MAX_CODA = 20;
 
-/** Codici di chiusura WebSocket dopo i quali non ha senso riprovare. */
+/** Codici di chiusura dedicati usati dal server (server/protocollo.js, CHIUSURE). */
+export const CHIUSURE = Object.freeze({
+  SOSTITUITO: 4001, // lo stesso giocatore si è collegato da un'altra scheda
+  STANZA_CHIUSA: 4002, // la stanza è stata eliminata
+});
+
+/**
+ * Codici di chiusura dopo i quali non si riprova da soli: serve una scelta
+ * esplicita dell'utente (`riprovaOra()`). Il 4000 NON è tra questi: lo usa
+ * questo modulo per chiudere il socket quando il browser va offline.
+ */
 const CHIUSURE_DEFINITIVE = new Set([
   1008, // violazione di policy (es. troppi messaggi non validi)
   1009, // messaggio troppo grande
+  CHIUSURE.SOSTITUITO,
+  CHIUSURE.STANZA_CHIUSA,
 ]);
 
 /**
@@ -102,6 +118,8 @@ export function connetti(url, callbacks = {}, ambiente = {}) {
   let timerRiconnessione = null;
   let timerPing = null;
   let chiusoVolontariamente = false;
+  /** Vero dopo una chiusura definitiva: niente tentativi automatici. */
+  let fermo = false;
   /** @type {{ testo: string, quando: number }[]} */
   let coda = [];
 
@@ -172,11 +190,15 @@ export function connetti(url, callbacks = {}, ambiente = {}) {
       if (ws !== socket) return;
       fermaPing();
       socket = null;
-      richiama('onChiusura', e);
       if (chiusoVolontariamente || CHIUSURE_DEFINITIVE.has(e.code)) {
+        fermo = true;
+        // Le azioni rimaste in coda non hanno più un destinatario.
+        coda = [];
         impostaStato('chiuso');
+        richiama('onChiusura', e);
         return;
       }
+      richiama('onChiusura', e);
       programmaRiconnessione();
     });
   }
@@ -266,9 +288,15 @@ export function connetti(url, callbacks = {}, ambiente = {}) {
     impostaStato('chiuso');
   }
 
-  /** Salta l'attesa del backoff e riprova subito (es. tornati online). */
-  function riprovaOra() {
+  /**
+   * Salta l'attesa del backoff e riprova subito. Chiamata dall'utente (pulsante
+   * "Riconnetti" / "Usa questa scheda") riparte anche dopo una chiusura
+   * definitiva; i tentativi automatici (`automatico: true`) invece no.
+   */
+  function riprovaOra({ automatico = false } = {}) {
     if (chiusoVolontariamente || socket) return;
+    if (fermo && automatico) return;
+    fermo = false;
     clearTimeout(timerRiconnessione);
     timerRiconnessione = null;
     apri();
@@ -276,9 +304,9 @@ export function connetti(url, callbacks = {}, ambiente = {}) {
 
   // Il browser ci dice quando la rete torna o la scheda torna in primo piano:
   // in quei momenti conviene riprovare senza aspettare il backoff.
-  const suOnline = () => riprovaOra();
+  const suOnline = () => riprovaOra({ automatico: true });
   const suVisibile = () => {
-    if (globalThis.document && document.visibilityState === 'visible') riprovaOra();
+    if (globalThis.document && document.visibilityState === 'visible') riprovaOra({ automatico: true });
   };
   const suOffline = () => {
     // Il socket potrebbe restare "aperto" a lungo prima di accorgersene:

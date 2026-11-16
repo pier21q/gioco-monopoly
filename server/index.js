@@ -15,6 +15,7 @@
  */
 
 const http = require('node:http');
+const os = require('node:os');
 const fs = require('node:fs');
 const path = require('node:path');
 
@@ -57,12 +58,30 @@ const MIME = Object.freeze({
 // HTTP: utilità di risposta
 // ---------------------------------------------------------------------------
 
+/**
+ * Content-Security-Policy: tutto dalla stessa origine, nessuno script inline.
+ * `style-src 'unsafe-inline'` serve agli attributi style impostati dal client
+ * (colori delle pedine); `img-src data:` alla favicon incorporata.
+ */
+const CSP = [
+  "default-src 'self'",
+  "script-src 'self'",
+  "style-src 'self' 'unsafe-inline'",
+  "img-src 'self' data:",
+  "connect-src 'self' ws: wss:",
+  "base-uri 'none'",
+  "form-action 'self'",
+  "frame-ancestors 'none'",
+].join('; ');
+
 function rispondi(res, codice, corpo, tipo = 'text/plain; charset=utf-8', intestazioni = {}) {
   res.writeHead(codice, {
     'Content-Type': tipo,
     'Cache-Control': 'no-cache',
     'X-Content-Type-Options': 'nosniff',
+    'X-Frame-Options': 'DENY',
     'Referrer-Policy': 'same-origin',
+    'Content-Security-Policy': CSP,
     ...intestazioni,
   });
   res.end(corpo);
@@ -207,6 +226,47 @@ function baseLink(configurato, req, portaLocale) {
   return `http://localhost${portaLocale ? `:${portaLocale}` : ''}`;
 }
 
+/**
+ * Controllo dell'origine dell'handshake WebSocket: un sito terzo non deve
+ * poter usare i propri visitatori per aprire connessioni verso questo server.
+ * Passano le richieste senza `Origin` (client non browser, test) e quelle la
+ * cui origine coincide con l'host della richiesta, con `X-Forwarded-Host`
+ * (proxy/tunnel) o con PUBLIC_URL. `ORIGINE_LIBERA=1` disattiva il controllo.
+ */
+function origineAmmessa(req, configurato) {
+  if (process.env.ORIGINE_LIBERA === '1') return true;
+  const intestazioni = (req && req.headers) || {};
+  const origine = intestazioni.origin;
+  if (!origine) return true;
+  let hostOrigine;
+  try {
+    hostOrigine = new URL(origine).host.toLowerCase();
+  } catch {
+    return false;
+  }
+  const ammessi = new Set();
+  for (const nome of ['host', 'x-forwarded-host']) {
+    for (const h of String(intestazioni[nome] || '').split(',')) {
+      if (h.trim()) ammessi.add(h.trim().toLowerCase());
+    }
+  }
+  if (configurato) {
+    try { ammessi.add(new URL(configurato).host.toLowerCase()); } catch { /* PUBLIC_URL malformato */ }
+  }
+  return ammessi.has(hostOrigine);
+}
+
+/** Indirizzi IPv4 di rete locale del computer (per il messaggio di avvio). */
+function indirizziDiRete() {
+  const out = [];
+  for (const interfacce of Object.values(os.networkInterfaces())) {
+    for (const i of interfacce || []) {
+      if ((i.family === 'IPv4' || i.family === 4) && !i.internal) out.push(i.address);
+    }
+  }
+  return out;
+}
+
 const APERTO = 1;
 
 function invia(socket, messaggio) {
@@ -237,6 +297,7 @@ function collegaSocket(socket, { publicUrl, random, ora }) {
     stanza: null,
     giocatoreId: null,
     erroriConsecutivi: 0,
+    stanzeCreate: 0,
     finestra: { inizio: 0, conteggio: 0, avvisato: false },
   };
   socket.vivo = true;
@@ -259,14 +320,24 @@ function collegaSocket(socket, { publicUrl, random, ora }) {
     hostId: stanza.hostId,
   });
 
+  /** Stato con il log completo: solo a chi entra o si riconnette (cronaca intera). */
   const statoAlMittente = (stanza) => {
-    const stato = stanze.statoPerClient(stanza);
+    const stato = stanze.statoPerClient(stanza, { completo: true });
     invia(socket, { tipo: 'stato', versione: stato.versione, stato });
   };
 
   const gestori = {
     creaStanza(m) {
       if (inStanza()) return inviaErrore(socket, 'GIA_IN_STANZA', { rif: m.rif });
+      if (stanze.tutte().length >= P.LIMITI.MAX_STANZE || ctx.stanzeCreate >= P.LIMITI.MAX_STANZE_PER_SOCKET) {
+        return inviaErrore(socket, 'TROPPE_STANZE', {
+          rif: m.rif,
+          ...(ctx.stanzeCreate >= P.LIMITI.MAX_STANZE_PER_SOCKET
+            ? { messaggio: 'Hai già creato diverse stanze: usa una di quelle o riprova più tardi' }
+            : {}),
+        });
+      }
+      ctx.stanzeCreate += 1;
       const stanza = stanze.crea({ ora, random });
       return invia(socket, { tipo: 'stanzaCreata', codice: stanza.codice, link: linkStanza(publicUrl, stanza.codice) });
     },
@@ -309,7 +380,9 @@ function collegaSocket(socket, { publicUrl, random, ora }) {
       ctx.stanza = esito.stanza;
       ctx.giocatoreId = esito.giocatore.id;
       invia(socket, messaggioEntrato(esito.stanza, esito.giocatore));
-      // Il broadcast include anche questo socket: riceve evento connessione + stato.
+      // Prima lo stato con la cronaca completa a chi rientra, poi il broadcast
+      // (che include anche questo socket): evento connessione + stato breve.
+      statoAlMittente(esito.stanza);
       return stanze.diffondiAggiornamento(esito.stanza, esito.eventi);
     },
 
@@ -404,7 +477,7 @@ function collegaSocket(socket, { publicUrl, random, ora }) {
       // Se il giocatore si è già riconnesso con un altro socket, non toccarlo.
       if (g && g.socket === socket) {
         try {
-          const esito = stanze.disconnetti(stanza, ctx.giocatoreId, { ora });
+          const esito = stanze.disconnetti(stanza, ctx.giocatoreId, { ora, random });
           stanze.diffondiAggiornamento(stanza, esito.eventi);
         } catch (e) {
           console.error('[ws] errore alla disconnessione', e);
@@ -459,11 +532,21 @@ function crea(opzioni = {}) {
   let heartbeat = null;
 
   if (WebSocketServer) {
-    wss = new WebSocketServer({ server, path: '/ws', maxPayload: P.LIMITI.FRAME_MAX_BYTE });
+    wss = new WebSocketServer({
+      server,
+      path: '/ws',
+      maxPayload: P.LIMITI.FRAME_MAX_BYTE,
+      verifyClient: (info) => origineAmmessa(info.req, configurato),
+    });
     wss.on('connection', (socket, req) => {
-      const indirizzo = server.address();
-      const porta = indirizzo && typeof indirizzo === 'object' ? indirizzo.port : null;
-      collegaSocket(socket, { publicUrl: baseLink(configurato, req, porta), random, ora });
+      try {
+        const indirizzo = server.address();
+        const porta = indirizzo && typeof indirizzo === 'object' ? indirizzo.port : null;
+        collegaSocket(socket, { publicUrl: baseLink(configurato, req, porta), random, ora });
+      } catch (e) {
+        console.error('[ws] errore nel collegamento di un socket', e);
+        try { socket.close(1011, 'Errore interno'); } catch { /* ignora */ }
+      }
     });
     wss.on('error', (e) => console.error('[ws] errore del server WebSocket', e && e.message));
     heartbeat = avviaHeartbeat(wss, opzioni.heartbeatMs);
@@ -516,11 +599,26 @@ function arrestoOrdinato(server, wss) {
 }
 
 if (require.main === module) {
+  // Lo stato delle partite vive solo in memoria: un errore imprevisto in un
+  // gestore o in un timer viene registrato, ma non deve chiudere tutte le stanze.
+  process.on('uncaughtException', (e) => console.error('[server] eccezione non gestita', e));
+  process.on('unhandledRejection', (e) => console.error('[server] promise rifiutata non gestita', e));
+
   avvia()
     .then(({ server, porta, url, wss }) => {
       arrestoOrdinato(server, wss);
       console.log(`Monopoly online v${pacchetto.version} in ascolto sulla porta ${porta}`);
-      console.log(`Apri ${url} per creare una stanza`);
+      console.log(`Su questo computer:        http://localhost:${porta}`);
+      if (process.env.PUBLIC_URL) {
+        console.log(`Indirizzo pubblico (PUBLIC_URL): ${url}`);
+      } else {
+        const rete = indirizziDiRete();
+        for (const ip of rete) console.log(`Amici sulla stessa rete:   http://${ip}:${porta}`);
+        console.log(rete.length
+          ? 'Per invitare gli amici apri il gioco da uno degli indirizzi di rete: il link della stanza userà quell\'indirizzo.'
+          : 'Nessun indirizzo di rete trovato: gli amici non possono raggiungere "localhost".');
+        console.log('Per giocare via Internet usa un tunnel (es. cloudflared, ngrok) e imposta PUBLIC_URL: vedi README.md.');
+      }
       if (!wss) {
         console.warn('ATTENZIONE: dipendenza "ws" non trovata. Esegui `npm install` per abilitare il gioco in rete.');
       }
@@ -547,6 +645,8 @@ module.exports = {
   avviaHeartbeat,
   baseLink,
   linkStanza,
+  origineAmmessa,
+  indirizziDiRete,
   RADICE_CLIENT,
   MIME,
 };

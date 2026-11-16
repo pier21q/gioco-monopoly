@@ -274,16 +274,18 @@ export function azioniAmmesse(p, id) {
     out.add('ipoteca');
     out.add('dichiaraBancarotta');
   }
-  if (fase !== 'asta') {
-    if (!p.scambio) out.add('proponiScambio');
-    else {
-      if (p.scambio.aId === id) {
-        out.add('accettaScambio');
-        out.add('rifiutaScambio');
-      }
-      if (p.scambio.daId === id) out.add('rifiutaScambio');
+  if (!p.scambio) {
+    if (fase !== 'asta') out.add('proponiScambio');
+  } else {
+    // Rifiuto e ritiro sono ammessi anche durante un'asta; l'accettazione no.
+    if (p.scambio.aId === id) {
+      if (fase !== 'asta') out.add('accettaScambio');
+      out.add('rifiutaScambio');
     }
+    if (p.scambio.daId === id) out.add('rifiutaScambio');
   }
+  // Uscita volontaria: sempre possibile a chi è ancora in gara.
+  out.add('abbandona');
   return out;
 }
 
@@ -404,9 +406,7 @@ export function motivoVendi(p, id, indice) {
   if (s.caseCostruite <= 0) return 'Non ci sono case da vendere';
   const massimo = Math.max(...indiciGruppo(c.gruppo).map((i) => statoProp(p, i).caseCostruite));
   if (s.caseCostruite < massimo) return 'Vendi prima dalle proprietà del gruppo con più case';
-  if (s.caseCostruite === 5 && (p.caseDisponibili ?? 32) < 4) {
-    return 'La banca non ha 4 case per sostituire l’albergo';
-  }
+  // Albergo senza 4 case in banca: il server lo vende per intero (ammesso).
   return null;
 }
 
@@ -1575,6 +1575,7 @@ const MOTIVI_DEBITO = {
   cauzione: 'cauzione',
   pagaATutti: 'pagamento a tutti i giocatori',
   interesseScambio: 'interessi sulle ipotecate ricevute',
+  interesseBancarotta: 'interessi sulle ipotecate ricevute da una bancarotta',
 };
 
 function descriviPasso(passo) {
@@ -1741,20 +1742,28 @@ const DURATA_TOAST = 4000;
 
 /**
  * Mostra una notifica non modale nel contenitore #toast (role=status).
+ * Con `silenzioso` la notifica è solo visiva (aria-hidden, senza pulsante di
+ * chiusura): serve per gli eventi che gli screen reader sentono già dalla
+ * cronaca, così non vengono letti due volte.
  * @param {string} testo
- * @param {{ livello?: 'info'|'successo'|'avviso'|'errore', durata?: number }} opzioni
+ * @param {{ livello?: 'info'|'successo'|'avviso'|'errore', durata?: number, silenzioso?: boolean }} opzioni
  */
-export function toast(testo, { livello = 'info', durata = DURATA_TOAST } = {}) {
+export function toast(testo, { livello = 'info', durata = DURATA_TOAST, silenzioso = false } = {}) {
   const box = document.getElementById('toast');
   if (!box || !testo) return;
-  const voce = el('div', { class: `toast toast--${livello}` },
+  const voce = el('div', { class: `toast toast--${livello}`, 'aria-hidden': silenzioso ? 'true' : null },
     el('span', { class: 'toast__testo', text: testo }));
   const chiudi = () => {
     voce.classList.add('toast--uscita');
     setTimeout(() => voce.remove(), 220);
   };
-  voce.append(el('button', { type: 'button', class: 'toast__chiudi', 'aria-label': 'Chiudi la notifica', onclick: chiudi },
-    el('span', { 'aria-hidden': 'true', text: '×' })));
+  if (silenzioso) {
+    // Niente elementi focalizzabili dentro un nodo aria-hidden: si chiude con un clic.
+    voce.addEventListener('click', chiudi);
+  } else {
+    voce.append(el('button', { type: 'button', class: 'toast__chiudi', 'aria-label': 'Chiudi la notifica', onclick: chiudi },
+      el('span', { 'aria-hidden': 'true', text: '×' })));
+  }
   box.append(voce);
   while (box.children.length > 4) box.firstElementChild.remove();
   let timer = setTimeout(chiudi, durata);

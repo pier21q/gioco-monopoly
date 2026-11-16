@@ -234,7 +234,11 @@ function riconnetti(codice, token, socket, { ora = Date.now } = {}) {
 
   const eventi = [evento('connessione', giocatore.id, `${giocatore.nome} è di nuovo online`, { giocatoreId: giocatore.id, connesso: true }, t)];
   if (stanza.stato.fase === 'lobby') sincronizzaLobby(stanza, eventi, t);
-  else sincronizzaConnessione(stanza, giocatore.id, true, eventi, t);
+  else {
+    sincronizzaConnessione(stanza, giocatore.id, true, eventi, t);
+    // Chi torna può trovare altri assenti che tengono ferma la partita.
+    sorvegliaDisconnessi(stanza, { ora });
+  }
   return { stanza, giocatore, eventi };
 }
 
@@ -288,20 +292,64 @@ function disconnetti(stanza, giocatoreId, { ora = Date.now, random = Math.random
     });
   } else {
     sincronizzaConnessione(stanza, giocatoreId, false, eventi, t);
-    programmaTimer(stanza, giocatoreId, 'tolleranza', TEMPI.TOLLERANZA_DISCONNESSIONE_MS,
-      () => sbloccaDisconnesso(stanza, giocatoreId, { ora, random }));
-    programmaTimer(stanza, giocatoreId, 'bancarotta', TEMPI.BANCAROTTA_DISCONNESSO_MS,
-      () => bancarottaDisconnesso(stanza, giocatoreId, { ora, random }));
+    sorvegliaDisconnessi(stanza, { ora, random });
   }
   return { eventi };
 }
 
+/** C'è almeno un giocatore non fallito con il socket collegato? */
+function qualcunoInGara(stanza) {
+  return stanza.stato.giocatori.some((g) => {
+    const reg = stanza.giocatori.get(g.id);
+    return !g.fallito && Boolean(reg) && reg.connesso;
+  });
+}
+
+/** Il giocatore (disconnesso) sta tenendo ferma la partita o uno scambio? */
+function bloccaIlGioco(stato, id) {
+  const { fase, asta, scambio, turno } = stato;
+  if (scambio && (scambio.daId === id || scambio.aId === id)) return true;
+  if (fase === 'asta' && asta) {
+    return asta.partecipanti.includes(id) && !asta.passati.includes(id) && asta.migliorOfferenteId !== id;
+  }
+  return turno.giocatoreId === id && ['daLanciare', 'mossa', 'daDecidereAcquisto'].includes(fase);
+}
+
+/**
+ * Programma (se non sono già in corso) i timer dei giocatori disconnessi che
+ * tengono ferma la partita: la tolleranza per turno/asta/scambio e la
+ * bancarotta d'ufficio per un debito. Va richiamata dopo ogni cambio di stato,
+ * perché un disconnesso può diventare "bloccante" anche più tardi (per esempio
+ * quando una carta gli addebita una somma che non ha).
+ */
+function sorvegliaDisconnessi(stanza, { ora = Date.now, random = Math.random } = {}) {
+  const stato = stanza.stato;
+  if (stanza.chiusa || !stato || stato.fase === 'lobby' || stato.fase === 'finePartita') return;
+  // Se nessun giocatore ancora in gara è collegato non c'è nessuno da
+  // sbloccare: la partita aspetta il ritorno di qualcuno.
+  if (!qualcunoInGara(stanza)) return;
+  for (const g of stato.giocatori) {
+    const reg = stanza.giocatori.get(g.id);
+    if (!reg || reg.connesso || g.fallito) continue;
+    if (bloccaIlGioco(stato, g.id) && !stanza.timer.has(`${g.id}|tolleranza`)) {
+      programmaTimer(stanza, g.id, 'tolleranza', TEMPI.TOLLERANZA_DISCONNESSIONE_MS,
+        () => sbloccaDisconnesso(stanza, g.id, { ora, random }));
+    }
+    const debitore = stato.fase === 'debito' && stato.debito && stato.debito.giocatoreId === g.id;
+    if (debitore && !stanza.timer.has(`${g.id}|bancarotta`)) {
+      programmaTimer(stanza, g.id, 'bancarotta', TEMPI.BANCAROTTA_DISCONNESSO_MS,
+        () => bancarottaDisconnesso(stanza, g.id, { ora, random }));
+    }
+  }
+}
+
 /** Scaduta la tolleranza: se il disconnesso blocca la partita, il motore la fa avanzare. */
-function sbloccaDisconnesso(stanza, giocatoreId, { ora, random }) {
+function sbloccaDisconnesso(stanza, giocatoreId, { ora = Date.now, random = Math.random } = {}) {
   const g = stanza.giocatori.get(giocatoreId);
   if (!g || g.connesso) return;
   const stato = stanza.stato;
   if (stato.fase === 'lobby' || stato.fase === 'finePartita') return;
+  if (!qualcunoInGara(stanza)) return;
   let esito;
   try {
     esito = motore.gestisciDisconnessione(stato, giocatoreId, { random, ora });
@@ -316,11 +364,12 @@ function sbloccaDisconnesso(stanza, giocatoreId, { ora, random }) {
   }
   stanza.stato = esito.stato;
   stanza.aggiornataIl = ora();
+  sorvegliaDisconnessi(stanza, { ora, random });
   diffondiAggiornamento(stanza, esito.eventi);
 }
 
 /** Debitore assente da troppo: bancarotta d'ufficio tramite l'azione `abbandona`. */
-function bancarottaDisconnesso(stanza, giocatoreId, { ora, random }) {
+function bancarottaDisconnesso(stanza, giocatoreId, { ora = Date.now, random = Math.random } = {}) {
   const g = stanza.giocatori.get(giocatoreId);
   if (!g || g.connesso) return;
   const stato = stanza.stato;
@@ -401,6 +450,7 @@ function applica(stanza, giocatoreId, azione, { random = Math.random, ora = Date
   }
   stanza.stato = esito.stato;
   stanza.aggiornataIl = typeof esito.stato.aggiornataIl === 'number' ? esito.stato.aggiornataIl : ora();
+  sorvegliaDisconnessi(stanza, { ora, random });
   return { eventi: Array.isArray(esito.eventi) ? esito.eventi : [] };
 }
 
@@ -518,6 +568,7 @@ module.exports = {
   statoPerClient,
   broadcast,
   diffondiAggiornamento,
+  sorvegliaDisconnessi,
   sbloccaDisconnesso,
   bancarottaDisconnesso,
   pulisci,
