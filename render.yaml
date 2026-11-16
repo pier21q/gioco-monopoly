@@ -15,3 +15,7 @@ services:
     envVars:
       - key: NODE_VERSION
         value: "22"
+      # Chiave del tuo link da admin: la genera Render e la trovi in
+      # Environment. Il link è https://gioco-monopoly.onrender.com/#admin=CHIAVE
+      - key: ADMIN_CHIAVE
+        generateValue: true

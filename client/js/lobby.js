@@ -24,10 +24,14 @@
  * Azioni emesse:
  *   { tipo: 'creaStanza', nome, colore }   (app.js crea e poi entra)
  *   { tipo: 'entraStanza', codice, nome, colore }
- *   { tipo: 'avviaPartita' } · { tipo: 'esciStanza' }
+ *   { tipo: 'ui:apriDialogo', dialogo: 'regole', dati: { avvia } } (la finestra
+ *     delle regole manda poi impostaRegole o avviaPartita con le regole)
+ *   { tipo: 'esciStanza' }
  *   { tipo: 'ui:abbandonaSessione' } · { tipo: 'ui:toast', testo, livello }
  *   { tipo: 'ui:errore', errore } · { tipo: 'ui:pulisciErrore' }
  */
+
+import { REGOLE } from '/dati/regole.js';
 
 /** Palette dei giocatori, uguale a COLORI_GIOCATORE di server/protocollo.js. */
 export const COLORI = Object.freeze([
@@ -449,34 +453,24 @@ function costruisciSala(radice, dispatch) {
     id: 'sala-avvia',
     classe: 'pulsante pulsante--primario pulsante--grande',
     'aria-describedby': 'sala-suggerimento',
-    onclick: () => dispatch({ tipo: 'avviaPartita', regole: { costruzione: regolaScelta() } }),
-  }, 'Avvia la partita');
+    // La partita parte solo dalla finestra delle regole, che va compilata prima.
+    onclick: () => dispatch({ tipo: 'ui:apriDialogo', dialogo: 'regole', dati: { avvia: true } }),
+  }, 'Scegli le regole e avvia');
 
-  // Regole della partita: le sceglie chi ha creato la stanza, prima di avviare.
-  const salvata = leggiRegolaSalvata();
-  const opzioneRegola = (valore, titolo, descrizione) => el('label', { classe: 'regola__opzione' },
-    el('input', {
-      type: 'radio',
-      name: 'regola-costruzione',
-      value: valore,
-      checked: salvata === valore,
-      onchange: () => salvaRegola(valore),
-    }),
-    el('span', { classe: 'regola__testo' },
-      el('span', { classe: 'regola__titolo' }, titolo),
-      el('span', { classe: 'regola__descrizione' }, descrizione)),
+  // Regole della partita: le sceglie chi guida la stanza (host o admin), le vedono tutti.
+  const pulsanteRegole = el('button', {
+    type: 'button',
+    id: 'sala-cambia-regole',
+    classe: 'pulsante pulsante--secondario',
+    hidden: true,
+    onclick: () => dispatch({ tipo: 'ui:apriDialogo', dialogo: 'regole', dati: { avvia: false } }),
+  }, 'Scegli le regole');
+  const riquadroRegole = el('section', { id: 'sala-regole', classe: 'scheda lobby__riquadro regola', 'aria-labelledby': 'sala-regole-titolo' },
+    el('h2', { id: 'sala-regole-titolo' }, 'Regole della partita'),
+    el('p', { id: 'sala-regole-stato', classe: 'regola__descrizione' }),
+    el('ul', { id: 'sala-regole-elenco', classe: 'regola__elenco', role: 'list' }),
+    pulsanteRegole,
   );
-  const riquadroRegole = el('fieldset', { id: 'sala-regole', classe: 'scheda regola', hidden: true },
-    el('legend', { classe: 'regola__legenda' }, 'Come si costruisce'),
-    opzioneRegola('libera', 'Quando vuoi',
-      'Regola classica: nel tuo turno costruisci su qualsiasi colore che possiedi per intero.'),
-    opzioneRegola('sosta', 'Solo dove ti fermi',
-      'Costruisci su un colore solo nel turno in cui la tua pedina si ferma su una sua casella, e solo se lo possiedi tutto.'),
-  );
-  function regolaScelta() {
-    const scelto = riquadroRegole.querySelector('input[name="regola-costruzione"]:checked');
-    return scelto && scelto.value === 'sosta' ? 'sosta' : 'libera';
-  }
 
   const pulsanteEsci = el('button', {
     type: 'button',
@@ -528,7 +522,8 @@ function aggiornaSala(radice, stato) {
   const mioId = stato.io && stato.io.giocatoreId;
   const giocatori = partita.giocatori || [];
   const host = giocatori.find((g) => g.id === partita.hostId);
-  const sonoHost = Boolean(mioId) && partita.hostId === mioId;
+  // Chi guida la stanza: l'host, oppure l'admin (che quando è presente è anche host).
+  const sonoHost = Boolean(mioId) && (partita.hostId === mioId || partita.adminId === mioId);
   const connessi = giocatori.filter((g) => g.connesso).length;
 
   // Codice e link.
@@ -578,14 +573,13 @@ function aggiornaSala(radice, stato) {
   const suggerimento = radice.querySelector('#sala-suggerimento');
   const occupato = Boolean(stato.lobby && stato.lobby.inAttesa);
   pulsanteAvvia.hidden = !sonoHost;
-  const riquadroRegole = radice.querySelector('#sala-regole');
-  if (riquadroRegole) riquadroRegole.hidden = !sonoHost;
+  aggiornaRegole(radice, partita, sonoHost, host);
   pulsanteAvvia.disabled = !sonoHost || connessi < MIN_GIOCATORI || occupato || stato.connessione !== 'connesso';
   let testo;
   if (sonoHost) {
     testo = connessi < MIN_GIOCATORI
       ? `Servono almeno ${MIN_GIOCATORI} giocatori connessi: manda il link a un amico.`
-      : `Siete in ${connessi}: puoi avviare quando volete${giocatori.length < MAX_GIOCATORI ? ` (o aspettare altri giocatori, fino a ${MAX_GIOCATORI})` : ''}.`;
+      : `Siete in ${connessi}: scegli le regole e avvia quando volete${giocatori.length < MAX_GIOCATORI ? ` (o aspettate altri giocatori, fino a ${MAX_GIOCATORI})` : ''}.`;
   } else {
     testo = host
       ? `In attesa che ${host.nome} avvii la partita…`
@@ -607,20 +601,31 @@ function dadiEroe() {
   return el('div', { classe: 'eroe-dadi', 'aria-hidden': 'true' }, dado(), dado());
 }
 
-const CHIAVE_REGOLA = 'monopoly.regola-costruzione';
-
-function leggiRegolaSalvata() {
-  try {
-    return localStorage.getItem(CHIAVE_REGOLA) === 'sosta' ? 'sosta' : 'libera';
-  } catch {
-    return 'libera';
+/** Riepilogo delle regole nella sala d'attesa: le varianti scelte e chi le decide. */
+function aggiornaRegole(radice, partita, sonoHost, host) {
+  const impostate = Boolean(partita.regoleImpostate);
+  const regole = partita.regole || {};
+  const voci = REGOLE.map((def) => {
+    const valore = Object.hasOwn(regole, def.chiave) ? regole[def.chiave] : def.predefinito;
+    const v = def.valori.find((x) => x.valore === valore) || def.valori[0];
+    return { titolo: def.titolo, etichetta: v.etichetta, variante: valore !== def.predefinito };
+  });
+  const elenco = radice.querySelector('#sala-regole-elenco');
+  const firma = JSON.stringify([impostate, voci]);
+  if (elenco.dataset.firma !== firma) {
+    elenco.dataset.firma = firma;
+    elenco.replaceChildren(...voci.map((v) => el('li', { classe: `regola__voce${v.variante ? ' regola__voce--variante' : ''}` },
+      el('span', { classe: 'regola__titolo' }, v.titolo),
+      el('span', { classe: 'regola__valore' }, v.etichetta))));
   }
-}
-
-function salvaRegola(valore) {
-  try {
-    localStorage.setItem(CHIAVE_REGOLA, valore);
-  } catch { /* archivio non disponibile: la scelta vale solo per questa pagina */ }
+  const stato = radice.querySelector('#sala-regole-stato');
+  let testo;
+  if (impostate) testo = sonoHost ? 'Le hai scelte tu: puoi cambiarle fino all\'avvio.' : `Le ha scelte ${host ? host.nome : 'l\'host'}.`;
+  else testo = sonoHost ? 'Non le hai ancora scelte: si sceglie prima di avviare (sotto ci sono le regole classiche).' : `${host ? host.nome : 'L\'host'} non le ha ancora scelte: per ora valgono le regole classiche.`;
+  if (stato.textContent !== testo) stato.textContent = testo;
+  const pulsante = radice.querySelector('#sala-cambia-regole');
+  pulsante.hidden = !sonoHost;
+  pulsante.textContent = impostate ? 'Cambia le regole' : 'Scegli le regole';
 }
 
 /** Link d'invito ricostruito dalla pagina corrente (se il server non l'ha dato). */

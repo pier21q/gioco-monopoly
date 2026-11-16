@@ -15,6 +15,7 @@
  * Esporta `avvia()` e `crea()` per i test; parte da solo se eseguito come main.
  */
 
+const crypto = require('node:crypto');
 const http = require('node:http');
 const os = require('node:os');
 const fs = require('node:fs');
@@ -151,6 +152,7 @@ function moduloDatiComeEsm(nomeFile) {
 const DATI_ESPOSTI = Object.freeze({
   '/dati/tabellone.js': 'tabellone.js',
   '/dati/carte.js': 'carte.js',
+  '/dati/regole.js': 'regole.js',
 });
 
 function gestoreHttp(req, res) {
@@ -286,6 +288,42 @@ function origineAmmessa(req, configurato, fidato = proxyFidato()) {
   return ammessi.has(hostOrigine);
 }
 
+/**
+ * Confronta a tempo costante la chiave admin ricevuta con quella configurata.
+ * Senza chiave configurata (o troppo corta) l'admin non esiste.
+ */
+function chiaveAdminValida(ricevuta, configurata) {
+  if (typeof ricevuta !== 'string' || typeof configurata !== 'string') return false;
+  if (!P.REGEX_CHIAVE_ADMIN.test(configurata)) return false;
+  const a = crypto.createHash('sha256').update(ricevuta).digest();
+  const b = crypto.createHash('sha256').update(configurata).digest();
+  return crypto.timingSafeEqual(a, b);
+}
+
+/**
+ * Chiave admin per il server locale: ADMIN_CHIAVE se c'è, altrimenti una chiave
+ * generata una volta e conservata in `cartella/chiave-admin` (permessi 600).
+ * Ritorna null se non si può né leggere né creare.
+ */
+function chiaveAdminLocale(cartella) {
+  if (process.env.ADMIN_CHIAVE) return process.env.ADMIN_CHIAVE;
+  if (!cartella) return null;
+  const file = path.join(cartella, 'chiave-admin');
+  try {
+    const letta = fs.readFileSync(file, 'utf8').trim();
+    if (P.REGEX_CHIAVE_ADMIN.test(letta)) return letta;
+  } catch { /* non c'è ancora */ }
+  try {
+    const nuova = crypto.randomBytes(24).toString('base64url');
+    fs.mkdirSync(cartella, { recursive: true, mode: 0o700 });
+    fs.writeFileSync(file, `${nuova}\n`, { mode: 0o600 });
+    return nuova;
+  } catch (e) {
+    console.error('Chiave admin non salvata:', e.message);
+    return null;
+  }
+}
+
 /** Indirizzi IPv4 di rete locale del computer (per il messaggio di avvio). */
 function indirizziDiRete() {
   const out = [];
@@ -320,12 +358,13 @@ function extraErrore(errore, rif) {
 /**
  * Collega i gestori di protocollo a un socket. `ctx` è lo stato per connessione.
  * @param {import('ws').WebSocket} socket
- * @param {{publicUrl: string, random: Function, ora: Function, ip?: string}} opzioni
+ * @param {{publicUrl: string, random: Function, ora: Function, ip?: string, chiaveAdmin?: string|null}} opzioni
  */
-function collegaSocket(socket, { publicUrl, random, ora, ip = null }) {
+function collegaSocket(socket, { publicUrl, random, ora, ip = null, chiaveAdmin = null }) {
   const ctx = {
     stanza: null,
     giocatoreId: null,
+    admin: false,
     erroriConsecutivi: 0,
     stanzeCreate: 0,
     finestra: { inizio: 0, conteggio: 0, avvisato: false },
@@ -359,8 +398,9 @@ function collegaSocket(socket, { publicUrl, random, ora, ip = null }) {
   const gestori = {
     creaStanza(m) {
       if (inStanza()) return inviaErrore(socket, 'GIA_IN_STANZA', { rif: m.rif });
-      const troppeMie = ctx.stanzeCreate >= P.LIMITI.MAX_STANZE_PER_SOCKET
-        || (ip && stanze.aperteDa(ip) >= P.LIMITI.MAX_STANZE_PER_IP);
+      // L'admin non ha limiti di stanze per connessione o per indirizzo.
+      const troppeMie = !ctx.admin && (ctx.stanzeCreate >= P.LIMITI.MAX_STANZE_PER_SOCKET
+        || (ip && stanze.aperteDa(ip) >= P.LIMITI.MAX_STANZE_PER_IP));
       if (troppeMie) {
         return inviaErrore(socket, 'TROPPE_STANZE', {
           rif: m.rif,
@@ -390,8 +430,9 @@ function collegaSocket(socket, { publicUrl, random, ora, ip = null }) {
       if (esito.errore) return inviaErrore(socket, esito.errore.codice, extraErrore(esito.errore, m.rif));
       ctx.stanza = stanza;
       ctx.giocatoreId = esito.giocatore.id;
+      const eventi = [...esito.eventi, ...(ctx.admin ? stanze.rendiAdmin(stanza, ctx.giocatoreId, { ora }) : [])];
       invia(socket, messaggioEntrato(stanza, esito.giocatore));
-      return stanze.diffondiAggiornamento(stanza, esito.eventi);
+      return stanze.diffondiAggiornamento(stanza, eventi);
     },
 
     riconnetti(m) {
@@ -414,11 +455,19 @@ function collegaSocket(socket, { publicUrl, random, ora, ip = null }) {
       }
       ctx.stanza = esito.stanza;
       ctx.giocatoreId = esito.giocatore.id;
+      if (ctx.admin) esito.eventi.push(...stanze.rendiAdmin(esito.stanza, ctx.giocatoreId, { ora }));
       invia(socket, messaggioEntrato(esito.stanza, esito.giocatore));
       // Prima lo stato con la cronaca completa a chi rientra, poi il broadcast
       // (che include anche questo socket): evento connessione + stato breve.
       statoAlMittente(esito.stanza);
       return stanze.diffondiAggiornamento(esito.stanza, esito.eventi);
+    },
+
+    impostaRegole(m) {
+      if (!inStanza()) return inviaErrore(socket, 'NON_IN_STANZA', { rif: m.rif });
+      const esito = stanze.impostaRegole(ctx.stanza, ctx.giocatoreId, m.regole, { ora });
+      if (esito.errore) return inviaErrore(socket, esito.errore.codice, extraErrore(esito.errore, m.rif));
+      return stanze.diffondiAggiornamento(ctx.stanza, esito.eventi);
     },
 
     avviaPartita(m) {
@@ -451,6 +500,51 @@ function collegaSocket(socket, { publicUrl, random, ora, ip = null }) {
 
     ping() {
       return invia(socket, { tipo: 'pong' });
+    },
+
+    autenticaAdmin(m) {
+      if (!chiaveAdminValida(m.chiave, chiaveAdmin)) {
+        // Pochi tentativi per connessione: indovinare una chiave a caso è comunque impossibile.
+        ctx.tentativiAdmin = (ctx.tentativiAdmin || 0) + 1;
+        inviaErrore(socket, 'ADMIN_NON_VALIDO', { rif: m.rif });
+        if (ctx.tentativiAdmin >= 5) socket.close(1008, 'Troppi tentativi admin');
+        return undefined;
+      }
+      ctx.admin = true;
+      invia(socket, { tipo: 'admin', ok: true, rif: m.rif });
+      if (inStanza()) {
+        const eventi = stanze.rendiAdmin(ctx.stanza, ctx.giocatoreId, { ora });
+        if (eventi.length) stanze.diffondiAggiornamento(ctx.stanza, eventi);
+      }
+      return undefined;
+    },
+
+    chiudiStanza(m) {
+      if (!inStanza()) return inviaErrore(socket, 'NON_IN_STANZA', { rif: m.rif });
+      if (!stanze.puoComandare(ctx.stanza, ctx.giocatoreId)) return inviaErrore(socket, 'NON_ADMIN', { rif: m.rif });
+      const chi = ctx.stanza.adminId === ctx.giocatoreId ? 'dall\'admin' : 'dall\'host';
+      stanze.rimuovi(ctx.stanza.codice, `La stanza è stata chiusa ${chi}`);
+      return undefined;
+    },
+
+    cacciaGiocatore(m) {
+      if (!inStanza()) return inviaErrore(socket, 'NON_IN_STANZA', { rif: m.rif });
+      const stanza = ctx.stanza;
+      const esito = stanze.caccia(stanza, ctx.giocatoreId, m.giocatoreId, { ora, random });
+      if (esito.errore) return inviaErrore(socket, esito.errore.codice, extraErrore(esito.errore, m.rif));
+      if (esito.socket) {
+        invia(esito.socket, P.errore('CACCIATO'));
+        try { esito.socket.close(P.CHIUSURE.CACCIATO, 'Tolto dalla stanza'); } catch { /* già chiuso */ }
+      }
+      return stanze.diffondiAggiornamento(stanza, esito.eventi);
+    },
+
+    cediAdmin(m) {
+      if (!inStanza()) return inviaErrore(socket, 'NON_IN_STANZA', { rif: m.rif });
+      const stanza = ctx.stanza;
+      const esito = stanze.cediAdmin(stanza, ctx.giocatoreId, m.giocatoreId, { ora });
+      if (esito.errore) return inviaErrore(socket, esito.errore.codice, extraErrore(esito.errore, m.rif));
+      return stanze.diffondiAggiornamento(stanza, esito.eventi);
     },
   };
 
@@ -563,6 +657,7 @@ function crea(opzioni = {}) {
   const ora = opzioni.ora || Date.now;
   const configurato = opzioni.publicUrl || process.env.PUBLIC_URL || null;
   const fidato = opzioni.proxyFidato ?? proxyFidato();
+  const chiaveAdmin = opzioni.chiaveAdmin !== undefined ? opzioni.chiaveAdmin : (process.env.ADMIN_CHIAVE || null);
   const maxPerIp = opzioni.maxConnessioniPerIp ?? P.LIMITI.MAX_CONNESSIONI_PER_IP;
   const server = http.createServer(gestoreHttp);
   let wss = null;
@@ -594,7 +689,7 @@ function crea(opzioni = {}) {
       try {
         const indirizzo = server.address();
         const porta = indirizzo && typeof indirizzo === 'object' ? indirizzo.port : null;
-        collegaSocket(socket, { publicUrl: baseLink(configurato, req, porta, fidato), random, ora, ip });
+        collegaSocket(socket, { publicUrl: baseLink(configurato, req, porta, fidato), random, ora, ip, chiaveAdmin });
       } catch (e) {
         console.error('[ws] errore nel collegamento di un socket', e);
         try { socket.close(1011, 'Errore interno'); } catch { /* ignora */ }
@@ -623,9 +718,9 @@ function crea(opzioni = {}) {
 /**
  * Avvia il server in ascolto. Ritorna una Promise con { server, wss, porta, url }.
  */
-function avvia({ port = Number(process.env.PORT) || 3000, host = process.env.HOST || '0.0.0.0', publicUrl } = {}) {
+function avvia({ port = Number(process.env.PORT) || 3000, host = process.env.HOST || '0.0.0.0', publicUrl, chiaveAdmin } = {}) {
   return new Promise((risolvi, rifiuta) => {
-    const { server, wss } = crea({ publicUrl });
+    const { server, wss } = crea({ publicUrl, chiaveAdmin });
     server.once('error', rifiuta);
     server.listen(port, host, () => {
       const porta = server.address().port;
@@ -671,7 +766,15 @@ if (require.main === module) {
     salvataggioAttivo = salvataggio.avvia(fileSalvataggio, stanze);
   }
 
-  avvia()
+  // Chiave admin: su Render arriva da ADMIN_CHIAVE (generata da Render); in
+  // locale, se manca, se ne genera una accanto al salvataggio.
+  const chiaveAdmin = process.env.ADMIN_CHIAVE
+    || chiaveAdminLocale(fileSalvataggio ? path.dirname(fileSalvataggio) : null);
+  if (chiaveAdmin && !P.REGEX_CHIAVE_ADMIN.test(chiaveAdmin)) {
+    console.warn('ATTENZIONE: ADMIN_CHIAVE deve avere da 16 a 128 caratteri (lettere, cifre, + / = _ -): admin disattivato.');
+  }
+
+  avvia({ chiaveAdmin })
     .then(({ server, porta, url, wss }) => {
       arrestoOrdinato(server, wss, salvataggioAttivo);
       const host = process.env.HOST || '0.0.0.0';
@@ -679,6 +782,10 @@ if (require.main === module) {
       console.log(`Monopoly online v${pacchetto.version} in ascolto sulla porta ${porta}`);
       console.log(`Su questo computer:        http://localhost:${porta}`);
       if (fileSalvataggio) console.log(`Partite salvate in:        ${fileSalvataggio}`);
+      // Il link da admin si stampa solo in locale: su Render i log li vede il pannello.
+      if (chiaveAdmin && P.REGEX_CHIAVE_ADMIN.test(chiaveAdmin) && !process.env.RENDER) {
+        console.log(`Il tuo link da admin:      http://localhost:${porta}/#admin=${encodeURIComponent(chiaveAdmin)}  (non condividerlo)`);
+      }
       if (process.env.PUBLIC_URL) {
         console.log(`Indirizzo pubblico (PUBLIC_URL): ${url}`);
       } else if (!suTutteLeReti) {
@@ -723,6 +830,8 @@ module.exports = {
   origineAmmessa,
   proxyFidato,
   ipDi,
+  chiaveAdminValida,
+  chiaveAdminLocale,
   indirizziDiRete,
   RADICE_CLIENT,
   MIME,

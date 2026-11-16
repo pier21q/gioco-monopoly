@@ -24,6 +24,7 @@
 const TAB = require('./tabellone');
 const CARTE = require('./carte');
 const { errore } = require('./errori');
+const REG = require('./regole');
 
 const NUMERO_CASELLE = TAB.CASELLE.length;
 const CASE_TOTALI = 32;
@@ -95,6 +96,13 @@ function trova(stato, id) {
 }
 
 /** Nome del giocatore, oppure "la banca" per null/sconosciuto. */
+/** "a" davanti a un nome: "ad Anna", "alla banca", "a Bruno". */
+function aChi(nome) {
+  const n = String(nome ?? '');
+  if (n === 'la banca') return 'alla banca';
+  return /^[aAàÀ]/.test(n) ? `ad ${n}` : `a ${n}`;
+}
+
 function nomeDi(stato, id) {
   const g = id ? trova(stato, id) : null;
   return g ? g.nome : 'la banca';
@@ -242,6 +250,15 @@ function haDebiti(stato, giocatoreId) {
     || stato.debitiInAttesa.some((d) => d.giocatoreId === giocatoreId);
 }
 
+/** Pagamenti alla banca che, con la variante del Parcheggio gratuito, finiscono nel piatto. */
+const MOTIVI_PIATTO = new Set(['tassa', 'carta', 'cauzione']);
+
+/** Con la variante `parcheggio`, mette nel piatto un pagamento fatto alla banca. */
+function alPiatto(stato, motivo, importo) {
+  if (REG.valore(stato, 'parcheggio') !== true || !MOTIVI_PIATTO.has(motivo) || !(importo > 0)) return;
+  stato.piatto = (Number(stato.piatto) || 0) + importo;
+}
+
 /** Sposta denaro da un giocatore a un altro (null = banca, che assorbe o crea denaro). */
 function trasferisci(stato, daId, aId, importo) {
   const da = daId ? trova(stato, daId) : null;
@@ -268,7 +285,7 @@ function emettiPagamento(stato, ctx, daId, aId, importo, opz) {
     const dati = { daId, aId, casella: opz.casella, importo };
     if (opz.moltiplicatore) dati.moltiplicatore = opz.moltiplicatore;
     if (opz.dadi) dati.dadi = opz.dadi;
-    emetti(ctx, 'affitto', daId, `${chi} paga ${euro(importo)} a ${verso} per ${casella(opz.casella).nome}`, dati);
+    emetti(ctx, 'affitto', daId, `${chi} paga ${euro(importo)} ${aChi(verso)} per ${casella(opz.casella).nome}`, dati);
     return;
   }
   if (opz.motivo === 'tassa') {
@@ -276,7 +293,7 @@ function emettiPagamento(stato, ctx, daId, aId, importo, opz) {
       { casella: opz.casella, importo });
     return;
   }
-  emetti(ctx, 'pagamento', daId, `${chi} paga ${euro(importo)} a ${verso} (${DESCRIZIONE_MOTIVO[opz.motivo] || opz.motivo})`,
+  emetti(ctx, 'pagamento', daId, `${chi} paga ${euro(importo)} ${aChi(verso)} (${DESCRIZIONE_MOTIVO[opz.motivo] || opz.motivo})`,
     { daId, aId: aId ?? null, importo, motivo: opz.motivo });
 }
 
@@ -295,6 +312,7 @@ function addebita(stato, ctx, daId, aId, importo, opz) {
 
   if (!haDebiti(stato, daId) && g.denaro >= importo) {
     trasferisci(stato, daId, aId, importo);
+    if (!aId) alPiatto(stato, opz.motivo, importo);
     emettiPagamento(stato, ctx, daId, aId, importo, opz);
     return;
   }
@@ -307,7 +325,7 @@ function apriDebito(stato, ctx, d) {
   const voce = { giocatoreId: d.giocatoreId, creditoreId: d.creditoreId ?? null, importo: d.importo, motivo: d.motivo };
   if (Number.isInteger(d.casella)) voce.casella = d.casella;
   emetti(ctx, 'debito', g.id,
-    `${g.nome} deve ${euro(d.importo)} a ${nomeDi(stato, voce.creditoreId)} ma ha solo ${euro(g.denaro)}: `
+    `${g.nome} deve ${euro(d.importo)} ${aChi(nomeDi(stato, voce.creditoreId))} ma ha solo ${euro(g.denaro)}: `
       + 'deve vendere, ipotecare, scambiare o dichiarare bancarotta',
     { creditoreId: voce.creditoreId, importo: voce.importo, motivo: voce.motivo });
   if (stato.debito || stato.asta) {
@@ -338,6 +356,7 @@ function saldaDebiti(stato, ctx) {
     }
     if (g.denaro < d.importo) break;
     trasferisci(stato, g.id, d.creditoreId, d.importo);
+    if (!d.creditoreId) alPiatto(stato, d.motivo, d.importo);
     emetti(ctx, 'debitoSaldato', g.id, `${g.nome} salda il debito di ${euro(d.importo)} con ${nomeDi(stato, d.creditoreId)}`,
       { creditoreId: d.creditoreId, importo: d.importo });
     chiudiDebito(stato, ctx);
@@ -421,7 +440,7 @@ function chiudiAsta(stato, ctx, vincitoreId) {
     voceDi(stato, a.casella).proprietario = g.id;
     emetti(ctx, 'acquisto', g.id, `${g.nome} si aggiudica ${c.nome} all'asta per ${euro(importo)}`,
       { casella: a.casella, prezzo: importo, tramite: 'asta' });
-    emetti(ctx, 'astaFine', g.id, `Asta chiusa: ${c.nome} va a ${g.nome} per ${euro(importo)}`,
+    emetti(ctx, 'astaFine', g.id, `Asta chiusa: ${c.nome} va ${aChi(g.nome)} per ${euro(importo)}`,
       { casella: a.casella, vincitoreId: g.id, importo });
   } else {
     emetti(ctx, 'astaFine', null, `Asta chiusa senza offerte: ${c.nome} resta alla banca`,
@@ -473,7 +492,7 @@ function passaTurno(stato, ctx) {
   const numero = (stato.turno.numero || 0) + 1;
   stato.turno = { giocatoreId: prossimo, numero, doppiConsecutivi: 0, soste: [] };
   impostaFase(stato, 'daLanciare');
-  emetti(ctx, 'turno', prossimo, `Turno ${numero}: tocca a ${nomeDi(stato, prossimo)}`,
+  emetti(ctx, 'turno', prossimo, `Turno ${numero}: tocca ${aChi(nomeDi(stato, prossimo))}`,
     { giocatoreId: prossimo, numero });
 }
 
@@ -484,7 +503,7 @@ function mandaInPrigione(stato, g, ctx, motivo) {
   g.turniInPrigione = 0;
   stato.turno.doppiConsecutivi = 0;
   impostaFase(stato, 'mossa');
-  const perche = { casella: 'è finito sulla casella "In prigione!"', carta: 'per una carta', treDoppi: 'per tre doppi consecutivi' };
+  const perche = { casella: 'perché si ferma su "In prigione!"', carta: 'per una carta', treDoppi: 'per tre doppi consecutivi' };
   emetti(ctx, 'prigione', g.id, `${g.nome} va in prigione ${perche[motivo] || ''}`.trim(), { motivo });
 }
 
@@ -566,6 +585,7 @@ module.exports = {
   TAB,
   CARTE,
   // utilità
+  aChi,
   errore,
   euro,
   casella,
@@ -579,6 +599,7 @@ module.exports = {
   voceDi,
   normalizzaStato,
   appendiLog,
+  alPiatto,
   // gruppi e valori
   indiciGruppo,
   possiedeGruppo,

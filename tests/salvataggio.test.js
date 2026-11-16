@@ -31,7 +31,8 @@ test('salvataggio: la partita sopravvive al riavvio e i giocatori rientrano con 
     const stanza = stanze.crea({ ora });
     const anna = stanze.entra(stanza, { nome: 'Anna', ora }).giocatore;
     const bruno = stanze.entra(stanza, { nome: 'Bruno', ora }).giocatore;
-    stanze.avvia(stanza, anna.id, { ora, random: H.rngDeterministico(5) });
+    stanze.avvia(stanza, anna.id, { ora, random: H.rngDeterministico(5), regole: {} });
+    H.completaOrdine(stanze, stanza, { ora });
     stanze.applica(stanza, stanza.stato.turno.giocatoreId, { tipo: 'lanciaDadi' }, { ora, random: H.rngDeterministico(9) });
     const statoPrima = structuredClone(stanza.stato);
 

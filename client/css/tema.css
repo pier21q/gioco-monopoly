@@ -223,6 +223,33 @@ h1, h2, h3,
   font-size: var(--testo-s);
   color: var(--colore-testo-tenue);
 }
+/* Riepilogo delle regole nella sala d'attesa, per tutti. */
+.regola__elenco {
+  display: grid;
+  gap: var(--spazio-2);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.regola__voce {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: var(--spazio-2);
+  padding: var(--spazio-2) var(--spazio-3);
+  border-radius: var(--raggio-m);
+  background: rgb(0 0 0 / 0.16);
+}
+.regola__voce--variante {
+  outline: 2px solid var(--ottone);
+  background: rgb(236 187 74 / 0.12);
+}
+.regola__valore {
+  font-weight: 600;
+}
+#sala-cambia-regole[hidden] {
+  display: none;
+}
 
 /* --- Partita -------------------------------------------------------------- */
 
@@ -231,10 +258,21 @@ h1, h2, h3,
   padding-top: var(--spazio-2);
 }
 
+/* Solo colore e spessore dei bordi: la regola `border:` completa cancellava
+   i colori di livello di base.css (errori, avvisi e successi erano uguali). */
 .toast {
   background: #072a22;
-  border: 1px solid rgb(247 240 220 / 0.18);
-  border-left-width: 5px;
+  border-width: 1px 1px 1px 5px;
+  border-style: solid;
+  border-color: rgb(247 240 220 / 0.18);
+  border-left-color: var(--colore-info);
+}
+.toast--successo { border-left-color: var(--colore-successo); }
+.toast--avviso   { border-left-color: var(--colore-avviso); }
+.toast--errore {
+  border-color: rgb(255 163 152 / 0.45);
+  border-left-color: var(--colore-errore);
+  background: #3a1f1c;
 }
 
 /* --- Dadi sopra il titolo (ingresso) -------------------------------------- */
@@ -313,9 +351,17 @@ h1, h2, h3,
    vicino, cioè proprio dove si sta giocando. */
 #toast,
 body:has(#pannelli.pannelli-pronti:not([hidden])) #toast {
-  top: calc(var(--altezza-barra) + var(--spazio-2) + env(safe-area-inset-top));
+  top: calc(var(--altezza-barra-viva, var(--altezza-barra)) + var(--spazio-2) + env(safe-area-inset-top));
   bottom: auto;
   flex-direction: column;
+}
+/* Schermi larghi in partita: sopra il tabellone, non sopra il pannello del
+   turno (coprivano "Tocca a te" e il pulsante principale). */
+@media (min-width: 64rem) {
+  body:has(#pannelli.pannelli-pronti:not([hidden])) #toast {
+    left: calc(50% - var(--larghezza-pannelli) / 2);
+    width: min(30rem, calc(100vw - var(--larghezza-pannelli) - 7rem));
+  }
 }
 @keyframes toast-entra {
   from { opacity: 0; transform: translateY(-12px); }

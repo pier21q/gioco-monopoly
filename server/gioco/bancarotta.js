@@ -11,7 +11,8 @@
  *   3. verso la BANCA: il denaro sparisce, le carte prigione tornano nei
  *      mazzi, le proprietà tornano libere (senza ipoteca) e vanno all'asta
  *      una dopo l'altra tra i giocatori rimasti;
- *   4. il giocatore diventa `fallito`; se era di turno il turno passa;
+ *   4. il giocatore diventa `fallito`; se era di turno il turno passa (nel
+ *      lancio iniziale esce solo dall'ordine: vedi ordine.rimuovi);
  *      se resta un solo giocatore la partita finisce.
  *
  * `patrimonioLiquidabile` non muta lo stato; `liquidaInterno` lo muta ed è
@@ -19,6 +20,8 @@
  */
 
 const N = require('./nucleo');
+const ordine = require('./ordine');
+const REG = require('./regole');
 
 const { errore, euro, casella, trova, voceDi } = N;
 
@@ -51,7 +54,7 @@ function patrimonioLiquidabile(stato, giocatoreId) {
  * @param {string|null} creditoreId  giocatore creditore, o null per la banca
  * @param {object} ctx  contesto del motore (nucleo.creaContesto)
  */
-function liquidaInterno(stato, giocatoreId, creditoreId, ctx) {
+function liquidaInterno(stato, giocatoreId, creditoreId, ctx, { abbandono = false } = {}) {
   const g = trova(stato, giocatoreId);
   const eraDiTurno = stato.turno && stato.turno.giocatoreId === giocatoreId;
 
@@ -81,6 +84,9 @@ function liquidaInterno(stato, giocatoreId, creditoreId, ctx) {
   const versoGiocatore = Boolean(cred && !cred.fallito && cred.id !== giocatoreId);
   const proprieta = N.proprietaDi(stato, giocatoreId);
   const denaro = g.denaro;
+  // Senza aste (variante `aste: false`), o durante il lancio iniziale, le
+  // proprietà tornano semplicemente alla banca.
+  const conAsta = REG.valore(stato, 'aste') !== false && stato.fase !== 'ordine';
   let interessi = 0;
 
   if (versoGiocatore) {
@@ -94,7 +100,7 @@ function liquidaInterno(stato, giocatoreId, creditoreId, ctx) {
   } else {
     for (const i of proprieta) {
       stato.proprieta[String(i)] = { proprietario: null, caseCostruite: 0, ipotecata: false };
-      stato.asteInAttesa.push(i);
+      if (conAsta) stato.asteInAttesa.push(i);
     }
     while (g.cartePrigione > 0) N.restituisciCartaPrigione(stato, g.id);
   }
@@ -106,8 +112,11 @@ function liquidaInterno(stato, giocatoreId, creditoreId, ctx) {
   g.cartePrigione = 0;
   const destinatario = versoGiocatore ? cred.nome : 'la banca';
   N.emetti(ctx, 'bancarotta', g.id,
-    `${g.nome} fa bancarotta: ${euro(denaro)} e ${proprieta.length} proprietà vanno a ${destinatario}`
-      + (versoGiocatore || proprieta.length === 0 ? '' : ', che le mette all\'asta'),
+    // Chi abbandona non "fa bancarotta": lascia quello che ha.
+    (abbandono
+      ? `I beni di ${g.nome} (${euro(denaro)} e ${proprieta.length} proprietà) vanno ${N.aChi(destinatario)}`
+      : `${g.nome} fa bancarotta: ${euro(denaro)} e ${proprieta.length} proprietà vanno ${N.aChi(destinatario)}`)
+      + (versoGiocatore || proprieta.length === 0 || !conAsta ? '' : ', che le mette all\'asta'),
     { creditoreId: versoGiocatore ? cred.id : null, proprieta, denaro });
 
   // Uno scambio pendente che coinvolge il fallito viene annullato.
@@ -119,6 +128,11 @@ function liquidaInterno(stato, giocatoreId, creditoreId, ctx) {
 
   // 4. Fine partita, interessi del creditore, turno, aste in coda.
   if (N.verificaFinePartita(stato, ctx)) return;
+  // Durante il lancio iniziale non ci sono beni né turni: esce solo dall'ordine.
+  if (stato.fase === 'ordine') {
+    ordine.rimuovi(stato, giocatoreId, ctx);
+    return;
+  }
   if (versoGiocatore) N.addebita(stato, ctx, cred.id, null, interessi, { motivo: 'interesseBancarotta' });
   if (eraDiTurno) N.passaTurno(stato, ctx);
   N.continuaCatena(stato, ctx);

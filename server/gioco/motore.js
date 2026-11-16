@@ -6,6 +6,7 @@
  * Motore delle regole: funzione pura su StatoPartita (INTERFACCE.md §1 e §2).
  *   - creaStatoLobby(...)                         → stato in fase 'lobby'
  *   - creaPartita(...)                            → stato in fase 'daLanciare'
+ *       (o 'ordine', con `opzioni.lancioIniziale`: prima si decide chi comincia)
  *   - applicaAzione(stato, giocatoreId, azione, contesto)
  *       → { stato, eventi } oppure { errore: { codice, messaggio, dettagli? } }
  *   - gestisciDisconnessione(stato, giocatoreId, contesto)
@@ -22,6 +23,8 @@
 const N = require('./nucleo');
 const scambi = require('./scambi');
 const bancarotta = require('./bancarotta');
+const ordine = require('./ordine');
+const REG = require('./regole');
 
 const { errore, euro, casella, emetti, trova, nomeDi, voceDi, TAB } = N;
 
@@ -51,6 +54,7 @@ const AZIONI = Object.freeze([
 
 const FASI = Object.freeze([
   'lobby',
+  'ordine',
   'daLanciare',
   'mossa',
   'daDecidereAcquisto',
@@ -152,13 +156,20 @@ function creaStatoLobby(o) {
     log: [],
     vincitoreId: null,
     contatoreScambi: 0,
-    regole: { costruzione: 'libera' },
+    regole: { ...REG.PREDEFINITE },
+    // In sala d'attesa: true dopo che host o admin hanno compilato la finestra delle regole.
+    regoleImpostate: false,
+    ordine: null,
+    // Piatto del Parcheggio gratuito (variante `regole.parcheggio`).
+    piatto: 0,
   };
 }
 
 /**
  * Crea una partita pronta al primo lancio: denaro iniziale, ordine di turno
- * (mescolato se `opzioni.ordineCasuale`), mazzi mescolati.
+ * (mescolato se `opzioni.ordineCasuale`), mazzi mescolati. Con
+ * `opzioni.lancioIniziale` la partita parte invece in fase 'ordine': tutti
+ * lanciano i dadi, nell'ordine ricevuto, per decidere chi comincia (ordine.js).
  * @param {{codice: string, hostId: string, giocatori: object[], random?: Function, ora?: Function, opzioni?: object}} o
  */
 function creaPartita(o) {
@@ -175,20 +186,30 @@ function creaPartita(o) {
 
   const random = typeof o.random === 'function' ? o.random : Math.random;
   const ora = typeof o.ora === 'function' ? o.ora : Date.now;
-  const opzioni = { denaroIniziale: 1500, ordineCasuale: true, costruzione: 'libera', ...(o.opzioni || {}) };
+  const opzioni = { ...REG.PREDEFINITE, ordineCasuale: true, lancioIniziale: false, ...(o.opzioni || {}) };
   if (!COSTRUZIONE.includes(opzioni.costruzione)) {
     throw new TypeError("creaPartita: costruzione deve essere 'libera' o 'sosta'");
   }
   if (!Number.isInteger(opzioni.denaroIniziale) || opzioni.denaroIniziale < 0) {
     throw new TypeError('creaPartita: denaroIniziale deve essere un intero >= 0');
   }
+  // Le altre regole devono avere uno dei valori del catalogo (regole.js).
+  for (const r of REG.REGOLE) {
+    if (r.chiave === 'denaroIniziale') continue;
+    if (!r.valori.some((v) => v.valore === opzioni[r.chiave])) {
+      throw new TypeError(`creaPartita: valore non ammesso per la regola ${r.chiave}`);
+    }
+  }
+  const regole = Object.fromEntries(REG.REGOLE.map((r) => [r.chiave, opzioni[r.chiave]]));
 
-  const ordine = opzioni.ordineCasuale ? N.mescola(o.giocatori, random) : o.giocatori.slice();
-  const stato = creaStatoLobby({ codice: o.codice, hostId: o.hostId ?? ordine[0].id, giocatori: ordine, ora });
-  stato.giocatori = ordine.map((g) => giocatoreBase(g, opzioni.denaroIniziale));
-  stato.regole = { costruzione: opzioni.costruzione };
+  const lancioIniziale = opzioni.lancioIniziale === true;
+  const fila = opzioni.ordineCasuale && !lancioIniziale ? N.mescola(o.giocatori, random) : o.giocatori.slice();
+  const stato = creaStatoLobby({ codice: o.codice, hostId: o.hostId ?? fila[0].id, giocatori: fila, ora });
+  stato.giocatori = fila.map((g) => giocatoreBase(g, opzioni.denaroIniziale));
+  stato.regole = regole;
+  stato.regoleImpostate = true;
   stato.fase = 'daLanciare';
-  stato.turno = { giocatoreId: ordine[0].id, numero: 1, doppiConsecutivi: 0, soste: [] };
+  stato.turno = { giocatoreId: fila[0].id, numero: 1, doppiConsecutivi: 0, soste: [] };
   stato.mazzi = {
     probabilita: N.mescola(N.CARTE.PROBABILITA.map((c) => c.id), random),
     imprevisti: N.mescola(N.CARTE.IMPREVISTI.map((c) => c.id), random),
@@ -196,10 +217,61 @@ function creaPartita(o) {
 
   const t = ora();
   const primo = stato.giocatori[0];
-  stato.log.push(N.evento('partitaIniziata', null, `La partita inizia: tocca a ${primo.nome}`,
-    { ordine: stato.giocatori.map((g) => g.id), denaroIniziale: opzioni.denaroIniziale, costruzione: opzioni.costruzione }, t));
-  stato.log.push(N.evento('turno', primo.id, `Turno 1: tocca a ${primo.nome}`, { giocatoreId: primo.id, numero: 1 }, t));
+  const dati = {
+    ordine: stato.giocatori.map((g) => g.id),
+    denaroIniziale: opzioni.denaroIniziale,
+    costruzione: opzioni.costruzione,
+    regole: { ...regole },
+    lancioIniziale,
+  };
+  const distribuite = distribuisciProprieta(stato, regole.proprietaIniziali, random);
+  if (lancioIniziale) {
+    ordine.avvia(stato);
+    stato.log.push(N.evento('partitaIniziata', null,
+      `La partita inizia: tutti lanciano i dadi, chi fa di più comincia. Primo a lanciare: ${primo.nome}`, dati, t));
+  } else {
+    stato.log.push(N.evento('partitaIniziata', null, `La partita inizia: tocca ${N.aChi(primo.nome)}`, dati, t));
+  }
+  for (const [id, caselle] of distribuite) {
+    stato.log.push(N.evento('proprietaIniziali', id,
+      `${N.nomeDi(stato, id)} riceve ${caselle.map((i) => casella(i).nome).join(', ')}`, { caselle }, t));
+  }
+  if (!lancioIniziale) {
+    stato.log.push(N.evento('turno', primo.id, `Turno 1: tocca ${N.aChi(primo.nome)}`, { giocatoreId: primo.id, numero: 1 }, t));
+  }
   return stato;
+}
+
+/** Gruppo di una casella acquistabile: il colore, oppure 'stazione' / 'societa'. */
+function gruppoDi(indice) {
+  const c = casella(indice);
+  return c.tipo === 'proprieta' ? c.gruppo : c.tipo;
+}
+
+/**
+ * Regola `proprietaIniziali`: dà `quante` proprietà a caso a ogni giocatore,
+ * a giro, senza mai completare un gruppo (niente case dal primo turno).
+ * @returns {Map<string, number[]>} caselle ricevute da ciascuno
+ */
+function distribuisciProprieta(stato, quante, random) {
+  const ricevute = new Map();
+  if (!(quante > 0)) return ricevute;
+  const mazzo = N.mescola(N.INDICI_ACQUISTABILI, random);
+  const tutteDelGruppo = (g) => N.INDICI_ACQUISTABILI.filter((i) => gruppoDi(i) === g);
+  for (let giro = 0; giro < quante; giro += 1) {
+    for (const g of stato.giocatori) {
+      const k = mazzo.findIndex((i) => {
+        const mie = [...(ricevute.get(g.id) || []), i];
+        return !tutteDelGruppo(gruppoDi(i)).every((x) => mie.includes(x));
+      });
+      if (k === -1) continue;
+      const [i] = mazzo.splice(k, 1);
+      voceDi(stato, i).proprietario = g.id;
+      ricevute.set(g.id, [...(ricevute.get(g.id) || []), i]);
+    }
+  }
+  for (const caselle of ricevute.values()) caselle.sort((a, b) => a - b);
+  return ricevute;
 }
 
 // ---------------------------------------------------------------------------
@@ -234,6 +306,7 @@ function descriviFase(stato) {
   const diTurno = nomeDi(stato, stato.turno && stato.turno.giocatoreId);
   switch (stato.fase) {
     case 'lobby': return 'la partita non è ancora iniziata';
+    case 'ordine': return `si lanciano i dadi per decidere chi comincia (tocca ${N.aChi(diTurno)})`;
     case 'finePartita': return 'la partita è finita';
     case 'daLanciare': return `${diTurno} deve ancora lanciare i dadi`;
     case 'mossa': return `${diTurno} ha già lanciato i dadi e deve finire il turno`;
@@ -253,7 +326,7 @@ function faseErrata(stato, tipo) {
 
 /** Errore NON_IL_TUO_TURNO con il nome di chi deve giocare. */
 function nonIlTuoTurno(stato) {
-  return errore('NON_IL_TUO_TURNO', `Non è il tuo turno: tocca a ${nomeDi(stato, stato.turno.giocatoreId)}`);
+  return errore('NON_IL_TUO_TURNO', `Non è il tuo turno: tocca ${N.aChi(nomeDi(stato, stato.turno.giocatoreId))}`);
 }
 
 /** Richiede giocatore di turno e una delle fasi indicate. */
@@ -280,9 +353,12 @@ function richiediAstaAttiva(stato, g, tipo) {
  */
 function verificaPermesso(stato, g, tipo) {
   const { fase } = stato;
+  if (fase === 'ordine' && tipo !== 'lanciaDadi' && tipo !== 'abbandona' && AZIONI.includes(tipo)) {
+    return errore('FASE_ERRATA', 'Prima si lanciano i dadi per decidere chi comincia', { fase, azione: tipo });
+  }
   switch (tipo) {
     case 'lanciaDadi':
-      return richiediTurno(stato, g, tipo, ['daLanciare']);
+      return richiediTurno(stato, g, tipo, ['daLanciare', 'ordine']);
     case 'compra':
     case 'rifiutaAcquisto':
       return richiediTurno(stato, g, tipo, ['daDecidereAcquisto']);
@@ -373,10 +449,13 @@ function avanza(stato, g, ctx, passi, causa, incassaVia = true) {
   emetti(ctx, 'movimento', g.id, `${g.nome} va da ${casella(da).nome} a ${casella(a).nome}`,
     { da, a, passi, passatoDalVia, causa });
   if (passatoDalVia && incassaVia) {
-    g.denaro += TAB.STIPENDIO_VIA;
+    // Variante `viaDoppio`: fermandosi proprio sul Via lo stipendio raddoppia.
+    const doppio = a === TAB.INDICE_VIA && REG.valore(stato, 'viaDoppio') === true;
+    const importo = doppio ? 2 * TAB.STIPENDIO_VIA : TAB.STIPENDIO_VIA;
+    g.denaro += importo;
     emetti(ctx, 'passaggioVia', g.id,
-      `${g.nome} ${a === TAB.INDICE_VIA ? 'arriva sul' : 'passa dal'} Via e riscuote ${euro(TAB.STIPENDIO_VIA)}`,
-      { importo: TAB.STIPENDIO_VIA });
+      `${g.nome} ${a === TAB.INDICE_VIA ? 'arriva sul' : 'passa dal'} Via e riscuote ${euro(importo)}${doppio ? ' (stipendio doppio)' : ''}`,
+      { importo, doppio });
   }
 }
 
@@ -421,8 +500,18 @@ function risolviCasella(stato, g, ctx, opz = {}) {
     case 'societa':
       risolviProprieta(stato, g, ctx, c, opz);
       return;
+    case 'parcheggio':
+      // Variante `parcheggio`: chi si ferma qui vince il piatto.
+      if (REG.valore(stato, 'parcheggio') === true && stato.piatto > 0) {
+        const vinto = stato.piatto;
+        stato.piatto = 0;
+        g.denaro += vinto;
+        emetti(ctx, 'piatto', g.id, `${g.nome} si ferma al Parcheggio gratuito e vince il piatto: ${euro(vinto)}`,
+          { importo: vinto });
+      }
+      return;
     default:
-      // Via, prigione (solo transito), parcheggio: non succede nulla.
+      // Via, prigione (solo transito): non succede nulla.
   }
 }
 
@@ -437,8 +526,13 @@ function risolviProprieta(stato, g, ctx, c, opz) {
   const owner = trova(stato, voce.proprietario);
   if (voce.ipotecata) {
     // Affitto non dovuto: stesso tipo 'affitto' con importo 0 e il motivo (INTERFACCE.md §6).
-    emetti(ctx, 'affitto', g.id, `${c.nome} è ipotecata: ${g.nome} non paga l'affitto a ${owner.nome}`,
+    emetti(ctx, 'affitto', g.id, `${c.nome} è ipotecata: ${g.nome} non paga l'affitto ${N.aChi(owner.nome)}`,
       { daId: g.id, aId: owner.id, casella: c.indice, importo: 0, ipotecata: true });
+    return;
+  }
+  if (owner.inPrigione && REG.valore(stato, 'affittoInPrigione') === false) {
+    emetti(ctx, 'affitto', g.id, `${owner.nome} è in prigione: ${g.nome} non paga l'affitto di ${c.nome}`,
+      { daId: g.id, aId: owner.id, casella: c.indice, importo: 0, inPrigione: true });
     return;
   }
   let dadi;
@@ -533,6 +627,18 @@ function applicaEffetto(stato, g, ctx, carta) {
 // ---------------------------------------------------------------------------
 
 /** Legge `azione.casella` e verifica che sia una casella acquistabile. */
+/** Chi rinuncia all'acquisto apre l'asta; con la variante `aste: false` la casella resta alla banca. */
+function rinunciaAllAcquisto(stato, g, ctx, motivo = null) {
+  if (REG.valore(stato, 'aste') === false) {
+    emetti(ctx, 'acquistoRifiutato', g.id,
+      `${g.nome} ${motivo === 'inattivo' ? 'non decide in tempo e non compra' : 'non compra'} ${casella(g.posizione).nome}: resta alla banca`,
+      { casella: g.posizione, motivo });
+    N.impostaFase(stato, N.faseDopoMossa(stato));
+    return;
+  }
+  N.avviaAsta(stato, ctx, g.posizione, N.faseDopoMossa(stato));
+}
+
 function leggiCasella(azione) {
   const i = azione.casella;
   if (!Number.isInteger(i) || i < 0 || i >= NUMERO_CASELLE) {
@@ -566,6 +672,10 @@ function fondiInsufficienti(g, serve, cosa) {
 const GESTORI = {
   /** Lancio dei dadi: movimento, doppi, tre doppi, tentativi in prigione. */
   lanciaDadi(stato, g, azione, ctx) {
+    if (stato.fase === 'ordine') {
+      ordine.lancia(stato, g, ctx);
+      return undefined;
+    }
     const d1 = N.tiraDado(ctx);
     const d2 = N.tiraDado(ctx);
     const doppio = d1 === d2;
@@ -631,9 +741,9 @@ const GESTORI = {
     return undefined;
   },
 
-  /** Rinuncia all'acquisto: la casella va all'asta tra tutti i giocatori in gioco. */
+  /** Rinuncia all'acquisto: la casella va all'asta tra tutti (o resta alla banca, se le aste sono spente). */
   rifiutaAcquisto(stato, g, azione, ctx) {
-    N.avviaAsta(stato, ctx, g.posizione, N.faseDopoMossa(stato));
+    rinunciaAllAcquisto(stato, g, ctx);
     return undefined;
   },
 
@@ -814,7 +924,7 @@ const GESTORI = {
     if (esito.errore) return esito;
     stato.scambio = esito.scambio;
     stato.contatoreScambi = (stato.contatoreScambi || 0) + 1;
-    emetti(ctx, 'scambioProposto', g.id, `${g.nome} propone uno scambio a ${nomeDi(stato, esito.scambio.aId)}`,
+    emetti(ctx, 'scambioProposto', g.id, `${g.nome} propone uno scambio ${N.aChi(nomeDi(stato, esito.scambio.aId))}`,
       { scambio: structuredClone(esito.scambio) });
     return undefined;
   },
@@ -837,7 +947,7 @@ const GESTORI = {
     if (sc.id !== azione.scambioId) return errore('SCAMBIO_NON_TROVATO', 'Lo scambio indicato non è più in attesa');
     stato.scambio = null;
     const testo = g.id === sc.daId
-      ? `${g.nome} ritira la proposta di scambio a ${nomeDi(stato, sc.aId)}`
+      ? `${g.nome} ritira la proposta di scambio ${N.aChi(nomeDi(stato, sc.aId))}`
       : `${g.nome} rifiuta lo scambio proposto da ${nomeDi(stato, sc.daId)}`;
     emetti(ctx, 'scambioRifiutato', g.id, testo, { scambio: structuredClone(sc), daId: g.id });
     return undefined;
@@ -848,6 +958,7 @@ const GESTORI = {
     const cauzione = TAB.CAUZIONE_PRIGIONE;
     if (g.denaro < cauzione) return fondiInsufficienti(g, cauzione, 'La cauzione');
     g.denaro -= cauzione;
+    N.alPiatto(stato, 'cauzione', cauzione);
     g.inPrigione = false;
     g.turniInPrigione = 0;
     emetti(ctx, 'pagamento', g.id, `${g.nome} paga ${euro(cauzione)} di cauzione`,
@@ -894,7 +1005,7 @@ const GESTORI = {
       }
     }
     emetti(ctx, 'abbandono', g.id, `${g.nome} abbandona la partita`, { creditoreId: creditoreId ?? null });
-    bancarotta.liquidaInterno(stato, g.id, creditoreId ?? null, ctx);
+    bancarotta.liquidaInterno(stato, g.id, creditoreId ?? null, ctx, { abbandono: true });
     if (stato.asta) N.verificaChiusuraAsta(stato, ctx);
     return undefined;
   },
@@ -948,6 +1059,7 @@ function applicaAzione(stato, giocatoreId, azione, contesto = {}) {
 
 /**
  * Fa avanzare la partita quando `giocatoreId` la tiene ferma. In ordine:
+ *   - nel lancio iniziale (fase 'ordine') lancia i dadi al posto suo;
  *   - (solo se disconnesso) annulla lo scambio pendente che lo coinvolge;
  *   - se partecipa a un'asta e non è il miglior offerente, passa;
  *   - se è di turno in 'daDecidereAcquisto' rinuncia (la casella va all'asta);
@@ -966,6 +1078,12 @@ function sblocca(stato, giocatoreId, contesto, motivo) {
   const disconnesso = motivo === 'disconnesso';
   const perche = disconnesso ? 'è disconnesso' : 'non ha giocato in tempo';
 
+  if (nuovo.fase === 'ordine') {
+    if (nuovo.turno.giocatoreId !== g.id) return { stato, eventi: [] };
+    ordine.lancia(nuovo, g, ctx, motivo);
+    return concludi(stato, nuovo, ctx);
+  }
+
   const sc = nuovo.scambio;
   if (disconnesso && sc && (sc.daId === g.id || sc.aId === g.id)) {
     nuovo.scambio = null;
@@ -981,11 +1099,12 @@ function sblocca(stato, giocatoreId, contesto, motivo) {
   }
   if (nuovo.turno.giocatoreId === g.id) {
     if (nuovo.fase === 'daDecidereAcquisto') {
-      if (!disconnesso) {
+      const conAsta = REG.valore(nuovo, 'aste') !== false;
+      if (!disconnesso && conAsta) {
         emetti(ctx, 'turnoSaltato', g.id, `${g.nome} non decide in tempo: ${casella(g.posizione).nome} va all'asta`,
           { giocatoreId: g.id, motivo });
       }
-      N.avviaAsta(nuovo, ctx, g.posizione, N.faseDopoMossa(nuovo));
+      rinunciaAllAcquisto(nuovo, g, ctx, motivo);
     } else if (nuovo.fase === 'daLanciare' || nuovo.fase === 'mossa') {
       emetti(ctx, 'turnoSaltato', g.id, `${g.nome} ${perche} e salta il turno`, { giocatoreId: g.id, motivo });
       N.passaTurno(nuovo, ctx);
@@ -1011,11 +1130,13 @@ function gestisciInattivita(stato, giocatoreId, contesto = {}) {
 /**
  * Chi deve agire perché la partita vada avanti: il debitore, i partecipanti
  * all'asta che non hanno passato (escluso il miglior offerente) oppure il
- * giocatore di turno. Lista vuota in lobby e a partita finita.
+ * giocatore di turno (anche nel lancio iniziale). Lista vuota in lobby e a
+ * partita finita.
  */
 function chiDeveAgire(stato) {
   if (!stato || stato.fase === 'lobby' || stato.fase === 'finePartita') return [];
   if (stato.fase === 'debito' && stato.debito) return [stato.debito.giocatoreId];
+  if (stato.fase === 'ordine') return stato.turno.giocatoreId ? [stato.turno.giocatoreId] : [];
   if (stato.fase === 'asta' && stato.asta) {
     const a = stato.asta;
     return a.partecipanti.filter((id) => !a.passati.includes(id) && id !== a.migliorOfferenteId);

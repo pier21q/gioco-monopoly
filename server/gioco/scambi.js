@@ -78,7 +78,7 @@ function verificaPossessi(stato, scambio) {
         return errore('CASELLA_NON_VALIDA', `${casella(i).nome} non è una proprietà scambiabile`, { casella: i });
       }
       if (voceDi(stato, i).proprietario !== chi.id) {
-        return errore('PROPRIETA_NON_TUA', `${casella(i).nome} non appartiene a ${chi.nome}`, { casella: i });
+        return errore('PROPRIETA_NON_TUA', `${casella(i).nome} non appartiene ${N.aChi(chi.nome)}`, { casella: i });
       }
       if (N.gruppoHaCostruzioni(stato, i)) {
         return errore('HA_COSTRUZIONI',

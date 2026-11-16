@@ -178,13 +178,14 @@
   flex: 1;
 }
 
+/* Largo quanto il suo pulsante (il testo va a capo): centrato e più largo
+   usciva dal pannello o dalla finestra ed era tagliato ai lati. */
 .suggerimento {
   position: absolute;
   left: 50%;
   bottom: calc(100% + 8px);
   z-index: 20;
-  width: max-content;
-  max-width: min(18rem, 80vw);
+  width: 100%;
   padding: var(--spazio-2, 0.5rem) var(--spazio-3, 0.75rem);
   border-radius: var(--pn-raggio-s);
   background: var(--pn-testo);
@@ -215,8 +216,11 @@
   display: none;
 }
 
+/* Solo con il mouse sopra o con il focus da tastiera: un focus rimasto su un
+   pulsante appena bloccato (dopo il lancio, o tornando da una finestra) non
+   deve lasciare il suggerimento sopra il pulsante principale. */
 .azione--bloccata:hover .suggerimento,
-.azione--bloccata:focus-within .suggerimento {
+.azione--bloccata:has(.btn:focus-visible) .suggerimento {
   opacity: 1;
   visibility: visible;
   transform: translate(-50%, 0);
@@ -1650,6 +1654,146 @@
   background: var(--pn-primario-tenue);
 }
 
+/* Finestra "Regole della partita". */
+.scelta-regola {
+  display: grid;
+  gap: 0.4rem;
+  margin: 0 0 0.9rem;
+  padding: 0.7rem 0.8rem 0.8rem;
+  border: 1px solid var(--pn-bordo);
+  border-radius: 0.6rem;
+  min-width: 0;
+}
+
+.scelta-regola__titolo {
+  padding: 0 0.3rem;
+  font-weight: 800;
+}
+
+.scelta-regola__descrizione {
+  margin: 0;
+  color: var(--pn-tenue);
+  font-size: 0.9rem;
+}
+
+.scelta-regola__valori {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(10.5rem, 1fr));
+  gap: 0.4rem;
+}
+
+.scelta-regola__valore {
+  display: flex;
+  gap: 0.5rem;
+  align-items: flex-start;
+  padding: 0.5rem 0.6rem;
+  border: 2px solid var(--pn-bordo);
+  border-radius: 0.5rem;
+  cursor: pointer;
+}
+
+.scelta-regola__valore:has(input:checked) {
+  border-color: var(--pn-primario);
+  background: var(--pn-primario-tenue);
+}
+
+.scelta-regola__valore:has(input:focus-visible) {
+  outline: 3px solid var(--pn-primario);
+  outline-offset: 2px;
+}
+
+.scelta-regola__valore input {
+  flex: none;
+  margin-top: 0.2rem;
+  accent-color: var(--pn-primario);
+}
+
+.scelta-regola__testo {
+  display: grid;
+  gap: 0.1rem;
+}
+
+.scelta-regola__etichetta {
+  font-weight: 700;
+}
+
+.scelta-regola__spiega {
+  color: var(--pn-tenue);
+  font-size: 0.85rem;
+}
+
+.riepilogo-regole {
+  display: grid;
+  gap: 0.3rem;
+  margin: 0;
+}
+
+.riepilogo-regole__voce {
+  display: flex;
+  justify-content: space-between;
+  gap: 0.75rem;
+  padding: 0.45rem 0.6rem;
+  border-bottom: 1px solid var(--pn-bordo);
+}
+
+.riepilogo-regole__voce dt {
+  font-weight: 700;
+}
+
+.riepilogo-regole__voce dd {
+  margin: 0;
+  text-align: right;
+}
+
+.riepilogo-regole__voce--variante {
+  background: var(--pn-primario-tenue);
+}
+
+/* Lancio iniziale: posto provvisorio, nome, punteggi, stato. */
+.classifica--ordine {
+  padding-left: 0;
+  list-style: none;
+}
+
+.classifica--ordine .classifica__voce {
+  display: grid;
+  grid-template-columns: 3.2rem auto 1fr auto auto;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.classifica--ordine .classifica__nome {
+  margin-left: 0;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.classifica--ordine .classifica__valore {
+  float: none;
+}
+
+.classifica__posto {
+  font-weight: 800;
+  color: var(--pn-tenue);
+  white-space: nowrap;
+}
+
+.classifica__voce--tocca {
+  box-shadow: inset 3px 0 0 var(--pn-primario, #1d4ed8);
+}
+
+@media (max-width: 420px) {
+  .classifica--ordine .classifica__voce {
+    grid-template-columns: 3rem auto 1fr auto;
+  }
+  .classifica--ordine .distintivo {
+    grid-column: 3 / -1;
+    justify-self: start;
+  }
+}
+
 /* ------------------------------------------------------------------------ */
 /* 9. Toast (base.css posiziona #toast; qui il contenuto)                    */
 /* ------------------------------------------------------------------------ */
@@ -1949,4 +2093,33 @@
     max-height: none;
     overflow: visible;
   }
+}
+
+/* Finestra admin: un giocatore per riga, pulsante a destra. */
+.elenco-admin {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: var(--spazio-2, 0.5rem);
+}
+
+.elenco-admin__voce {
+  display: flex;
+  align-items: center;
+  gap: var(--spazio-2, 0.5rem);
+  flex-wrap: wrap;
+}
+
+.elenco-admin__comandi {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: var(--spazio-2, 0.5rem);
+  margin-left: auto;
+}
+
+/* Finestra admin: "Chiudi la stanza" lontano da "Fatto", a sinistra. */
+.dlg__piede .admin__chiudi-stanza {
+  margin-right: auto;
 }

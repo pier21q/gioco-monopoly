@@ -30,10 +30,29 @@
 
 import { suoni, attivi as suoniAttivi, imposta as impostaSuoni } from '/js/suoni.js';
 
+/** "a" davanti a un nome: "ad Anna", "alla banca", "a Bruno". */
+function aChi(nome) {
+  const n = String(nome ?? '');
+  if (n === 'la banca') return 'alla banca';
+  return /^[aAàÀ]/.test(n) ? `ad ${n}` : `a ${n}`;
+}
+
+
+/** Preferenza "Animazioni veloci" (solo in questo browser). */
+function veloci() {
+  try { return localStorage.getItem(CHIAVE_VELOCE) === '1'; } catch { return false; }
+}
+function impostaVeloci(si) {
+  try { localStorage.setItem(CHIAVE_VELOCE, si ? '1' : '0'); } catch { /* resta per questa pagina */ }
+}
+
 const RAPPORTO_ANGOLO = 1.6;            // lato dell'angolo / lato corto di una casella
 const UNITA_TOTALI = 2 * RAPPORTO_ANGOLO + 9;
 const NUMERO_CASELLE = 40;
 const DURATA_DADI = 720;                // ms dell'animazione di lancio
+const DURATA_CARTA_VISIBILE = 8000;     // ms prima che la carta pescata torni via da sola
+const CHIAVE_VELOCE = 'monopoly.animazioni-veloci';
+const FATTORE_VELOCE = 0.4;             // pedine più rapide con "Animazioni veloci"
 const PASSO_MAX = 230;                  // ms per casella
 const PASSO_MIN = 70;
 const DURATA_MAX_PERCORSO = 2600;       // un giro lungo (carta "vai a") resta sotto i 2,6 s
@@ -64,6 +83,7 @@ const ICONE_CAMERA = {
   destra: SVG('<path d="M20 4v6h-6"/><path d="M19.4 10A8 8 0 1 0 18 17.5"/>'),
   alto: SVG('<rect x="4" y="4" width="16" height="16" rx="1.5"/><rect x="8.5" y="8.5" width="7" height="7"/>'),
   zoom: SVG('<circle cx="10.5" cy="10.5" r="6.5"/><path d="m15.5 15.5 5 5M10.5 7.8v5.4M7.8 10.5h5.4"/>'),
+  veloce: SVG('<path d="M4 6.5v11l7-5.5zM12 6.5v11l7-5.5z" class="pieno"/>'),
   suono: SVG('<path d="M4 9.5v5h3.5l4.5 4v-13l-4.5 4z" class="pieno"/><path d="M15.5 9a4.2 4.2 0 0 1 0 6M18 6.5a8 8 0 0 1 0 11"/>'),
   segui: SVG('<circle cx="12" cy="12" r="3.2" class="pieno"/><path d="M12 2.5v4M12 17.5v4M2.5 12h4M17.5 12h4"/><circle cx="12" cy="12" r="7.2"/>'),
 };
@@ -201,6 +221,7 @@ export function distruggi() {
   ist.animazioni.forEach((token) => { token.annullato = true; });
   clearTimeout(ist.timerDadi);
   clearTimeout(ist.timerCarta);
+  clearTimeout(ist.timerRiponiCarta);
   clearTimeout(ist.timerCamera);
   clearTimeout(ist.timerCentro);
   ist.ascoltatori.forEach(([el, tipo, fn]) => el.removeEventListener(tipo, fn));
@@ -973,7 +994,8 @@ async function avviaPercorso(ist, id, pedina, intermedie, finale, ritardo) {
   ist.animazioni.set(id, token);
 
   const tappe = intermedie.length + 1;
-  const passo = Math.max(PASSO_MIN, Math.min(PASSO_MAX, DURATA_MAX_PERCORSO / tappe));
+  const fattore = veloci() ? FATTORE_VELOCE : 1;
+  const passo = Math.max(PASSO_MIN * fattore, Math.min(PASSO_MAX * fattore, (DURATA_MAX_PERCORSO * fattore) / tappe));
   // Chi aspetta la fine del movimento (finestre, messaggi) conta anche l'atterraggio.
   prolungaAttesa(ist, (ritardo || 0) + tappe * passo + 220);
   pedina.classList.add('in-cammino');
@@ -1048,6 +1070,7 @@ function mostraMovimentiDenaro(ist, { giocatori }) {
       const pedina = ist.pedine.get(g.id);
       if (!pedina) return;
       const volo = el('span', `volo ${delta > 0 ? 'volo--entra' : 'volo--esce'}`);
+      volo.style.setProperty('--colore', g.colore || '#888');
       volo.style.left = pedina.style.left;
       volo.style.top = pedina.style.top;
       const testo = el('span', 'volo__testo', `${delta > 0 ? '+' : '−'}${euro(Math.abs(delta))}`);
@@ -1112,7 +1135,7 @@ function ultimoEvento(partita, tipi, dopoIndice = -1) {
 /** Aggiorna i dadi; ritorna true se è appena avvenuto un nuovo lancio animato. */
 function aggiornaDadi(ist, { partita, perId }, iniziale_) {
   const dadi = Array.isArray(partita.dadi) && partita.dadi.length === 2 ? partita.dadi : null;
-  const ev = ultimoEvento(partita, ['dadi']);
+  const ev = ultimoEvento(partita, ['dadi', 'lancioOrdine']);
   const chiave = ev
     ? `${ev.evento.t}|${ev.evento.giocatoreId}|${dadi ? dadi.join('-') : ''}`
     : `v|${dadi ? dadi.join('-') : ''}|${partita.versione}`;
@@ -1182,7 +1205,7 @@ function aggiornaCarta(ist, { partita, perId }, iniziale_) {
   const dati = mostra.dati;
   const mazzo = dati.mazzo === 'imprevisti' ? 'imprevisti' : 'probabilita';
   const chiave = `${mostra.t}|${dati.carta.id || ''}|${mostra.giocatoreId}`;
-  if (chiave === ist.chiaveCarta && (!carta.hidden || ist.cartaInArrivo)) return;
+  if (chiave === ist.chiaveCarta && (!carta.hidden || ist.cartaInArrivo || ist.cartaRiposta === chiave)) return;
   ist.chiaveCarta = chiave;
   // La carta si gira quando la pedina è arrivata sulla casella, non prima.
   const ritardo = iniziale_ ? 0 : attesa();
@@ -1216,6 +1239,20 @@ function aggiornaCarta(ist, { partita, perId }, iniziale_) {
     carta.classList.add('pescata');
     suoni.carta();
   }
+  // Letta la carta, torna via: restava al centro del tabellone per tutto il
+  // turno, sopra dadi e caselle. Un clic la mette via subito.
+  clearTimeout(ist.timerRiponiCarta);
+  ist.timerRiponiCarta = setTimeout(riponi, DURATA_CARTA_VISIBILE);
+  carta.onclick = riponi;
+  }
+
+  function riponi() {
+    clearTimeout(ist.timerRiponiCarta);
+    if (corrente !== ist || ist.chiaveCarta !== chiave) return;
+    ist.cartaRiposta = chiave;
+    carta.hidden = true;
+    ist.el.mazzoP.classList.remove('svuotato');
+    ist.el.mazzoI.classList.remove('svuotato');
   }
 }
 
@@ -1233,7 +1270,7 @@ function aggiornaCentro(ist, { partita, perId }) {
     impostaSegno(e.turnoSegno, v);
     e.turnoFase.textContent = 'Partita finita';
   } else if (g) {
-    e.turnoNome.textContent = mio ? 'Tocca a te' : `Tocca a ${g.nome}`;
+    e.turnoNome.textContent = mio ? 'Tocca a te' : `Tocca ${aChi(g.nome)}`;
     impostaSegno(e.turnoSegno, g);
     e.turnoFase.textContent = descriviFase(ist, partita, g, perId);
   } else {
@@ -1268,6 +1305,8 @@ function impostaSegno(segno, g) {
 function descriviFase(ist, partita, g, perId) {
   const nomeCasella = (i) => (ist.caselle[i] ? ist.caselle[i].nome : `casella ${i}`);
   switch (partita.fase) {
+    case 'ordine':
+      return partita.ordine && partita.ordine.giro > 1 ? 'Spareggio: rilancia i dadi' : 'Lancia i dadi: chi fa di più comincia';
     case 'daLanciare':
       if (g.inPrigione) return 'È in prigione: tira per un doppio, paga 50 € o usa la carta';
       return partita.turno && partita.turno.doppiConsecutivi > 0 ? 'Doppio! Lancia di nuovo' : 'Deve lanciare i dadi';
@@ -1427,6 +1466,13 @@ function creaComandiCamera(ist) {
     applicaCamera(ist);
     if (ist.camera.segui && ist.prec) seguiTurno(ist, contestoDi(ist.prec), 0);
   }, true);
+  const rapido = pulsante('veloce', ICONE_CAMERA.veloce, 'Animazioni veloci', () => {
+    impostaVeloci(!veloci());
+    rapido.setAttribute('aria-pressed', String(veloci()));
+    ist.radice.classList.toggle('tab--veloce', veloci());
+  }, true);
+  rapido.setAttribute('aria-pressed', String(veloci()));
+  ist.radice.classList.toggle('tab--veloce', veloci());
   const audio = pulsante('suono', ICONE_CAMERA.suono, 'Suoni', () => {
     impostaSuoni(!suoniAttivi());
     audio.setAttribute('aria-pressed', String(suoniAttivi()));

@@ -41,6 +41,7 @@ export const MAX_CODA = 20;
 export const CHIUSURE = Object.freeze({
   SOSTITUITO: 4001, // lo stesso giocatore si è collegato da un'altra scheda
   STANZA_CHIUSA: 4002, // la stanza è stata eliminata
+  CACCIATO: 4003, // l'admin ha tolto il giocatore dalla stanza
 });
 
 /**
@@ -53,6 +54,7 @@ const CHIUSURE_DEFINITIVE = new Set([
   1009, // messaggio troppo grande
   CHIUSURE.SOSTITUITO,
   CHIUSURE.STANZA_CHIUSA,
+  CHIUSURE.CACCIATO,
 ]);
 
 /**

@@ -19,6 +19,8 @@ const scambi = require('../server/gioco/scambi');
 const bancarotta = require('../server/gioco/bancarotta');
 const stanze = require('../server/stanze');
 const indice = require('../server/index');
+const H = require('./aiuti');
+const REGOLE = require('../server/gioco/regole');
 
 /** Generatore pseudo-casuale deterministico (mulberry32) per test ripetibili. */
 function rngDeterministico(seme) {
@@ -89,14 +91,14 @@ test('protocollo: analizza accetta messaggi validi e rifiuta quelli malformati',
 // motore.js
 // ---------------------------------------------------------------------------
 
-test('motore: esporta le 17 azioni e le 7 fasi previste', () => {
+test('motore: esporta le 17 azioni e le 8 fasi previste', () => {
   // INTERFACCE.md §2.4: le 16 azioni di gioco più `abbandona` (uscita volontaria).
   assert.deepEqual([...motore.AZIONI], [
     'lanciaDadi', 'compra', 'rifiutaAcquisto', 'offertaAsta', 'passaAsta', 'costruisci', 'vendiCasa',
     'ipoteca', 'disipoteca', 'proponiScambio', 'accettaScambio', 'rifiutaScambio', 'pagaCauzione',
     'usaCartaPrigione', 'finisciTurno', 'dichiaraBancarotta', 'abbandona',
   ]);
-  assert.deepEqual([...motore.FASI], ['lobby', 'daLanciare', 'mossa', 'daDecidereAcquisto', 'asta', 'debito', 'finePartita']);
+  assert.deepEqual([...motore.FASI], ['lobby', 'ordine', 'daLanciare', 'mossa', 'daDecidereAcquisto', 'asta', 'debito', 'finePartita']);
   for (const nome of ['creaStatoLobby', 'creaPartita', 'applicaAzione', 'azioniDisponibili', 'statoPubblico', 'prossimoGiocatore']) {
     assert.equal(typeof motore[nome], 'function', nome);
   }
@@ -271,10 +273,24 @@ test('stanze: ciclo lobby → ingresso → avvio → azione → riconnessione', 
   assert.equal(e2.giocatore.colore, '#1d4ed8', 'colore libero assegnato dalla palette');
   assert.equal(stanze.avvia(stanza, e2.giocatore.id, { ora }).errore.codice, 'NON_HOST');
 
+  // Le regole vanno scelte prima di avviare: le sceglie solo l'host (o l'admin) e restano anche se entra qualcuno.
+  assert.equal(stanze.avvia(stanza, e1.giocatore.id, { ora }).errore.codice, 'REGOLE_DA_IMPOSTARE');
+  assert.equal(stanze.impostaRegole(stanza, e2.giocatore.id, { ...REGOLE.PREDEFINITE }, { ora }).errore.codice, 'NON_ADMIN');
+  const scelte = { ...REGOLE.PREDEFINITE, denaroIniziale: 2000, parcheggio: true };
+  assert.equal(stanze.impostaRegole(stanza, e1.giocatore.id, scelte, { ora }).errore, undefined);
+  assert.equal(stanza.stato.regoleImpostate, true);
+  assert.equal(stanza.stato.log.at(-1).tipo, 'regoleImpostate');
+  const ospite = stanze.entra(stanza, { nome: 'Ospite', ora }).giocatore;
+  assert.equal(stanze.esci(stanza, ospite.id, { ora }).errore, undefined, 'entra ed esce un altro giocatore');
+  assert.deepEqual(stanza.stato.regole, scelte, 'le regole scelte restano in sala d\'attesa');
   const avvio = stanze.avvia(stanza, e1.giocatore.id, { ora, random: rngDeterministico(1) });
   assert.equal(avvio.errore, undefined);
-  assert.equal(stanza.stato.fase, 'daLanciare');
+  assert.equal(stanza.stato.fase, 'ordine', 'si comincia lanciando i dadi per decidere chi gioca per primo');
   assert.equal(stanze.entra(stanza, { nome: 'Carla', ora }).errore.codice, 'PARTITA_INIZIATA');
+  H.completaOrdine(stanze, stanza, { ora });
+  assert.equal(stanza.stato.fase, 'daLanciare');
+  assert.ok(stanza.stato.giocatori.every((g) => g.denaro === 2000), 'si gioca con le regole scelte');
+  assert.equal(stanza.stato.regole.parcheggio, true);
 
   const pub = stanze.statoPerClient(stanza);
   assert.equal('mazzi' in pub, false);

@@ -87,6 +87,12 @@ function statiCostruiti() {
     s.caseDisponibili = 2;
   }));
   out.push(H.modifica(H.turnoDi(libera, A, 'mossa'), (s) => { s.proprieta[8].ipotecata = true; }));
+  // Lancio iniziale: all'inizio, dopo un lancio, durante uno spareggio.
+  const ordine = H.nuovaPartita(3, { lancioIniziale: true });
+  out.push(ordine);
+  const dopoUno = H.lancia(ordine, A, 5, 5).stato;
+  out.push(dopoUno);
+  out.push(H.lancia(H.lancia(dopoUno, H.ID.B, 4, 6).stato, H.ID.C, 1, 1).stato);
   return out;
 }
 
@@ -131,6 +137,38 @@ test('dialoghi: i pulsanti sono attivi esattamente quando il motore accetta l\'a
   assert.ok(costruzioniPossibili > 0, 'il confronto deve includere costruzioni ammesse');
 });
 
+test('dialoghi: riepilogo e pulizia delle regole usano lo stesso catalogo del server', { skip: SALTA }, async () => {
+  const d = await C.carica('dialoghi.js');
+  const REGOLE = require('../server/gioco/regole');
+  assert.deepEqual(d.regoleValide({ parcheggio: true, boh: 1, aste: 'no' }), { ...REGOLE.PREDEFINITE, parcheggio: true },
+    'chiavi sconosciute e valori non ammessi vengono scartati');
+  const righe = d.riepilogoRegole({ ...REGOLE.PREDEFINITE, proprietaIniziali: 2 });
+  assert.equal(righe.length, REGOLE.REGOLE.length);
+  assert.deepEqual(righe.filter((r) => r.variante).map((r) => [r.chiave, r.etichetta]), [['proprietaIniziali', '2 a testa']]);
+  // In sala d'attesa, finché host o admin non le scelgono, si propongono quelle salvate (qui nessuna: le classiche).
+  assert.deepEqual(d.regoleDiPartenza({ fase: 'lobby', regoleImpostate: false, regole: { aste: false } }), REGOLE.PREDEFINITE);
+  assert.equal(d.regoleDiPartenza({ fase: 'lobby', regoleImpostate: true, regole: { ...REGOLE.PREDEFINITE, aste: false } }).aste, false);
+});
+
+test('dialoghi.righeOrdine: posti provvisori, punteggi e chi deve lanciare nel lancio iniziale', { skip: SALTA }, async () => {
+  const d = await C.carica('dialoghi.js');
+  const { A, B, C: Ci } = H.ID;
+  let s = H.nuovaPartita(3, { lancioIniziale: true });
+  s = H.lancia(s, A, 5, 5).stato;
+  s = H.lancia(s, B, 4, 6).stato;
+  s = H.lancia(s, Ci, 1, 1).stato; // Anna e Bruno pari a 10, Carla terza
+  s = H.lancia(s, A, 1, 2).stato; // spareggio: Anna 3, tocca a Bruno
+  const righe = d.righeOrdine(motore.statoPubblico(s));
+  assert.deepEqual(righe.map((r) => [r.id, r.posto, r.lanci, r.stato]), [
+    [A, '1–2°', [10, 3], 'lanciato'],
+    [B, '1–2°', [10], 'tocca'],
+    [Ci, '3°', [2], 'deciso'],
+  ]);
+  const inizio = d.righeOrdine(motore.statoPubblico(H.nuovaPartita(3, { lancioIniziale: true })));
+  assert.deepEqual(inizio.map((r) => r.posto), ['', '', ''], 'prima dei lanci nessuno ha un posto');
+  assert.deepEqual(d.righeOrdine(motore.statoPubblico(H.nuovaPartita(2))), [], 'fuori dal lancio iniziale non ci sono righe');
+});
+
 test('app.toastPerEvento: il preavviso d\'inattività arriva solo a chi deve agire', { skip: SALTA }, async () => {
   const app = await C.carica('app.js');
   const ev = { tipo: 'avvisoInattivita', giocatoreId: null, testo: 'Anna: ancora 30 secondi', dati: { giocatori: ['a1'], secondi: 30, debito: false } };
@@ -143,6 +181,16 @@ test('app.toastPerEvento: il preavviso d\'inattività arriva solo a chi deve agi
   const saltato = { tipo: 'turnoSaltato', giocatoreId: 'a1', testo: 'Anna non ha giocato in tempo', dati: { motivo: 'inattivo' } };
   assert.ok(app.toastPerEvento(saltato, null, 'a1'));
   assert.equal(app.toastPerEvento({ ...saltato, dati: { motivo: 'disconnesso' } }, null, 'a1'), null);
+});
+
+test('app.chiaveAdminDaFrammento legge solo un #admin= valido', { skip: SALTA }, async () => {
+  const app = await C.carica('app.js');
+  assert.equal(app.chiaveAdminDaFrammento('#admin=abcdefghijklmnop'), 'abcdefghijklmnop');
+  assert.equal(app.chiaveAdminDaFrammento('#admin=ab%2Bcd%2Fefghijklmnop'), 'ab+cd/efghijklmnop', 'la chiave base64 di Render si decodifica');
+  assert.equal(app.chiaveAdminDaFrammento('#admin=corta'), null);
+  assert.equal(app.chiaveAdminDaFrammento('#stanza=K7PQ2M'), null);
+  assert.equal(app.chiaveAdminDaFrammento(''), null);
+  assert.equal(app.chiaveAdminDaFrammento('#admin=<script>alert(1)</script>xx'), null);
 });
 
 test('app.unisciLog ricuce il log accorciato senza doppioni; formattaEuro', { skip: SALTA }, async () => {
@@ -207,4 +255,22 @@ test('rete: backoff limitato; coda inviata dopo onApertura; niente riconnessione
   conn.riprovaOra();
   assert.equal(istanze.length, 2, 'su richiesta dell\'utente riprova');
   conn.chiudi();
+});
+
+test('testi: "ad Anna", "alla banca"; niente messaggi doppi per carte e aste', { skip: SALTA }, async () => {
+  const d = await C.carica('dialoghi.js');
+  assert.equal(d.aChi('Anna'), 'ad Anna');
+  assert.equal(d.aChi('Bruno'), 'a Bruno');
+  assert.equal(d.aChi('la banca'), 'alla banca');
+  const N = require('../server/gioco/nucleo');
+  assert.equal(N.aChi('Anna'), 'ad Anna');
+  assert.equal(N.aChi('la banca'), 'alla banca');
+
+  const app = await C.carica('app.js');
+  const carta = { tipo: 'carta', giocatoreId: 'a1', testo: 'Andate in prigione', dati: { carta: { testo: 'Andate in prigione' } } };
+  assert.equal(app.toastPerEvento(carta, null, 'a1'), null, 'la carta si vede già sul tabellone');
+  const all = { tipo: 'acquisto', giocatoreId: 'a1', testo: 'Anna compra X all\'asta', dati: { tramite: 'asta' } };
+  assert.equal(app.toastPerEvento(all, null, 'a1'), null, 'lo dice già "Asta chiusa"');
+  const banca = { tipo: 'acquisto', giocatoreId: 'a1', testo: 'Anna compra X', dati: { tramite: 'banca' } };
+  assert.equal(app.toastPerEvento(banca, null, 'a1').testo, 'Anna compra X');
 });

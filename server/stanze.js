@@ -20,6 +20,8 @@
 const crypto = require('node:crypto');
 const P = require('./protocollo');
 const motore = require('./gioco/motore');
+const REGOLE = require('./gioco/regole');
+const N = require('./gioco/nucleo');
 
 const registro = new Map(); // codice → Stanza
 
@@ -38,6 +40,8 @@ const TEMPI = Object.freeze({
   // Giocatori connessi che non agiscono: dopo questi tempi la partita va avanti da sola.
   INATTIVITA_TURNO_MS: 3 * 60 * 1000,
   INATTIVITA_ASTA_MS: 60 * 1000,
+  // Lancio iniziale per decidere chi comincia: basta un clic, si aspetta meno.
+  INATTIVITA_ORDINE_MS: 60 * 1000,
   INATTIVITA_DEBITO_MS: 5 * 60 * 1000,
   PREAVVISO_INATTIVITA_MS: 30 * 1000,
 });
@@ -139,6 +143,11 @@ function sincronizzaLobby(stanza, eventi, t) {
     ora: () => t,
   });
   nuovo.creataIl = stanza.creataIl;
+  // Le regole scelte in sala d'attesa restano anche quando entra o esce qualcuno.
+  if (precedente && precedente.regoleImpostate) {
+    nuovo.regole = { ...precedente.regole };
+    nuovo.regoleImpostate = true;
+  }
   nuovo.versione = (precedente ? precedente.versione : 0) + 1;
   nuovo.log = [...(precedente ? precedente.log : []), ...eventi].slice(-P.LIMITI.LOG_MAX);
   stanza.stato = nuovo;
@@ -178,6 +187,7 @@ function crea({ ora = Date.now, random = casualeSicuro, ip = null } = {}) {
     progresso: 0,
     saltiInattivita: 0,
     inattivita: null,
+    adminId: null,
     giocatori: new Map(),
     timer: new Map(),
     stato: null,
@@ -302,6 +312,7 @@ function esci(stanza, giocatoreId, { ora = Date.now } = {}) {
   stanza.giocatori.delete(giocatoreId);
   annullaTimer(stanza, giocatoreId);
   const t = ora();
+  if (stanza.adminId === giocatoreId) stanza.adminId = null;
   if (stanza.hostId === giocatoreId) {
     const primo = stanza.giocatori.values().next().value;
     stanza.hostId = primo ? primo.id : null;
@@ -364,7 +375,7 @@ function bloccaIlGioco(stato, id) {
   if (fase === 'asta' && asta) {
     return asta.partecipanti.includes(id) && !asta.passati.includes(id) && asta.migliorOfferenteId !== id;
   }
-  return turno.giocatoreId === id && ['daLanciare', 'mossa', 'daDecidereAcquisto'].includes(fase);
+  return turno.giocatoreId === id && ['ordine', 'daLanciare', 'mossa', 'daDecidereAcquisto'].includes(fase);
 }
 
 /**
@@ -432,6 +443,7 @@ function sbloccaDisconnesso(stanza, giocatoreId, { ora = Date.now, random = casu
 
 function durataInattivita(fase) {
   if (fase === 'asta') return TEMPI.INATTIVITA_ASTA_MS;
+  if (fase === 'ordine') return TEMPI.INATTIVITA_ORDINE_MS;
   if (fase === 'debito') return TEMPI.INATTIVITA_DEBITO_MS;
   return TEMPI.INATTIVITA_TURNO_MS;
 }
@@ -532,13 +544,39 @@ function bancarottaDisconnesso(stanza, giocatoreId, { ora = Date.now, random = c
   if (!esito.errore) diffondiAggiornamento(stanza, esito.eventi);
 }
 
-/** Avvia la partita (solo host, almeno 2 giocatori connessi). */
-function avvia(stanza, giocatoreId, { random = casualeSicuro, ora = Date.now, regole = null } = {}) {
+/**
+ * Host o admin compilano la finestra delle regole in sala d'attesa: le vedono
+ * tutti, e da qui in poi si può avviare. `regole` arriva già validata
+ * (protocollo.js → regole.normalizza).
+ */
+function impostaRegole(stanza, giocatoreId, regole, { ora = Date.now } = {}) {
+  if (!stanza) return errore('STANZA_INESISTENTE');
+  if (stanza.stato.fase !== 'lobby') return errore('SOLO_IN_LOBBY');
+  if (!puoComandare(stanza, giocatoreId)) return errore('NON_ADMIN');
+  const t = ora();
+  const nome = (stanza.giocatori.get(giocatoreId) || {}).nome || 'L\'host';
+  const eventi = [evento('regoleImpostate', giocatoreId, `${nome} ha scelto le regole della partita`, { regole: { ...regole } }, t)];
+  stanza.stato.regole = { ...regole };
+  stanza.stato.regoleImpostate = true;
+  sincronizzaLobby(stanza, eventi, t);
+  return { eventi };
+}
+
+/**
+ * Avvia la partita (host o admin, almeno 2 giocatori connessi), con le regole
+ * del messaggio o, se mancano, quelle già scelte con impostaRegole: senza
+ * nessuna delle due la partita non parte (REGOLE_DA_IMPOSTARE). Si parte dal
+ * lancio iniziale per decidere chi comincia (fase 'ordine'); `lancioIniziale:
+ * false` (solo dai test) salta questo passo e comincia il primo della lista.
+ */
+function avvia(stanza, giocatoreId, { random = casualeSicuro, ora = Date.now, regole = null, lancioIniziale = true } = {}) {
   if (!stanza) return errore('STANZA_INESISTENTE');
   if (stanza.stato.fase !== 'lobby') return errore('PARTITA_INIZIATA');
-  if (stanza.hostId !== giocatoreId) return errore('NON_HOST');
+  if (!puoComandare(stanza, giocatoreId)) return errore('NON_HOST');
   const connessi = [...stanza.giocatori.values()].filter((g) => g.connesso);
   if (connessi.length < P.LIMITI.MIN_GIOCATORI) return errore('POCHI_GIOCATORI');
+  const scelte = regole || (stanza.stato.regoleImpostate ? stanza.stato.regole : null);
+  if (!scelte) return errore('REGOLE_DA_IMPOSTARE');
 
   // Chi è disconnesso in lobby all'avvio viene lasciato fuori (solo se il
   // motore accetta la partita: in caso di errore la lobby resta intatta).
@@ -551,7 +589,7 @@ function avvia(stanza, giocatoreId, { random = casualeSicuro, ora = Date.now, re
       giocatori: connessi.map((g) => ({ id: g.id, nome: g.nome, colore: g.colore, connesso: true })),
       random,
       ora,
-      opzioni: regole && regole.costruzione ? { costruzione: regole.costruzione } : undefined,
+      opzioni: { ...REGOLE.PREDEFINITE, ...scelte, lancioIniziale: lancioIniziale !== false },
     });
   } catch (e) {
     console.error('[stanze] creaPartita fallita', stanza.codice, e);
@@ -605,6 +643,7 @@ function applica(stanza, giocatoreId, azione, { random = casualeSicuro, ora = Da
     const reg = stanza.giocatori.get(g.id);
     if (reg) g.connesso = reg.connesso;
   }
+  aggiornaHost(stanza, esito.stato);
   stanza.stato = esito.stato;
   stanza.aggiornataIl = typeof esito.stato.aggiornataIl === 'number' ? esito.stato.aggiornataIl : ora();
   stanza.progresso += 1;
@@ -620,6 +659,7 @@ function applica(stanza, giocatoreId, azione, { random = casualeSicuro, ora = Da
  */
 function statoPerClient(stanza, { completo = false } = {}) {
   const stato = motore.statoPubblico(stanza.stato);
+  stato.adminId = stanza.adminId || null;
   if (!completo && Array.isArray(stato.log) && stato.log.length > P.LIMITI.LOG_BREVE) {
     stato.log = stato.log.slice(-P.LIMITI.LOG_BREVE);
   }
@@ -697,6 +737,136 @@ function chiudiStanza(stanza, messaggio) {
 }
 
 // ---------------------------------------------------------------------------
+// Admin (index.js verifica la chiave; qui solo gli effetti sulla stanza)
+// ---------------------------------------------------------------------------
+
+/**
+ * Il giocatore ha la chiave admin: diventa admin e host della stanza
+ * (avvia la partita), qualunque sia chi l'ha creata. Solo il primo: se la
+ * stanza ha già un admin ancora dentro, resta lui (l'admin può cedere il
+ * ruolo con `cediAdmin`). Ritorna gli eventi da diffondere.
+ */
+function rendiAdmin(stanza, giocatoreId, { ora = Date.now } = {}) {
+  const g = stanza.giocatori.get(giocatoreId);
+  if (!g || (stanza.adminId === giocatoreId && stanza.hostId === giocatoreId)) return [];
+  if (stanza.adminId && stanza.adminId !== giocatoreId && stanza.giocatori.has(stanza.adminId)) return [];
+  return passaAdmin(stanza, giocatoreId, `${g.nome} è l'admin della stanza`, ora());
+}
+
+/**
+ * L'admin cede il ruolo (admin e host) a un altro giocatore della stanza,
+ * ancora in gara se la partita è iniziata. Ritorna { eventi } oppure { errore }.
+ */
+function cediAdmin(stanza, chiId, giocatoreId, { ora = Date.now } = {}) {
+  if (!chiId || stanza.adminId !== chiId) {
+    const e = errore('NON_ADMIN');
+    e.errore.messaggio = 'Solo l\'admin può cedere il ruolo';
+    return e;
+  }
+  const da = stanza.giocatori.get(chiId);
+  const a = stanza.giocatori.get(giocatoreId);
+  const inGara = stanza.stato.fase === 'lobby'
+    || (stanza.stato.giocatori || []).some((x) => x.id === giocatoreId && !x.fallito);
+  if (!a || giocatoreId === chiId || !inGara) {
+    const e = errore('GIOCATORE_NON_VALIDO');
+    e.errore.messaggio = 'Puoi cedere l\'admin solo a un altro giocatore ancora in gioco';
+    return e;
+  }
+  return { eventi: passaAdmin(stanza, giocatoreId, `${da ? da.nome : 'L\'admin'} cede l'admin ${N.aChi(a.nome)}`, ora()) };
+}
+
+/** Rende `giocatoreId` admin e host, aggiorna lo stato e ritorna l'evento. */
+function passaAdmin(stanza, giocatoreId, testo, t) {
+  stanza.adminId = giocatoreId;
+  stanza.hostId = giocatoreId;
+  const eventi = [evento('admin', giocatoreId, testo, { giocatoreId }, t)];
+  if (stanza.stato.fase === 'lobby') {
+    sincronizzaLobby(stanza, eventi, t);
+  } else {
+    const stato = structuredClone(stanza.stato);
+    stato.hostId = giocatoreId;
+    stato.versione += 1;
+    stato.log = [...stato.log, ...eventi].slice(-P.LIMITI.LOG_MAX);
+    stanza.stato = stato;
+  }
+  return eventi;
+}
+
+/** Chi comanda la stanza (togliere giocatori, chiuderla): l'host e l'admin. */
+function puoComandare(stanza, giocatoreId) {
+  return Boolean(giocatoreId) && stanza.giocatori.has(giocatoreId)
+    && (stanza.hostId === giocatoreId || stanza.adminId === giocatoreId);
+}
+
+/**
+ * In partita l'host che fa bancarotta (o viene tolto) passa il ruolo al primo
+ * giocatore ancora in gara, così la stanza ha sempre chi la comanda. L'admin
+ * resta host comunque. Muta `stato` (già nuovo) e la stanza.
+ */
+function aggiornaHost(stanza, stato) {
+  if (!stato || stato.fase === 'lobby' || stanza.hostId === stanza.adminId) return;
+  const host = stato.giocatori.find((g) => g.id === stanza.hostId);
+  if (host && !host.fallito && stanza.giocatori.has(host.id)) return;
+  const nuovo = stato.giocatori.find((g) => !g.fallito && stanza.giocatori.has(g.id));
+  if (!nuovo) return;
+  stanza.hostId = nuovo.id;
+  stato.hostId = nuovo.id;
+}
+
+/**
+ * L'host o l'admin toglie un giocatore dalla stanza. In lobby esce; in
+ * partita fa bancarotta verso la banca (come `abbandona`) e non può più
+ * rientrare: il suo token viene cambiato. L'admin non si può togliere.
+ * Ritorna { eventi, socket } (il socket da chiudere) oppure { errore }.
+ */
+function caccia(stanza, chiId, giocatoreId, { ora = Date.now, random = casualeSicuro } = {}) {
+  if (!puoComandare(stanza, chiId)) return errore('NON_ADMIN');
+  if (giocatoreId === chiId) {
+    const e = errore('GIOCATORE_NON_VALIDO');
+    e.errore.messaggio = 'Non puoi togliere te stesso dalla stanza';
+    return e;
+  }
+  if (giocatoreId === stanza.adminId) {
+    const e = errore('NON_ADMIN');
+    e.errore.messaggio = 'L\'admin non si può togliere dalla stanza';
+    return e;
+  }
+  const g = stanza.giocatori.get(giocatoreId);
+  if (!g) return errore('GIOCATORE_NON_VALIDO');
+  const socket = g.socket;
+  const eventi = [];
+  if (stanza.stato.fase === 'lobby') {
+    const esito = esci(stanza, giocatoreId, { ora });
+    if (esito.errore) return esito;
+    eventi.push(...esito.eventi);
+  } else {
+    const inGara = stanza.stato.giocatori.find((x) => x.id === giocatoreId);
+    if (inGara && !inGara.fallito && stanza.stato.fase !== 'finePartita') {
+      const esito = applica(stanza, giocatoreId, { tipo: 'abbandona' }, { ora, random });
+      if (esito.errore) return esito;
+      eventi.push(...esito.eventi);
+    }
+    g.token = generaToken();
+    const fuori = disconnetti(stanza, giocatoreId, { ora, random });
+    // Non ha "perso la connessione": è stato tolto, e la cronaca lo dice.
+    eventi.push(...fuori.eventi.filter((e) => e.tipo !== 'connessione'));
+    const chi = chiId === stanza.adminId ? 'L\'admin' : 'L\'host';
+    const tolto = evento('giocatoreUscito', giocatoreId, `${chi} toglie ${g.nome} dalla partita`, { giocatoreId, tolto: true }, ora());
+    const stato = structuredClone(stanza.stato);
+    stato.versione += 1;
+    const persa = fuori.eventi.find((e) => e.tipo === 'connessione');
+    stato.log = [
+      ...stato.log.filter((e) => !(persa && e.tipo === 'connessione' && e.giocatoreId === giocatoreId && e.t === persa.t)),
+      tolto,
+    ].slice(-P.LIMITI.LOG_MAX);
+    stanza.stato = stato;
+    eventi.push(tolto);
+    aggiornaHost(stanza, stanza.stato);
+  }
+  return { eventi, socket };
+}
+
+// ---------------------------------------------------------------------------
 // Salvataggio su file (server/salvataggio.js)
 // ---------------------------------------------------------------------------
 
@@ -709,6 +879,7 @@ function esporta() {
     aggiornataIl: s.aggiornataIl,
     creataDa: s.creataDa || null,
     maiUsata: Boolean(s.maiUsata),
+    adminId: s.adminId || null,
     giocatori: [...s.giocatori.values()].map((g) => ({ id: g.id, nome: g.nome, colore: g.colore, token: g.token })),
     stato: s.stato,
   }));
@@ -747,6 +918,7 @@ function importa(elenco, { ora = Date.now } = {}) {
       progresso: 0,
       saltiInattivita: 0,
       inattivita: null,
+      adminId: giocatori.has(d.adminId) ? d.adminId : null,
       giocatori,
       timer: new Map(),
       stato,
@@ -756,10 +928,10 @@ function importa(elenco, { ora = Date.now } = {}) {
   return n;
 }
 
-function rimuovi(codice) {
+function rimuovi(codice, messaggio = 'La stanza è stata chiusa') {
   const stanza = registro.get(P.normalizzaCodice(codice));
   if (!stanza) return false;
-  chiudiStanza(stanza, 'La stanza è stata chiusa');
+  chiudiStanza(stanza, messaggio);
   return true;
 }
 
@@ -795,6 +967,11 @@ module.exports = {
   sorvegliaDisconnessi,
   sbloccaDisconnesso,
   bancarottaDisconnesso,
+  rendiAdmin,
+  cediAdmin,
+  impostaRegole,
+  puoComandare,
+  caccia,
   programmaInattivita,
   preavvisaInattivita,
   scadutaInattivita,

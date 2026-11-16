@@ -40,6 +40,7 @@ Variabili d'ambiente lette dal server (nessuna è un segreto; non serve `.env`; 
 | `PUBLIC_URL` | l'host con cui il browser ha raggiunto il server | base del link condiviso (es. dietro un tunnel/proxy) |
 | `ORIGINE_LIBERA` | non impostata | con `1` disattiva il controllo dell'`Origin` sul WebSocket (§3.5), utile solo dietro proxy che riscrivono l'host |
 | `PROXY_FIDATO` | `1` su Render (variabile `RENDER`), altrimenti spenta | con `1` il server crede a `X-Forwarded-For`/`-Host`/`-Proto`; `0` la spegne anche su Render |
+| `ADMIN_CHIAVE` | su Render generata (`generateValue`); in locale `.partite/chiave-admin`, creata al primo avvio | chiave del link da admin `/#admin=CHIAVE` (§3.7); è un segreto |
 | `SALVATAGGIO` | `.partite/partite.json` | file del salvataggio delle partite (`server/salvataggio.js`); `0` lo disattiva |
 
 Se in futuro servissero segreti vanno in `.env` (già in `.gitignore`) e nel
@@ -208,7 +209,8 @@ sostituisce il proprio.
 
 | `fase` | Significato | Azioni ammesse (chi) |
 |---|---|---|
-| `lobby` | partita non iniziata; `turno.giocatoreId` è `null`, `dadi` è `null`, denaro 0 | nessuna azione di gioco; messaggi `entraStanza`, `avviaPartita`, `esciStanza` |
+| `lobby` | partita non iniziata; `turno.giocatoreId` è `null`, `dadi` è `null`, denaro 0 | nessuna azione di gioco; messaggi `entraStanza`, `impostaRegole`, `avviaPartita`, `esciStanza` |
+| `ordine` | lancio iniziale per decidere chi comincia (§1.9 ter); `turno.giocatoreId` è chi deve lanciare, `turno.numero` 0 | `lanciaDadi` (chi è di turno) · `abbandona` (tutti); ogni altra azione → `FASE_ERRATA` |
 | `daLanciare` | il giocatore di turno deve lanciare (o, se in prigione, scegliere come uscire) | `lanciaDadi`, `pagaCauzione`, `usaCartaPrigione` (turno) · gestione (§2.4) |
 | `mossa` | lancio fatto e casella risolta; il giocatore può gestire proprietà e poi chiudere il turno | `finisciTurno` (turno) · gestione |
 | `daDecidereAcquisto` | il giocatore di turno è su una casella libera | `compra`, `rifiutaAcquisto` (turno) · gestione |
@@ -240,6 +242,11 @@ viene mescolato). Il turno passa al prossimo giocatore con `fallito: false`.
 | `cartePrigione` | 0–2 | carte "Uscite gratis di prigione" possedute (una per mazzo) |
 | `connesso` | bool | socket attivo; chi è disconnesso resta in partita e può riconnettersi col token |
 | `fallito` | bool | eliminato; non ha più beni né turni |
+
+### 1.3 bis Admin
+
+`statoPerClient` aggiunge `adminId`: l'id del giocatore admin presente nella
+stanza, o `null`. Messaggi e regole in §3.7.
 
 ### 1.4 Turno e dadi
 
@@ -372,6 +379,25 @@ regole.
 
 Il client può ignorarli; `statoPubblico` li lascia (non sono segreti).
 
+### 1.9 ter Regole, lancio iniziale e piatto
+
+| Campo | Tipo | Note |
+|---|---|---|
+| `regole` | oggetto | le regole della partita (catalogo in `server/gioco/regole.js`): `denaroIniziale` (1000/1500/2000/2500), `proprietaIniziali` (0–3 a testa), `costruzione` (`'libera'`/`'sosta'`), `aste` (bool), `parcheggio` (bool), `viaDoppio` (bool), `affittoInPrigione` (bool). Gli stati salvati senza una chiave usano il predefinito (`regole.valore`). |
+| `regoleImpostate` | bool | in `lobby`: true quando host o admin hanno compilato la finestra delle regole (`impostaRegole` o `avviaPartita` con `regole`). Senza, `avviaPartita` è rifiutato con `REGOLE_DA_IMPOSTARE`. |
+| `ordine` | oggetto \| null | solo in fase `ordine`: `{ giro, gruppi, lanci, storico }`. `gruppi` sono le posizioni ancora da decidere dalla più alta (`[[A], [B, C], [D]]` = A primo, B e C da spareggiare per 2° e 3°); `lanci` i dadi del giro in corso; `storico` i giri chiusi. |
+| `piatto` | intero | piatto del Parcheggio gratuito (variante `parcheggio`): ci finiscono tasse, carte da pagare alla banca e cauzioni; chi si ferma sulla casella 20 lo incassa (evento `piatto`). |
+
+Lancio iniziale (`server/gioco/ordine.js`): lanciano uno alla volta tutti i
+giocatori, nell'ordine della sala d'attesa. A fine giro ogni gruppo si ordina
+per totale; chi pareggia forma un nuovo gruppo che rilancia al giro dopo, solo
+per i propri posti. Quando ogni gruppo ha un solo giocatore `giocatori` viene
+riordinato, la fase diventa `daLanciare`, `turno.numero` 1, `dadi` null, e si
+emettono `ordineDeciso` e `turno`. Inattività (60 s) e disconnessione (45 s)
+fanno lanciare il gioco al posto di chi tocca (`motore.gestisciInattivita` /
+`gestisciDisconnessione`). Chi abbandona esce dall'ordine (va in fondo, già
+fallito); le sue proprietà tornano alla banca senza aste.
+
 ### 1.10 Log
 
 `log` contiene gli ultimi **200** eventi (§6) in ordine cronologico, stesso
@@ -408,14 +434,18 @@ const stato = motore.creaPartita({
   ora: Date.now,                    // () => timestamp; default Date.now
   opzioni: {
     denaroIniziale: 1500,           // default 1500
-    ordineCasuale: true,            // default true: mescola l'ordine di turno
+    ordineCasuale: true,            // default true: mescola l'ordine di turno (ignorato con lancioIniziale)
+    lancioIniziale: false,          // true: si parte in fase 'ordine' (il server lo usa sempre)
+    // e le altre regole di §1.9 ter: proprietaIniziali, costruzione, aste, parcheggio, viaDoppio, affittoInPrigione
   },
 });
 ```
 
-Ritorna uno stato in fase `daLanciare`, `versione: 0`, `turno.numero: 1`,
-tutte le proprietà alla banca, mazzi mescolati, un evento `partitaIniziata`
-in `log`. Lancia `TypeError` se le opzioni sono malformate (meno di 2 o più di
+Ritorna uno stato in fase `daLanciare` (o `ordine` con `lancioIniziale`),
+`versione: 0`, `turno.numero: 1` (0 in `ordine`), mazzi mescolati, un evento
+`partitaIniziata` in `log`. Con `proprietaIniziali` > 0 ogni giocatore riceve
+gratis quel numero di proprietà estratte a caso, mai un gruppo completo
+(evento `proprietaIniziali` per ciascuno). Lancia `TypeError` se le opzioni sono malformate (meno di 2 o più di
 6 giocatori, id duplicati).
 
 ### 2.2 `creaStatoLobby({ codice, hostId, giocatori, ora }) → StatoPartita`
@@ -462,9 +492,9 @@ Legenda "chi": **T** = solo giocatore di turno · **D** = solo debitore ·
 
 | `tipo` | Parametri | Chi | Fasi | Effetto | Errori tipici |
 |---|---|---|---|---|---|
-| `lanciaDadi` | — | T | `daLanciare` | Tira due dadi (`contesto.random`). Se libero: avanza, +200 se passa dal Via, risolve la casella (§8). Se in prigione: col doppio esce e avanza (senza secondo lancio); altrimenti `turniInPrigione+1`; al terzo fallimento paga 50 (o `debito`) e avanza. Doppio → `daLanciare` di nuovo; terzo doppio → prigione, fase `mossa`. | `FASE_ERRATA`, `NON_IL_TUO_TURNO` |
+| `lanciaDadi` | — | T | `daLanciare`, `ordine` | In fase `ordine` è il lancio iniziale (§1.9 ter): nessun movimento. Altrimenti tira due dadi (`contesto.random`). Se libero: avanza, +200 se passa dal Via, risolve la casella (§8). Se in prigione: col doppio esce e avanza (senza secondo lancio); altrimenti `turniInPrigione+1`; al terzo fallimento paga 50 (o `debito`) e avanza. Doppio → `daLanciare` di nuovo; terzo doppio → prigione, fase `mossa`. | `FASE_ERRATA`, `NON_IL_TUO_TURNO` |
 | `compra` | — | T | `daDecidereAcquisto` | Paga il prezzo di listino, diventa proprietario. Fase → `mossa` (o `daLanciare` se il lancio era doppio). | `FONDI_INSUFFICIENTI` |
-| `rifiutaAcquisto` | — | T | `daDecidereAcquisto` | Avvia l'asta (`asta` valorizzata, fase `asta`). Se è l'unico giocatore non fallito la casella resta alla banca. | |
+| `rifiutaAcquisto` | — | T | `daDecidereAcquisto` | Avvia l'asta (`asta` valorizzata, fase `asta`); con la variante `aste: false` la casella resta alla banca (evento `acquistoRifiutato`, fase `mossa`). Se è l'unico giocatore non fallito la casella resta alla banca. | |
 | `offertaAsta` | `importo` intero | P | `asta` | Offerta `>= offertaMassima + incrementoMinimo` e `<= denaro`. | `OFFERTA_BASSA`, `FONDI_INSUFFICIENTI`, `GIA_PASSATO` |
 | `passaAsta` | — | P | `asta` | Esce dall'asta. Il miglior offerente non può passare. Chiude l'asta quando resta uno solo. | `MIGLIOR_OFFERENTE`, `GIA_PASSATO` |
 | `costruisci` | `casella` | T | gestione | Costruisce una casa (o l'albergo se a 4 case) su `casella`. Richiede gruppo completo, nessuna ipoteca nel gruppo, costruzione uniforme (differenza max 1 nel gruppo), scorte in banca, denaro. Con `stato.regole.costruzione === 'sosta'` serve anche che la pedina si sia fermata in questo turno su una casella del gruppo: il gruppo è in `turno.soste`, oppure la pedina è sul gruppo e la fase è diversa da `daLanciare` (o `doppiConsecutivi > 0`). | `GRUPPO_INCOMPLETO`, `NON_SULLA_CASELLA`, `COSTRUZIONE_NON_UNIFORME`, `CASE_ESAURITE`, `ALBERGHI_ESAURITI`, `IPOTECATA`, `FONDI_INSUFFICIENTI`, `NON_EDIFICABILE` |
@@ -578,7 +608,8 @@ Usato dal motore; esportato per i test.
 |---|---|---|---|
 | `creaStanza` | — | `stanzaCreata` al mittente | Non entra nella stanza: va seguito da `entraStanza`. `TROPPE_STANZE` oltre 5 stanze create dalla stessa connessione, 10 aperte dallo stesso indirizzo IP, o 200 aperte sul server tutte con giocatori dentro (se ce n'è una senza giocatori, la più vecchia viene chiusa per fare posto). |
 | `entraStanza` | `codice`, `nome`, `colore?` | `entrato` al mittente, poi `evento giocatoreEntrato` + `stato` a tutti | Solo in fase `lobby`, max 6 giocatori. |
-| `avviaPartita` | `regole?` | `evento partitaIniziata` + `stato` a tutti | Solo `hostId`, almeno 2 giocatori connessi. `regole.costruzione` è `'libera'` (predefinita) o `'sosta'`: finisce in `stato.regole`. |
+| `impostaRegole` | `regole` | `evento regoleImpostate` + `stato` a tutti | Solo in `lobby`, solo host o admin (`NON_ADMIN`). `regole` anche parziale: le chiavi mancanti prendono il predefinito, chiavi o valori sconosciuti → `MESSAGGIO_NON_VALIDO` (§1.9 ter). Restano in `stato.regole` anche se entra o esce qualcuno. |
+| `avviaPartita` | `regole?` | `evento partitaIniziata` (+ `proprietaIniziali`) + `stato` a tutti | Solo host o admin, almeno 2 giocatori connessi. Usa `regole` se ci sono, altrimenti quelle di `impostaRegole`; senza nessuna delle due → `REGOLE_DA_IMPOSTARE`. La partita parte in fase `ordine` (lancio iniziale). |
 | `azione` | `azione: { tipo, … }` (§2.4) | a tutti `evento`* + `stato`; al mittente `errore` se rifiutata | Il server ricava `giocatoreId` dal socket, mai dal messaggio. |
 | `riconnetti` | `codice`, `token` | `entrato` + `stato` (con il log **completo**) al mittente; poi `evento connessione` + `stato` a tutti | Riassocia il socket al giocatore. Funziona anche in lobby. L'eventuale socket precedente dello stesso giocatore viene chiuso con codice `4001`. |
 | `esciStanza` | — | `evento giocatoreUscito` + `stato` a tutti | Solo in `lobby`. In partita si esce con l'azione `abbandona` (§2.4); la semplice disconnessione lascia il giocatore in partita (`connesso: false`). |
@@ -687,6 +718,7 @@ Esempi:
 | `GET /<file>` | file statico sotto `client/` (MIME per `.html .css .js .mjs .json .svg .png .jpg .webp .woff2 .ico`); percorsi con `..` → 403; non trovato → 404. Cache: `no-cache` in sviluppo. |
 | `GET /dati/tabellone.js` | ES module **generato** dal CommonJS `server/gioco/tabellone.js`: una riga `export const NOME = <JSON>;` per ogni export JSON-serializzabile (funzioni escluse). Il client fa `import { CASELLE, GRUPPI } from '/dati/tabellone.js'`. |
 | `GET /dati/carte.js` | idem per `server/gioco/carte.js`: `import { PROBABILITA, IMPREVISTI } from '/dati/carte.js'`. |
+| `GET /dati/regole.js` | idem per `server/gioco/regole.js`: `import { REGOLE, PREDEFINITE } from '/dati/regole.js'` (finestra delle regole e riepilogo in sala d'attesa). |
 | `GET /salute` | `{ "ok": true, "stanze": 3, "versione": "0.1.0", "websocket": true }` |
 | `GET /ws` con Upgrade | WebSocket. L'handshake è accettato solo se manca `Origin` (client non browser) o se il suo host coincide con `Host`, `PUBLIC_URL` o, dietro un proxy fidato (`PROXY_FIDATO=1`, oppure su Render), `X-Forwarded-Host` (`index.origineAmmessa`). Oltre 20 connessioni contemporanee dallo stesso indirizzo (`index.ipDi`: `X-Forwarded-For` dietro un proxy fidato, altrimenti l'indirizzo del socket) l'handshake è rifiutato con 429; un'origine non ammessa con 403; `ORIGINE_LIBERA=1` disattiva il controllo. |
 
@@ -1102,15 +1134,22 @@ Esempi:
 | `giocatoreEntrato` | `{ giocatoreId, nome, colore }` |
 | `giocatoreUscito` | `{ giocatoreId }` |
 | `connessione` | `{ giocatoreId, connesso }` |
-| `partitaIniziata` | `{ ordine: [giocatoreId…], denaroIniziale }` |
+| `partitaIniziata` | `{ ordine: [giocatoreId…], denaroIniziale, costruzione, regole, lancioIniziale }` |
+| `regoleImpostate` | `{ regole }` (in `lobby`, da `impostaRegole`) |
+| `proprietaIniziali` | `{ caselle: [indici] }` (variante `proprietaIniziali`) |
+| `lancioOrdine` | `{ dadi, totale, giro, spareggio, automatico: null \| 'inattivo' \| 'disconnesso' }` |
+| `spareggio` | `{ giocatori, totale, da, a, giro }` (`da`–`a` = posti in palio) |
+| `ordineDeciso` | `{ ordine: [giocatoreId…] }` (seguito da `turno` 1) |
+| `piatto` | `{ importo }` (variante `parcheggio`) |
+| `acquistoRifiutato` | `{ casella, motivo: null \| 'inattivo' \| 'disconnesso' }` (variante `aste: false`: la casella resta alla banca) |
 | `turno` | `{ giocatoreId, numero }` |
 | `turnoSaltato` | `{ giocatoreId, motivo: 'disconnesso' \| 'inattivo' }` |
 | `avvisoInattivita` | `{ giocatori: string[], secondi, debito: bool }`: solo come `evento` del server 30 s prima dello scadere del tempo (§3.4), non entra nel log |
 | `dadi` | `{ dadi: [d1, d2], doppio, inPrigione, doppiConsecutivi, perAffitto? }` (`perAffitto: true` per il lancio della carta "società più vicina") |
 | `movimento` | `{ da, a, passi, passatoDalVia, causa: 'dadi' \| 'carta' }` (`passi` negativo per `indietro`) |
-| `passaggioVia` | `{ importo }` |
+| `passaggioVia` | `{ importo, doppio }` (`doppio: true` con la variante `viaDoppio` fermandosi sul Via: 400 €) |
 | `acquisto` | `{ casella, prezzo, tramite: 'banca' \| 'asta' }` |
-| `affitto` | `{ daId, aId, casella, importo, moltiplicatore?, dadi? }`; su casella ipotecata l'affitto non è dovuto: `importo: 0` e `ipotecata: true` |
+| `affitto` | `{ daId, aId, casella, importo, moltiplicatore?, dadi? }`; su casella ipotecata l'affitto non è dovuto: `importo: 0` e `ipotecata: true`; con la variante `affittoInPrigione: false` e il proprietario in prigione: `importo: 0` e `inPrigione: true` |
 | `abbandono` | `{ creditoreId \| null }` (sempre seguito da `bancarotta`) |
 | `tassa` | `{ casella, importo }` |
 | `carta` | `{ mazzo: 'probabilita' \| 'imprevisti', carta: { id, testo, effetto } }` |
@@ -1145,7 +1184,7 @@ Protocollo e stanze:
 `MESSAGGIO_NON_VALIDO` · `TIPO_SCONOSCIUTO` · `STANZA_INESISTENTE` ·
 `STANZA_PIENA` · `PARTITA_INIZIATA` · `NOME_NON_VALIDO` · `NOME_OCCUPATO` ·
 `COLORE_NON_VALIDO` · `COLORE_OCCUPATO` · `GIA_IN_STANZA` · `NON_IN_STANZA` ·
-`NON_HOST` · `POCHI_GIOCATORI` · `TOKEN_NON_VALIDO` · `SOLO_IN_LOBBY` ·
+`NON_HOST` · `POCHI_GIOCATORI` · `REGOLE_DA_IMPOSTARE` · `TOKEN_NON_VALIDO` · `SOLO_IN_LOBBY` ·
 `ERRORE_INTERNO` (eccezione nel motore o nel server: l'azione non è
 applicata) · `TROPPI_MESSAGGI` (anti-flood, più di 30 messaggi al secondo) ·
 `TROPPE_STANZE` (5 stanze create dalla stessa connessione, 10 aperte dallo
@@ -1224,3 +1263,21 @@ Regolamento ufficiale, con queste scelte esplicite:
 13. **Prigione al terzo tentativo** senza liquidità: il giocatore esce, si
     muove e la cauzione diventa un `debito` (`motivo: 'cauzione'`) verso la
     banca; gli effetti della casella d'arrivo si applicano dopo.
+
+## 3.7 Admin
+
+Il client che conosce la chiave (`/#admin=CHIAVE`, salvata in
+`localStorage['monopoly.admin']`) manda `autenticaAdmin` appena il socket si
+apre, prima di `riconnetti`.
+
+| Messaggio | Campi | Risposta | Note |
+|---|---|---|---|
+| `autenticaAdmin` | `chiave` | `{ tipo: 'admin', ok: true }` | Confronto a tempo costante con `ADMIN_CHIAVE`; errore `ADMIN_NON_VALIDO`, 5 tentativi sbagliati chiudono la connessione (1008). Il socket admin che entra o rientra in una stanza ne diventa `adminId` e `hostId` (`stanze.rendiAdmin`, evento `admin`), solo se la stanza non ha già un admin ancora dentro: resta il primo. Niente limiti di stanze per connessione o per indirizzo. |
+| `chiudiStanza` | — | a tutti `errore STANZA_INESISTENTE` ("chiusa dall'admin" / "dall'host") e chiusura 4002 | Solo l'host o l'admin della stanza (`stanze.puoComandare`, altrimenti `NON_ADMIN`). |
+| `cacciaGiocatore` | `giocatoreId` | al giocatore `errore CACCIATO` e chiusura **4003**; agli altri `evento` + `stato` | Solo l'host o l'admin (`NON_ADMIN`); non se stessi (`GIOCATORE_NON_VALIDO`), mai l'admin (`NON_ADMIN`). In lobby: `esci`. In partita: `abbandona` per lui (bancarotta verso la banca), token cambiato, `connesso: false`. |
+| `cediAdmin` | `giocatoreId` | a tutti `evento admin` («X cede l'admin a Y») + `stato` con i nuovi `adminId`/`hostId` | Solo l'admin (`NON_ADMIN`); verso un altro giocatore della stanza, ancora in gara se la partita è iniziata (`GIOCATORE_NON_VALIDO`). Chi riceve diventa admin e host (`stanze.cediAdmin`). |
+
+In partita, se l'host (che non sia l'admin) fa bancarotta o viene tolto, il
+ruolo passa al primo giocatore ancora in gara (`stanze.aggiornaHost`, anche in
+`stato.hostId`).
+

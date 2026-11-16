@@ -35,7 +35,8 @@ function stanzaAvviata(n = 2) {
     socket.push(s);
     ids.push(stanze.entra(stanza, { nome: `G${i}`, socket: s, ora }).giocatore.id);
   }
-  assert.equal(stanze.avvia(stanza, ids[0], { ora, random: H.rngDeterministico(5) }).errore, undefined);
+  assert.equal(stanze.avvia(stanza, ids[0], { ora, random: H.rngDeterministico(5), regole: {} }).errore, undefined);
+  H.completaOrdine(stanze, stanza, { ora });
   return { stanza, ora, ids, socket };
 }
 

@@ -252,6 +252,21 @@ function verificaJson(stato, etichetta = 'lo stato') {
   assert.deepEqual(copia, stato, `${etichetta}: dopo JSON.stringify/parse deve restare identico`);
 }
 
+/**
+ * Partita avviata da `stanze.avvia`: fa lanciare i dadi a chi tocca finché il
+ * lancio iniziale (fase 'ordine') non ha deciso chi comincia. `stanze` è
+ * passato da chi chiama per non legare questo file al server.
+ */
+function completaOrdine(stanze, stanza, { ora = ORA_FISSA, seme = 77 } = {}) {
+  const random = rngDeterministico(seme);
+  for (let i = 0; stanza.stato.fase === 'ordine'; i += 1) {
+    assert.ok(i < 200, 'il lancio iniziale non finisce mai');
+    const esito = stanze.applica(stanza, stanza.stato.turno.giocatoreId, { tipo: 'lanciaDadi' }, { ora, random });
+    assert.equal(esito.errore, undefined, esito.errore && esito.errore.messaggio);
+  }
+  return stanza;
+}
+
 module.exports = {
   ORA_FISSA,
   ID,
@@ -279,4 +294,5 @@ module.exports = {
   arrivaSu,
   trovaNonJson,
   verificaJson,
+  completaOrdine,
 };

@@ -5,8 +5,11 @@
  *
  * Costanti, tipi di messaggio, codici di errore e validazione dei messaggi
  * WebSocket. Nessuna logica di gioco: il contratto completo è in
- * INTERFACCE.md §0, §3 e §7. Modulo puro, senza dipendenze.
+ * INTERFACCE.md §0, §3 e §7. Modulo puro: l'unica dipendenza è il catalogo
+ * delle regole (dati puri, server/gioco/regole.js).
  */
+
+const REGOLE = require('./gioco/regole');
 
 // ---------------------------------------------------------------------------
 // Limiti e costanti
@@ -45,8 +48,12 @@ const LIMITI = Object.freeze({
 /** Codici di chiusura WebSocket usati dal server (oltre a quelli standard). */
 const CHIUSURE = Object.freeze({
   SOSTITUITO: 4001,       // lo stesso giocatore si è connesso da un'altra scheda
-  STANZA_CHIUSA: 4002,    // la stanza è stata eliminata (inattività o fine partita)
+  STANZA_CHIUSA: 4002,    // la stanza è stata eliminata (inattività, fine partita o admin)
+  CACCIATO: 4003,         // l'admin ha tolto il giocatore dalla stanza
 });
+
+/** Chiave admin accettata: 16–128 caratteri (Render genera base64). */
+const REGEX_CHIAVE_ADMIN = /^[A-Za-z0-9+/=_-]{16,128}$/;
 
 /** Alfabeto dei codici stanza: niente I, O, 0, 1 per evitare ambiguità a voce. */
 const ALFABETO_CODICE = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
@@ -80,6 +87,11 @@ const MESSAGGI_CLIENT = Object.freeze([
   'riconnetti',
   'esciStanza',
   'ping',
+  'autenticaAdmin',
+  'chiudiStanza',
+  'cacciaGiocatore',
+  'cediAdmin',
+  'impostaRegole',
 ]);
 
 const MESSAGGI_SERVER = Object.freeze([
@@ -89,6 +101,7 @@ const MESSAGGI_SERVER = Object.freeze([
   'evento',
   'errore',
   'pong',
+  'admin',
 ]);
 
 // ---------------------------------------------------------------------------
@@ -115,6 +128,10 @@ const ERRORI = Object.freeze({
   TROPPI_MESSAGGI: 'Stai inviando troppi messaggi: rallenta',
   TROPPE_STANZE: 'Il server ha raggiunto il numero massimo di stanze aperte: riprova più tardi',
   ERRORE_INTERNO: 'Errore interno del server: riprova',
+  ADMIN_NON_VALIDO: 'Il link da admin non è valido',
+  NON_ADMIN: 'Solo l\'host della stanza o l\'admin possono farlo',
+  CACCIATO: 'Sei stato tolto dalla stanza',
+  REGOLE_DA_IMPOSTARE: 'Prima di avviare compila la finestra delle regole della partita',
 
   // Motore
   AZIONE_NON_VALIDA: 'Azione sconosciuta',
@@ -287,18 +304,19 @@ const VALIDATORI = {
   },
 
   avviaPartita(m) {
-    // Regole scelte dall'host (facoltative): per ora solo la costruzione.
-    const regole = { costruzione: 'libera' };
-    if (!manca(m.regole)) {
-      if (!eOggetto(m.regole)) return rifiuta('MESSAGGIO_NON_VALIDO', 'Il campo "regole" deve essere un oggetto', { campo: 'regole' });
-      if (!manca(m.regole.costruzione)) {
-        if (m.regole.costruzione !== 'libera' && m.regole.costruzione !== 'sosta') {
-          return rifiuta('MESSAGGIO_NON_VALIDO', 'Regola di costruzione sconosciuta', { campo: 'regole.costruzione' });
-        }
-        regole.costruzione = m.regole.costruzione;
-      }
-    }
-    return { ok: true, messaggio: { tipo: 'avviaPartita', regole } };
+    // Regole della finestra "Regole della partita" (server/gioco/regole.js).
+    // Senza `regole` valgono quelle già salvate con impostaRegole.
+    if (manca(m.regole)) return { ok: true, messaggio: { tipo: 'avviaPartita', regole: null } };
+    const r = REGOLE.normalizza(m.regole);
+    if (r.errore) return rifiuta('MESSAGGIO_NON_VALIDO', r.errore.messaggio, { campo: r.errore.campo });
+    return { ok: true, messaggio: { tipo: 'avviaPartita', regole: r.regole } };
+  },
+
+  impostaRegole(m) {
+    if (manca(m.regole)) return rifiuta('MESSAGGIO_NON_VALIDO', 'Mancano le regole', { campo: 'regole' });
+    const r = REGOLE.normalizza(m.regole);
+    if (r.errore) return rifiuta('MESSAGGIO_NON_VALIDO', r.errore.messaggio, { campo: r.errore.campo });
+    return { ok: true, messaggio: { tipo: 'impostaRegole', regole: r.regole } };
   },
 
   azione(m) {
@@ -334,6 +352,31 @@ const VALIDATORI = {
 
   ping() {
     return { ok: true, messaggio: { tipo: 'ping' } };
+  },
+
+  autenticaAdmin(m) {
+    if (typeof m.chiave !== 'string' || !REGEX_CHIAVE_ADMIN.test(m.chiave)) {
+      return rifiuta('ADMIN_NON_VALIDO', 'Il link da admin non è valido', { campo: 'chiave' });
+    }
+    return { ok: true, messaggio: { tipo: 'autenticaAdmin', chiave: m.chiave } };
+  },
+
+  chiudiStanza() {
+    return { ok: true, messaggio: { tipo: 'chiudiStanza' } };
+  },
+
+  cacciaGiocatore(m) {
+    if (typeof m.giocatoreId !== 'string' || !REGEX_ID.test(m.giocatoreId)) {
+      return rifiuta('MESSAGGIO_NON_VALIDO', 'Indica quale giocatore togliere (giocatoreId)', { campo: 'giocatoreId' });
+    }
+    return { ok: true, messaggio: { tipo: 'cacciaGiocatore', giocatoreId: m.giocatoreId } };
+  },
+
+  cediAdmin(m) {
+    if (typeof m.giocatoreId !== 'string' || !REGEX_ID.test(m.giocatoreId)) {
+      return rifiuta('MESSAGGIO_NON_VALIDO', 'Indica a quale giocatore cedere l\'admin (giocatoreId)', { campo: 'giocatoreId' });
+    }
+    return { ok: true, messaggio: { tipo: 'cediAdmin', giocatoreId: m.giocatoreId } };
   },
 };
 
@@ -390,6 +433,7 @@ module.exports = {
   REGEX_COLORE,
   REGEX_TOKEN,
   REGEX_ID,
+  REGEX_CHIAVE_ADMIN,
   COLORI_GIOCATORE,
   MESSAGGI_CLIENT,
   MESSAGGI_SERVER,

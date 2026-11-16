@@ -66,7 +66,8 @@ function stanzaAvviata() {
   const stanza = stanze.crea({ ora, random: H.rngDeterministico(3) });
   const uno = stanze.entra(stanza, { nome: 'Anna', ora }).giocatore;
   const due = stanze.entra(stanza, { nome: 'Bruno', ora }).giocatore;
-  assert.equal(stanze.avvia(stanza, uno.id, { ora, random: H.rngDeterministico(5) }).errore, undefined);
+  assert.equal(stanze.avvia(stanza, uno.id, { ora, random: H.rngDeterministico(5), regole: {} }).errore, undefined);
+  H.completaOrdine(stanze, stanza, { ora });
   return { stanza, ora, ids: [uno.id, due.id] };
 }
 

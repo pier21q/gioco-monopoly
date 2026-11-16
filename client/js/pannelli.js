@@ -149,7 +149,8 @@ function statoPulsante(def, p, mio) {
     case 'lancia':
       return {
         motivo: base,
-        dettaglio: !base && io.inPrigione ? 'tenta il doppio' : (!base && p.turno.doppiConsecutivi > 0 ? 'hai fatto un doppio' : null),
+        dettaglio: !base && p.fase === 'ordine' ? 'chi fa di più comincia'
+          : !base && io.inPrigione ? 'tenta il doppio' : (!base && p.turno.doppiConsecutivi > 0 ? 'hai fatto un doppio' : null),
         onclick: () => inviaUnaVolta({ tipo: 'lanciaDadi' }),
       };
     case 'compra': {
@@ -198,7 +199,7 @@ function statoPulsante(def, p, mio) {
         onclick: () => dialoghi.apri('conferma', {
           titolo: 'Abbandonare la partita?',
           testo: conDebito
-            ? `Uscirai dalla partita e non potrai rientrare. Denaro e proprietà passano a ${nomeDi(p, p.debito.creditoreId)}, a cui devi dei soldi. Gli altri continuano a giocare.`
+            ? `Uscirai dalla partita e non potrai rientrare. Denaro e proprietà passano ${dialoghi.aChi(nomeDi(p, p.debito.creditoreId))}, a cui devi dei soldi. Gli altri continuano a giocare.`
             : 'Uscirai dalla partita e non potrai rientrare. Le tue proprietà tornano alla banca, che le mette all’asta tra gli altri giocatori. Gli altri continuano a giocare.',
           conferma: 'Abbandono la partita',
           annulla: 'Resto in gioco',
@@ -217,7 +218,7 @@ function azionePrincipale(p, mio) {
   if (!p.turno || p.turno.giocatoreId !== mio) return null;
   const io = giocatoreDa(p, mio);
   if (!io || io.fallito) return null;
-  if (p.fase === 'daLanciare') return 'lancia';
+  if (p.fase === 'daLanciare' || p.fase === 'ordine') return 'lancia';
   if (p.fase === 'mossa') return 'finisci';
   if (p.fase === 'daDecidereAcquisto') {
     const c = CASELLE[io.posizione];
@@ -403,12 +404,17 @@ function testoGuida(p, mio) {
   const io = giocatoreDa(p, mio);
   const casella = diTurno ? CASELLE[diTurno.posizione] : null;
   switch (p.fase) {
+    case 'ordine': {
+      const spareggio = p.ordine && p.ordine.giro > 1;
+      if (mioTurno) return spareggio ? 'Spareggio: lancia di nuovo i dadi.' : 'Lancia i dadi: chi fa di più comincia.';
+      return spareggio ? `Spareggio: tocca ${dialoghi.aChi(nome)} rilanciare.` : `Si decide chi comincia: tocca ${dialoghi.aChi(nome)} lanciare.`;
+    }
     case 'daLanciare':
       if (!mioTurno) return diTurno && diTurno.inPrigione ? `${nome} è in prigione e sceglie come uscire.` : `${nome} deve lanciare i dadi.`;
       if (io.inPrigione) return 'Sei in prigione: tenta il doppio, paga la cauzione o usa la carta.';
       return p.turno.doppiConsecutivi > 0 ? 'Hai fatto un doppio: lancia di nuovo.' : 'Lancia i dadi per muovere la tua pedina.';
     case 'mossa':
-      return mioTurno ? 'Costruisci, scambia o ipoteca se vuoi, poi finisci il turno.' : `${nome} sta gestendo le sue proprietà.`;
+      return mioTurno ? 'Costruisci, scambia o ipoteca se vuoi, poi finisci il turno.' : `${nome} può ancora costruire o scambiare, poi finisce il turno.`;
     case 'daDecidereAcquisto':
       return mioTurno ? `Sei su ${casella ? casella.nome : 'una proprietà libera'}: comprala o mettila all’asta.` : `${nome} decide se comprare ${casella ? casella.nome : 'la proprietà'}.`;
     case 'asta': {
@@ -422,8 +428,8 @@ function testoGuida(p, mio) {
     case 'debito': {
       const d = p.debito;
       if (!d) return 'Un giocatore deve saldare un debito.';
-      if (d.giocatoreId === mio) return `Devi ${euro(d.importo)} a ${nomeDi(p, d.creditoreId)}: vendi o ipoteca per pagare.`;
-      return `${nomeDi(p, d.giocatoreId)} deve ${euro(d.importo)} a ${d.creditoreId === mio ? 'te' : nomeDi(p, d.creditoreId)}.`;
+      if (d.giocatoreId === mio) return `Devi ${euro(d.importo)} ${dialoghi.aChi(nomeDi(p, d.creditoreId))}: vendi o ipoteca per pagare.`;
+      return `${nomeDi(p, d.giocatoreId)} deve ${euro(d.importo)} ${dialoghi.aChi(d.creditoreId === mio ? 'te' : nomeDi(p, d.creditoreId))}.`;
     }
     case 'finePartita':
       return p.vincitoreId ? `Vince ${p.vincitoreId === mio ? 'tu' : nomeDi(p, p.vincitoreId)}.` : 'La partita è finita.';
@@ -443,6 +449,13 @@ function disegnaTurno(p, mio) {
   if (p.fase === 'finePartita') {
     firmaTitolo = 'fine';
     contenutoTitolo = ['Partita finita'];
+  } else if (p.fase === 'ordine') {
+    firmaTitolo = `ordine|${mioTurno}|${diTurno ? diTurno.id : ''}|${p.ordine ? p.ordine.giro : ''}`;
+    contenutoTitolo = [
+      diTurno && !mioTurno ? pallino(diTurno.colore) : null,
+      mioTurno ? 'Tocca a te' : `Tocca ${dialoghi.aChi(diTurno ? diTurno.nome : '…')}`,
+      el('span', { class: 'pn-turno__numero', text: p.ordine && p.ordine.giro > 1 ? 'Spareggio' : 'Chi comincia' }),
+    ];
   } else if (mioTurno) {
     firmaTitolo = `mio|${p.turno.numero}`;
     contenutoTitolo = ['Tocca a te', el('span', { class: 'pn-turno__numero', text: `Turno ${p.turno.numero}` })];
@@ -450,7 +463,7 @@ function disegnaTurno(p, mio) {
     firmaTitolo = `altro|${diTurno ? diTurno.id : ''}|${diTurno && diTurno.connesso}|${p.turno && p.turno.numero}`;
     contenutoTitolo = [
       diTurno ? pallino(diTurno.colore) : null,
-      `Tocca a ${diTurno ? diTurno.nome : '…'}`,
+      `Tocca ${dialoghi.aChi(diTurno ? diTurno.nome : '…')}`,
       diTurno && !diTurno.connesso ? el('span', { class: 'distintivo distintivo--avviso', text: 'disconnesso' }) : null,
       el('span', { class: 'pn-turno__numero', text: `Turno ${p.turno ? p.turno.numero : ''}` }),
     ];
@@ -492,7 +505,7 @@ function disegnaTurno(p, mio) {
   }
 
   // Il mio denaro
-  const testoDenaro = io ? (io.fallito ? 'Sei uscito dalla partita' : euro(io.denaro)) : '';
+  const testoDenaro = io ? (io.fallito ? 'Sei fuori dalla partita' : euro(io.denaro)) : '';
   if (ui.mioDenaro.dataset.firma !== testoDenaro) {
     ui.mioDenaro.dataset.firma = testoDenaro;
     ui.mioDenaro.replaceChildren(...(io && !io.fallito
@@ -510,7 +523,9 @@ function disegnaTurno(p, mio) {
   ui.maniglia.hidden = fuori;
   for (const { def, nodo } of ui.pulsanti.values()) {
     const st = io ? statoPulsante(def, p, mio) : { motivo: 'Non partecipi a questa partita', onclick: () => {} };
-    aggiornaPulsante(nodo, { testo: def.testo, dettaglio: st.dettaglio || null, motivo: st.motivo, onclick: st.onclick, primario: def.id === principale });
+    // Senza aste (variante) "Metti all'asta" diventa semplicemente "Non comprare".
+    const testo = def.id === 'asta' && p.regole && p.regole.aste === false ? 'Non comprare' : def.testo;
+    aggiornaPulsante(nodo, { testo, dettaglio: st.dettaglio || null, motivo: st.motivo, onclick: st.onclick, primario: def.id === principale });
     nodo.classList.toggle('azione--principale', def.id === principale);
   }
   ui.turno.classList.toggle('pn-turno--con-principale', !!principale);
@@ -521,7 +536,7 @@ function disegnaAvvisi(p, mio) {
   const s = p.scambio;
   if (s && p.fase !== 'finePartita') {
     if (s.aId === mio) voci.push(['scambio', 'info', `${nomeDi(p, s.daId)} ti propone uno scambio`, 'Vedi la proposta', () => dialoghi.apri('scambio', {}, dispatchCorrente)]);
-    else if (s.daId === mio) voci.push(['scambio', 'neutro', `Hai proposto uno scambio a ${nomeDi(p, s.aId)}`, 'Vedi o ritira', () => dialoghi.apri('scambio', {}, dispatchCorrente)]);
+    else if (s.daId === mio) voci.push(['scambio', 'neutro', `Hai proposto uno scambio ${dialoghi.aChi(nomeDi(p, s.aId))}`, 'Vedi o ritira', () => dialoghi.apri('scambio', {}, dispatchCorrente)]);
     else voci.push(['scambio', 'neutro', `Scambio in attesa tra ${nomeDi(p, s.daId)} e ${nomeDi(p, s.aId)}`, 'Vedi', () => dialoghi.apri('scambio', {}, dispatchCorrente)]);
   }
   if (p.fase === 'asta' && p.asta) {
@@ -534,9 +549,18 @@ function disegnaAvvisi(p, mio) {
   if (p.fase === 'finePartita') {
     voci.push(['fine', 'info', 'La partita è finita', 'Vedi la classifica', () => dialoghi.apri('finePartita', {}, dispatchCorrente)]);
   }
+  // Variante del Parcheggio gratuito: il piatto sempre in vista.
+  if (p.regole && p.regole.parcheggio === true && p.fase !== 'finePartita') {
+    voci.push(['piatto', 'neutro', `Piatto del Parcheggio gratuito: ${euro(p.piatto || 0)}`, null, null]);
+  }
+  if (p.fase === 'ordine') {
+    voci.push(['ordine', 'info', 'Si lanciano i dadi per decidere chi comincia', 'Vedi i lanci', () => dialoghi.apri('ordine', {}, dispatchCorrente)]);
+  }
   const diTurno = giocatoreDa(p, p.turno && p.turno.giocatoreId);
   if (diTurno && !diTurno.connesso && p.fase !== 'finePartita' && diTurno.id !== mio) {
-    voci.push(['attesa', 'avviso', `${diTurno.nome} si è disconnesso: se non torna entro un minuto circa il turno passa al giocatore successivo.`, null, null]);
+    voci.push(['attesa', 'avviso', p.fase === 'ordine'
+      ? `${diTurno.nome} si è disconnesso: se non torna entro un minuto circa il gioco lancia i dadi al posto suo.`
+      : `${diTurno.nome} si è disconnesso: se non torna entro un minuto circa il turno passa al giocatore successivo.`, null, null]);
   }
   const io = giocatoreDa(p, mio);
   if (io && io.fallito && p.fase !== 'finePartita') {
@@ -581,7 +605,7 @@ function voceGiocatore(p, g, mio) {
   const distintivi = [];
   if (g.id === p.vincitoreId) distintivi.push(['ok', 'vincitore']);
   if (diTurno) distintivi.push(['turno', 'di turno']);
-  if (g.fallito) distintivi.push(['pericolo', 'in bancarotta']);
+  if (g.fallito) distintivi.push(['pericolo', (p.log || []).some((e) => e.tipo === 'abbandono' && e.giocatoreId === g.id) ? 'ha abbandonato' : 'in bancarotta']);
   if (g.inPrigione && !g.fallito) distintivi.push(['avviso', `in prigione, tentativo ${Math.min(3, (g.turniInPrigione || 0) + 1)} di 3`]);
   if (!g.connesso && !g.fallito) distintivi.push(['neutro', 'disconnesso']);
   if (g.cartePrigione > 0) distintivi.push(['neutro', g.cartePrigione === 1 ? '1 carta esci gratis' : `${g.cartePrigione} carte esci gratis`]);
@@ -697,15 +721,22 @@ export function testoEvento(ev, p) {
     case 'giocatoreUscito': return `${chi} esce dalla stanza`;
     case 'connessione': return d.connesso ? `${chi} si è riconnesso` : `${chi} si è disconnesso`;
     case 'partitaIniziata': return `La partita comincia: ${d.denaroIniziale ? `${euro(d.denaroIniziale)} a testa` : 'buon divertimento'}${d.costruzione === 'sosta' ? '. Si costruisce solo sul colore su cui ci si ferma' : ''}`;
-    case 'turno': return `Turno ${d.numero}: tocca a ${chi}`;
+    case 'turno': return `Turno ${d.numero}: tocca ${dialoghi.aChi(chi)}`;
     case 'dadi': return d.dadi ? `${chi} lancia ${d.dadi[0]} e ${d.dadi[1]}${d.doppio ? ' (doppio)' : ''}` : `${chi} lancia i dadi`;
+    case 'lancioOrdine': return d.dadi ? `${chi} lancia ${d.dadi[0]} e ${d.dadi[1]}: ${d.totale}` : `${chi} lancia i dadi`;
+    case 'spareggio': return `Spareggio tra ${(d.giocatori || []).map((id) => nomeDi(p, id)).join(', ')}`;
+    case 'ordineDeciso': return `Comincia ${chi}`;
+    case 'regoleImpostate': return `${chi} sceglie le regole della partita`;
+    case 'proprietaIniziali': return `${chi} riceve ${(d.caselle || []).map(nomeCasella).join(', ')}`;
+    case 'piatto': return `${chi} vince il piatto del Parcheggio gratuito: ${euro(d.importo)}`;
+    case 'acquistoRifiutato': return `${chi} non compra ${nomeCasella(d.casella)}`;
     case 'movimento': return `${chi} va su ${nomeCasella(d.a)}`;
     case 'passaggioVia': return `${chi} passa dal Via e ritira ${euro(d.importo)}`;
     case 'acquisto': return `${chi} compra ${nomeCasella(d.casella)} per ${euro(d.prezzo)}${d.tramite === 'asta' ? ' all’asta' : ''}`;
-    case 'affitto': return `${nomeDi(p, d.daId)} paga ${euro(d.importo)} di affitto a ${nomeDi(p, d.aId)} per ${nomeCasella(d.casella)}`;
+    case 'affitto': return `${nomeDi(p, d.daId)} paga ${euro(d.importo)} di affitto ${dialoghi.aChi(nomeDi(p, d.aId))} per ${nomeCasella(d.casella)}`;
     case 'tassa': return `${chi} paga ${euro(d.importo)} di ${nomeCasella(d.casella).toLowerCase()}`;
     case 'carta': return `${chi} pesca ${d.mazzo === 'imprevisti' ? 'Imprevisti' : 'Probabilità'}: ${(d.carta && d.carta.testo) || ''}`;
-    case 'pagamento': return `${nomeDi(p, d.daId)} paga ${euro(d.importo)} a ${nomeDi(p, d.aId)}`;
+    case 'pagamento': return `${nomeDi(p, d.daId)} paga ${euro(d.importo)} ${dialoghi.aChi(nomeDi(p, d.aId))}`;
     case 'prigione': return d.motivo === 'treDoppi' ? `${chi} fa tre doppi e finisce in prigione` : `${chi} va in prigione`;
     case 'uscitaPrigione': return `${chi} esce di prigione`;
     case 'astaInizio': return `Si apre l’asta per ${nomeCasella(d.casella)}`;
@@ -716,10 +747,10 @@ export function testoEvento(ev, p) {
     case 'vendita': return `${chi} vende una costruzione su ${nomeCasella(d.casella)} e incassa ${euro(d.ricavo)}`;
     case 'ipoteca': return `${chi} ipoteca ${nomeCasella(d.casella)} e incassa ${euro(d.importo)}`;
     case 'disipoteca': return `${chi} riscatta ${nomeCasella(d.casella)} per ${euro(d.importo)}`;
-    case 'scambioProposto': return `${chi} propone uno scambio a ${nomeDi(p, d.scambio && d.scambio.aId)}`;
+    case 'scambioProposto': return `${chi} propone uno scambio ${dialoghi.aChi(nomeDi(p, d.scambio && d.scambio.aId))}`;
     case 'scambioAccettato': return `Scambio concluso tra ${nomeDi(p, d.scambio && d.scambio.daId)} e ${nomeDi(p, d.scambio && d.scambio.aId)}`;
     case 'scambioRifiutato': return `Scambio annullato da ${nomeDi(p, d.daId)}`;
-    case 'debito': return `${chi} deve ${euro(d.importo)} a ${nomeDi(p, d.creditoreId)}`;
+    case 'debito': return `${chi} deve ${euro(d.importo)} ${dialoghi.aChi(nomeDi(p, d.creditoreId))}`;
     case 'debitoSaldato': return `${chi} salda il debito di ${euro(d.importo)}`;
     case 'bancarotta': return `${chi} dichiara bancarotta`;
     case 'finePartita': return `Partita finita: vince ${nomeDi(p, d.vincitoreId)}`;
@@ -727,7 +758,7 @@ export function testoEvento(ev, p) {
   }
 }
 
-const TIPI_RILIEVO = new Set(['acquisto', 'astaFine', 'bancarotta', 'finePartita', 'scambioAccettato', 'prigione', 'debito']);
+const TIPI_RILIEVO = new Set(['ordineDeciso', 'spareggio', 'piatto', 'acquisto', 'astaFine', 'bancarotta', 'finePartita', 'scambioAccettato', 'prigione', 'debito']);
 
 function voceCronaca(ev, p) {
   const g = giocatoreDa(p, ev.giocatoreId);
@@ -806,6 +837,11 @@ function dialogoRichiesto(p, mio) {
     return { chiave: `acquisto|${p.turno.numero}|${p.turno.doppiConsecutivi}|${io.posizione}`, tipo: 'acquisto', forte: true };
   }
   if (p.scambio && p.scambio.aId === mio) return { chiave: `scambio|${p.scambio.id}`, tipo: 'scambio', forte: false };
+  // Lancio iniziale: la finestra si apre una volta a inizio partita e a ogni spareggio in cui tocca a me.
+  if (p.fase === 'ordine' && p.ordine) {
+    const mioSpareggio = p.ordine.giro > 1 && p.turno.giocatoreId === mio;
+    return { chiave: `ordine|${p.codice}|${mioSpareggio ? p.ordine.giro : 1}`, tipo: 'ordine', forte: false };
+  }
   if (p.fase === 'daLanciare' && p.turno.giocatoreId === mio && io.inPrigione) {
     return { chiave: `prigione|${p.turno.numero}|${io.turniInPrigione}`, tipo: 'prigione', forte: false };
   }
@@ -867,7 +903,21 @@ export function render(radice, stato, dispatch) {
   }
 
   disegnaTurno(p, mio);
+  spostaFocusDaBloccato(radice);
   disegnaGiocatori(p, mio);
   disegnaCronaca(p);
   apriAutomatici(p, mio);
+}
+
+/**
+ * Il pulsante col focus si è appena bloccato (es. "Lancia i dadi" dopo il
+ * lancio): il focus passa al pulsante principale, così Invio fa la mossa
+ * successiva invece di mostrare un divieto.
+ */
+function spostaFocusDaBloccato(radice) {
+  const attivo = document.activeElement;
+  if (!attivo || !radice.contains(attivo) || attivo.getAttribute('aria-disabled') !== 'true') return;
+  if (dialoghi.aperto()) return;
+  const principale = radice.querySelector('.pn-turno .btn--primario:not([aria-disabled="true"])');
+  if (principale && principale !== attivo) principale.focus({ preventScroll: true });
 }

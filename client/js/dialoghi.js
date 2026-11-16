@@ -27,6 +27,7 @@
  */
 
 import { CASELLE, GRUPPI } from '/dati/tabellone.js';
+import { REGOLE, PREDEFINITE } from '/dati/regole.js';
 
 const CAUZIONE = 50;
 
@@ -131,6 +132,13 @@ export function mioIdDi(sc) {
 
 export function giocatoreDa(p, id) {
   return (p && Array.isArray(p.giocatori) && p.giocatori.find((g) => g.id === id)) || null;
+}
+
+/** "a" davanti a un nome: "ad Anna", "alla banca", "a Bruno". */
+export function aChi(nome) {
+  const n = String(nome ?? '');
+  if (n === 'la banca') return 'alla banca';
+  return /^[aAàÀ]/.test(n) ? `ad ${n}` : `a ${n}`;
 }
 
 export function nomeDi(p, id, { banca = 'la banca' } = {}) {
@@ -249,13 +257,16 @@ export function motivoAzione(p, id, tipo) {
   if (p.fase === 'finePartita') return 'La partita è finita';
   const io = giocatoreDa(p, id);
   if (!io) return 'Non partecipi a questa partita';
-  if (io.fallito) return 'Sei uscito dalla partita per bancarotta';
+  if (io.fallito) return 'Sei fuori dalla partita';
   if (azioniAmmesse(p, id).has(tipo)) return null;
 
   const f = p.fase;
   const mio = p.turno && p.turno.giocatoreId === id;
   const altro = `È il turno di ${nomeDi(p, p.turno && p.turno.giocatoreId)}`;
 
+  if (f === 'ordine' && tipo !== 'lanciaDadi' && tipo !== 'abbandona') {
+    return 'Prima si lanciano i dadi per decidere chi comincia';
+  }
   if (f === 'asta' && !['offertaAsta', 'passaAsta', 'vendiCasa', 'ipoteca'].includes(tipo)) {
     return 'Aspetta la fine dell’asta in corso';
   }
@@ -481,6 +492,13 @@ export function pulsante({ testo, dettaglio, motivo, onclick, classe = '', chiav
   const sug = el('span', { class: 'suggerimento', role: 'tooltip', id: idSug });
   const avvolto = el('span', { class: 'azione' }, btn, sug);
   btn.addEventListener('click', (e) => {
+    // Mentre dadi e pedina si muovono il pannello mostra ancora la mossa di
+    // prima: il CSS blocca il mouse, qui si bloccano anche Invio e Spazio.
+    if (btn.closest('.pn-attesa')) {
+      e.preventDefault();
+      e.stopPropagation();
+      return;
+    }
     if (btn.getAttribute('aria-disabled') === 'true') {
       e.preventDefault();
       e.stopPropagation();
@@ -668,7 +686,10 @@ function focalizzabili(radice) {
 
 /** Tipo del dialogo aperto, o null. */
 export function aperto() {
-  return corrente ? corrente.tipo : null;
+  // Un dialogo appena chiuso resta `corrente` fino all'evento 'close', che il
+  // browser manda dopo: per chi chiede è già chiuso (es. asta finita e subito
+  // un'altra in coda, che altrimenti non si aprirebbe).
+  return corrente && !corrente.chiuso ? corrente.tipo : null;
 }
 
 /** Riceve l'ultimo StatoClient: aggiorna o chiude il dialogo aperto. */
@@ -794,8 +815,12 @@ export function apri(tipo, dati = {}, dispatch) {
     if (corrente === ctx) corrente = null;
     if (!ctx.silenzioso) {
       if (def.dopoChiusura) def.dopoChiusura(ctx);
-      const torna = ctx.focusPrecedente;
-      if (!corrente && torna && torna.isConnected && typeof torna.focus === 'function') torna.focus();
+      let torna = ctx.focusPrecedente;
+      // Se il pulsante da cui si era partiti ora è bloccato, meglio il pulsante principale del turno.
+      if (torna && torna.getAttribute && torna.getAttribute('aria-disabled') === 'true') {
+        torna = document.querySelector('.pn-turno .btn--primario:not([aria-disabled="true"])') || torna;
+      }
+      if (!corrente && torna && torna.isConnected && typeof torna.focus === 'function') torna.focus({ preventScroll: true });
     }
   }, { once: true });
 
@@ -969,7 +994,9 @@ TIPI.acquisto = {
         el('div', { class: 'conto__totale' }, el('dt', { text: 'Ti resterebbero' }), el('dd', { class: resta < 0 ? 'negativo' : null, text: euro(resta) }))),
       resta < 0
         ? avviso('Non hai abbastanza denaro. Puoi ipotecare o vendere case dal pannello e poi comprare, oppure metterla all’asta.', 'avviso')
-        : el('p', { class: 'testo-secondario', text: 'Se rinunci, la proprietà va all’asta tra tutti i giocatori, te compreso.' }),
+        : el('p', { class: 'testo-secondario', text: ctx.p.regole && ctx.p.regole.aste === false
+          ? 'Se rinunci, la proprietà resta alla banca: chi ci arriva dopo potrà comprarla.'
+          : 'Se rinunci, la proprietà va all’asta tra tutti i giocatori, te compreso.' }),
     ];
   },
   piede(ctx) {
@@ -977,7 +1004,7 @@ TIPI.acquisto = {
     const denaro = ctx.io ? ctx.io.denaro : 0;
     return [
       pulsante({
-        testo: 'Metti all’asta',
+        testo: ctx.p.regole && ctx.p.regole.aste === false ? 'Non comprare' : 'Metti all’asta',
         chiave: 'acq-asta',
         motivo: motivoAzione(ctx.p, ctx.mio, 'rifiutaAcquisto'),
         onclick: () => ctx.invia({ tipo: 'rifiutaAcquisto' }, { chiudi: true }),
@@ -1160,7 +1187,7 @@ function colonnaComposizione(ctx, ruolo) {
   const id = ruolo === 'offre' ? ctx.mio : ctx.bozza.aId;
   const g = giocatoreDa(p, id);
   const bozza = ctx.bozza[ruolo];
-  const titolo = ruolo === 'offre' ? 'Tu offri' : `Chiedi a ${g ? g.nome : '…'}`;
+  const titolo = ruolo === 'offre' ? 'Tu offri' : `Chiedi ${aChi(g ? g.nome : '…')}`;
   const campoDenaro = el('input', {
     type: 'number', name: `${ruolo}-denaro`, id: nuovoId('campo'), min: 0, max: g ? g.denaro : 0, step: 1,
     inputmode: 'numeric', value: bozza.denaro,
@@ -1263,7 +1290,7 @@ TIPI.scambio = {
     if (ctx.modo === 'nuovo') return 'Proponi uno scambio';
     const s = ctx.p.scambio;
     if (s.aId === ctx.mio) return `${nomeDi(ctx.p, s.daId)} ti propone uno scambio`;
-    if (s.daId === ctx.mio) return `La tua proposta a ${nomeDi(ctx.p, s.aId)}`;
+    if (s.daId === ctx.mio) return `La tua proposta ${aChi(nomeDi(ctx.p, s.aId))}`;
     return `Scambio tra ${nomeDi(ctx.p, s.daId)} e ${nomeDi(ctx.p, s.aId)}`;
   },
   corpo(ctx) {
@@ -1291,7 +1318,7 @@ TIPI.scambio = {
     }
     const s = p.scambio;
     const daNome = s.daId === ctx.mio ? 'Tu offri' : `${nomeDi(p, s.daId)} offre`;
-    const chiedeNome = s.daId === ctx.mio ? `Chiedi a ${nomeDi(p, s.aId)}` : (s.aId === ctx.mio ? 'In cambio ti chiede' : `Chiede a ${nomeDi(p, s.aId)}`);
+    const chiedeNome = s.daId === ctx.mio ? `Chiedi ${aChi(nomeDi(p, s.aId))}` : (s.aId === ctx.mio ? 'In cambio ti chiede' : `Chiede ${aChi(nomeDi(p, s.aId))}`);
     const parti = [el('div', { class: 'scambio-colonne' },
       el('section', { class: 'lato-scambio lato-scambio--offre', 'aria-label': daNome }, el('h3', { text: daNome }), elencoLato(p, s.offre, 'Niente')),
       el('section', { class: 'lato-scambio lato-scambio--chiede', 'aria-label': chiedeNome }, el('h3', { text: chiedeNome }), elencoLato(p, s.chiede, 'Niente')))];
@@ -1318,7 +1345,7 @@ TIPI.scambio = {
             offre: { denaro: b.offre.denaro, proprieta: [...b.offre.proprieta], cartePrigione: b.offre.cartePrigione },
             chiede: { denaro: b.chiede.denaro, proprieta: [...b.chiede.proprieta], cartePrigione: b.chiede.cartePrigione },
           }, { chiudi: true });
-          toast(`Proposta inviata a ${nomeDi(p, b.aId)}`, { livello: 'info' });
+          toast(`Proposta inviata ${aChi(nomeDi(p, b.aId))}`, { livello: 'info' });
         },
       });
       queueMicrotask(() => aggiornaRiepilogoScambio(ctx));
@@ -1527,6 +1554,69 @@ TIPI.prigione = {
   piede: (ctx) => [chiudiPulsante(ctx, 'Decido dopo')],
 };
 
+// --- Lancio iniziale: chi comincia -------------------------------------------
+
+/** Righe della classifica provvisoria del lancio iniziale, dalla prima posizione. */
+export function righeOrdine(p) {
+  const o = p && p.ordine;
+  if (!o || !Array.isArray(o.gruppi)) return [];
+  const storico = Array.isArray(o.storico) ? o.storico : [];
+  const righe = [];
+  let posizione = 1;
+  for (const gr of o.gruppi) {
+    // Finché tutti sono nello stesso gruppo nessuno ha ancora un posto.
+    const tutti = gr.length > 1 && gr.length === o.gruppi.reduce((n, x) => n + x.length, 0);
+    const posto = gr.length === 1 ? `${posizione}°` : tutti ? '' : `${posizione}–${posizione + gr.length - 1}°`;
+    for (const id of gr) {
+      const lanci = storico.filter((giro) => giro.lanci && giro.lanci[id]).map((giro) => giro.lanci[id]);
+      if (o.lanci && o.lanci[id]) lanci.push(o.lanci[id]);
+      const stato = p.turno && p.turno.giocatoreId === id ? 'tocca'
+        : gr.length === 1 ? 'deciso'
+          : o.lanci && o.lanci[id] ? 'lanciato' : 'attesa';
+      righe.push({ id, posto, pari: gr.length > 1, lanci: lanci.map((d) => d[0] + d[1]), stato });
+    }
+    posizione += gr.length;
+  }
+  return righe;
+}
+
+const STATI_ORDINE = { tocca: 'lancia ora', deciso: 'posto deciso', lanciato: 'ha lanciato', attesa: 'deve lanciare' };
+
+TIPI.ordine = {
+  classe: 'dlg--stretto',
+  vivo: true,
+  valido: (ctx) => !!ctx.p && ctx.p.fase === 'ordine' && !!ctx.p.ordine,
+  titolo: () => 'Chi comincia?',
+  corpo(ctx) {
+    const { p, mio } = ctx;
+    const o = p.ordine;
+    const diTurno = giocatoreDa(p, p.turno && p.turno.giocatoreId);
+    return [
+      el('p', { class: 'testo-guida', text: o.giro > 1
+        ? `Spareggio: rilancia solo chi ha fatto lo stesso punteggio, e solo per i posti in palio (giro ${o.giro}).`
+        : 'Ognuno lancia i due dadi: chi fa di più comincia, poi gli altri in ordine di punteggio. Chi pareggia rilancia contro chi ha fatto lo stesso numero.' }),
+      el('ol', { class: 'classifica classifica--ordine' }, righeOrdine(p).map((r) => {
+        const g = giocatoreDa(p, r.id);
+        return el('li', { class: `classifica__voce${r.id === mio ? ' classifica__voce--mia' : ''}${r.stato === 'tocca' ? ' classifica__voce--tocca' : ''}` },
+          el('span', { class: 'classifica__posto', text: r.posto }),
+          pallino(g ? g.colore : '#888'),
+          el('span', { class: 'classifica__nome', text: `${g ? g.nome : 'Giocatore'}${r.id === mio ? ' (tu)' : ''}` }),
+          el('span', { class: 'classifica__valore', text: r.lanci.length ? r.lanci.join(' → ') : '–' }),
+          el('span', { class: `distintivo${r.stato === 'tocca' ? ' distintivo--avviso' : ''}`, text: r.pari && r.stato === 'deciso' ? 'pari' : STATI_ORDINE[r.stato] }));
+      })),
+      diTurno && diTurno.id === mio
+        ? el('div', { class: 'scelte' }, pulsante({
+          testo: 'Lancia i dadi', dettaglio: o.giro > 1 ? 'spareggio' : 'chi fa di più comincia', chiave: 'ord-lancia', primario: true,
+          motivo: motivoAzione(p, mio, 'lanciaDadi'),
+          onclick: () => ctx.invia({ tipo: 'lanciaDadi' }),
+        }))
+        : el('p', { class: 'testo-secondario', text: diTurno ? `Tocca ${aChi(diTurno.nome)} lanciare.` : '' }),
+    ];
+  },
+  piede: (ctx) => [chiudiPulsante(ctx, 'Guarda il tabellone')],
+  focusIniziale: (ctx) => ctx.corpoEl?.querySelector('[data-chiave="ord-lancia"]:not([aria-disabled])') || ctx.piedeEl.querySelector('.btn'),
+};
+
 // --- Debito -----------------------------------------------------------------
 
 const MOTIVI_DEBITO = {
@@ -1561,8 +1651,9 @@ TIPI.debito = {
     const piano = pianoLiquidazione(p, mio, mancante);
     const parti = [
       el('p', { class: 'testo-guida' },
-        'Devi ', el('strong', { text: euro(d.importo) }), ' a ',
-        d.creditoreId ? nomeGiocatoreEl(p, d.creditoreId) : 'la banca',
+        'Devi ', el('strong', { text: euro(d.importo) }),
+        // "ad Anna", "alla banca": la preposizione segue il nome.
+        d.creditoreId ? [` ${aChi(nomeDi(p, d.creditoreId)).split(' ')[0]}\u00a0`, nomeGiocatoreEl(p, d.creditoreId)] : ' alla banca',
         ` per ${MOTIVI_DEBITO[d.motivo] || d.motivo}.`),
       el('dl', { class: 'conto' },
         el('div', null, el('dt', { text: 'Hai' }), el('dd', { text: euro(io.denaro) })),
@@ -1579,6 +1670,8 @@ TIPI.debito = {
         const motivo = passo.tipo === 'ipoteca' ? motivoIpoteca(p, mio, passo.casella) : motivoVendi(p, mio, passo.casella);
         const azione = pulsante({
           testo: `+${euro(passo.ricavo)}`, chiave: `deb-passo-${k}-${passo.tipo}-${passo.casella}`, classe: 'btn--piccolo',
+          // Il primo passo è la mossa consigliata: deve spiccare più della bancarotta.
+          primario: k === 0 && !motivo,
           motivo: motivo ? 'Fai prima i passi precedenti' : null,
           onclick: () => ctx.invia({ tipo: passo.tipo, casella: passo.casella }),
         });
@@ -1597,7 +1690,10 @@ TIPI.debito = {
     return parti;
   },
   piede(ctx) {
-    const { p, mio } = ctx;
+    const { p, mio, io } = ctx;
+    // Rossa e in evidenza solo quando non resta altro: se il debito si può
+    // saldare è un pulsante sobrio (e chiede comunque conferma).
+    const senzaScampo = !io || liquidabile(p, mio) < p.debito.importo;
     return [
       pulsante({
         testo: 'Proponi uno scambio', chiave: 'deb-scambio',
@@ -1605,7 +1701,8 @@ TIPI.debito = {
         onclick: () => apri('scambio', { nuovo: true, aId: p.debito.creditoreId || undefined }),
       }),
       pulsante({
-        testo: 'Dichiara bancarotta', chiave: 'deb-bancarotta', pericolo: true,
+        testo: 'Dichiara bancarotta', chiave: 'deb-bancarotta', pericolo: senzaScampo,
+        classe: senzaScampo ? '' : 'btn--quieto',
         motivo: motivoAzione(p, mio, 'dichiaraBancarotta'),
         onclick: () => apri('bancarotta', {}),
       }),
@@ -1623,7 +1720,7 @@ TIPI.bancarotta = {
   corpo(ctx) {
     const d = ctx.p.debito;
     const aChi = d.creditoreId
-      ? `Il tuo denaro, le tue proprietà (anche quelle ipotecate) e le carte prigione passano a ${nomeDi(ctx.p, d.creditoreId)}. Le case vengono vendute alla banca a metà prezzo e il ricavato va a ${nomeDi(ctx.p, d.creditoreId)}.`
+      ? `Il tuo denaro, le tue proprietà (anche quelle ipotecate) e le carte prigione passano ${aChi(nomeDi(ctx.p, d.creditoreId))}. Le case vengono vendute alla banca a metà prezzo e il ricavato va ${aChi(nomeDi(ctx.p, d.creditoreId))}.`
       : 'Le tue proprietà tornano alla banca libere da ipoteche e le case vengono vendute.';
     return [
       el('p', { class: 'testo-guida', text: aChi }),
@@ -1653,6 +1750,198 @@ TIPI.conferma = {
   ],
 };
 
+// --- Admin: togliere giocatori e chiudere la stanza ------------------------
+
+TIPI.admin = {
+  classe: 'dlg--stretto',
+  vivo: true,
+  valido: (ctx) => !!ctx.p && !!ctx.mio && (ctx.p.adminId === ctx.mio || ctx.p.hostId === ctx.mio),
+  titolo: (ctx) => (ctx.p && ctx.p.adminId === ctx.mio ? 'Admin della stanza' : 'Gestisci la stanza'),
+  corpo(ctx) {
+    const { p, mio } = ctx;
+    const inPartita = p.fase !== 'lobby';
+    // L'admin non si può togliere.
+    const altri = (p.giocatori || []).filter((g) => g.id !== mio && !g.fallito && g.id !== p.adminId);
+    const togli = (g) => apri('conferma', {
+      titolo: `Togliere ${g.nome} dalla stanza?`,
+      testo: inPartita
+        ? `${g.nome} esce dalla partita come se avesse abbandonato: le sue proprietà tornano alla banca e vanno all’asta. Non potrà rientrare.`
+        : `${g.nome} esce dalla sala d’attesa. Con il link d’invito potrebbe rientrare: avvia la partita quando ci sono tutti.`,
+      conferma: 'Togli dalla stanza',
+      pericolo: true,
+      azione: { tipo: 'cacciaGiocatore', giocatoreId: g.id },
+    }, ctx.invia);
+    // Solo l'admin cede il ruolo: chi lo riceve diventa admin e host.
+    const sonoAdmin = p.adminId === mio;
+    const cedi = (g) => apri('conferma', {
+      titolo: `Cedere l’admin ${aChi(g.nome)}?`,
+      testo: `${g.nome} diventa admin e host della stanza: potrà ${inPartita ? '' : 'avviare la partita, '}togliere giocatori e chiudere la stanza. Tu perdi questi comandi e non li riprendi con il link da admin finché ${g.nome} resta nella stanza.`,
+      conferma: 'Cedi admin',
+      azione: { tipo: 'cediAdmin', giocatoreId: g.id },
+    }, ctx.invia);
+    return [
+      el('p', { class: 'testo-guida', text: p.adminId === mio
+        ? 'Questi comandi li vedi solo tu.'
+        : 'Questi comandi li ha solo chi guida la stanza (l’host).' }),
+      altri.length
+        ? el('ul', { class: 'elenco-admin' }, altri.map((g) => el('li', { class: 'elenco-admin__voce' },
+          nomeGiocatoreEl(p, g.id),
+          g.connesso === false ? el('span', { class: 'distintivo', text: 'disconnesso' }) : null,
+          el('span', { class: 'elenco-admin__comandi' },
+            sonoAdmin ? el('button', {
+              type: 'button', class: 'btn btn--piccolo', 'data-chiave': `admin-cedi-${g.id}`,
+              text: 'Cedi admin', onclick: () => cedi(g),
+            }) : null,
+            el('button', {
+              type: 'button', class: 'btn btn--pericolo btn--piccolo', 'data-chiave': `admin-togli-${g.id}`,
+              text: 'Togli dalla stanza', onclick: () => togli(g),
+            })))))
+        : el('p', { class: 'vuoto', text: 'Non c’è nessun altro giocatore.' }),
+    ];
+  },
+  // "Chiudi" accanto a "Chiudi la stanza" si confondeva: il pulsante sicuro si
+  // chiama "Fatto", sta a destra e prende il focus; quello pericoloso a sinistra.
+  piede: (ctx) => [
+    el('button', {
+      type: 'button', class: 'btn btn--pericolo admin__chiudi-stanza', text: 'Chiudi la stanza…',
+      onclick: () => apri('conferma', {
+        titolo: 'Chiudere la stanza?',
+        testo: 'Tutti i giocatori escono e la partita finisce subito, senza vincitore. Non si può annullare.',
+        conferma: 'Chiudi la stanza',
+        pericolo: true,
+        azione: { tipo: 'chiudiStanza' },
+      }, ctx.invia),
+    }),
+    chiudiPulsante(ctx, 'Fatto', { primario: true }),
+  ],
+  focusIniziale: (ctx) => ctx.piedeEl.querySelector('.btn--primario'),
+};
+
+// --- Regole della partita ---------------------------------------------------
+
+/** Dove il browser ricorda le ultime regole scelte, per proporle alla prossima stanza. */
+const CHIAVE_REGOLE = 'monopoly.regole';
+/** Chiave delle versioni precedenti, che ricordavano solo la regola di costruzione. */
+const CHIAVE_REGOLA_VECCHIA = 'monopoly.regola-costruzione';
+
+/** Tiene solo chiavi e valori del catalogo; il resto prende il predefinito. */
+export function regoleValide(grezze) {
+  const out = { ...PREDEFINITE };
+  if (!grezze || typeof grezze !== 'object') return out;
+  for (const r of REGOLE) {
+    if (Object.hasOwn(grezze, r.chiave) && r.valori.some((v) => v.valore === grezze[r.chiave])) out[r.chiave] = grezze[r.chiave];
+  }
+  return out;
+}
+
+function regoleSalvate() {
+  try {
+    const testo = localStorage.getItem(CHIAVE_REGOLA_VECCHIA);
+    const grezze = JSON.parse(localStorage.getItem(CHIAVE_REGOLE) || 'null') || {};
+    if (testo === 'sosta' && !grezze.costruzione) grezze.costruzione = 'sosta'; // scelta salvata dalle versioni precedenti
+    return regoleValide(grezze);
+  } catch {
+    return { ...PREDEFINITE };
+  }
+}
+
+function salvaRegole(regole) {
+  try {
+    localStorage.setItem(CHIAVE_REGOLE, JSON.stringify(regole));
+  } catch { /* archivio non disponibile: la scelta vale solo per questa stanza */ }
+}
+
+/** Le regole della stanza: quelle scelte, oppure (non ancora scelte) le ultime usate da questo browser. */
+export function regoleDiPartenza(p) {
+  if (p && p.regoleImpostate && p.regole) return regoleValide(p.regole);
+  return regoleSalvate();
+}
+
+/** Righe di riepilogo: { chiave, titolo, etichetta, variante } (variante = diversa dalla regola classica). */
+export function riepilogoRegole(regole) {
+  const r = regoleValide(regole);
+  return REGOLE.map((def) => {
+    const v = def.valori.find((x) => x.valore === r[def.chiave]) || def.valori[0];
+    return { chiave: def.chiave, titolo: def.titolo, etichetta: v.etichetta, variante: r[def.chiave] !== def.predefinito };
+  });
+}
+
+/** Host o admin, in sala d'attesa: chi può scegliere le regole. */
+function guidaLaStanza(p, mio) {
+  return !!p && !!mio && (p.hostId === mio || p.adminId === mio);
+}
+
+TIPI.regole = {
+  classe: 'dlg--medio',
+  prepara(ctx) {
+    ctx.modifica = !!ctx.p && ctx.p.fase === 'lobby' && guidaLaStanza(ctx.p, ctx.mio);
+    ctx.scelte = regoleDiPartenza(ctx.p);
+  },
+  // Chi sta scegliendo perde la finestra se la partita parte o se non guida più la stanza.
+  valido: (ctx) => !!ctx.p && (!ctx.modifica || (ctx.p.fase === 'lobby' && guidaLaStanza(ctx.p, ctx.mio))),
+  titolo: (ctx) => (ctx.modifica ? 'Regole della partita' : 'Le regole di questa partita'),
+  corpo(ctx) {
+    if (!ctx.modifica) {
+      const p = ctx.p;
+      const impostate = p.fase !== 'lobby' || p.regoleImpostate;
+      return [
+        el('p', { class: 'testo-guida', text: impostate
+          ? 'Le ha scelte chi guida la stanza prima di cominciare. Quelle evidenziate sono varianti rispetto alla regola classica.'
+          : 'Chi guida la stanza non le ha ancora scelte: queste sono le regole classiche.' }),
+        el('dl', { class: 'riepilogo-regole' }, riepilogoRegole(p.regole).map((r) => el('div', { class: r.variante ? 'riepilogo-regole__voce riepilogo-regole__voce--variante' : 'riepilogo-regole__voce' },
+          el('dt', { text: r.titolo }), el('dd', { text: r.etichetta })))),
+      ];
+    }
+    return [
+      el('p', { class: 'testo-guida', text: 'Scegli le regole prima di avviare: gli altri giocatori le vedono nella sala d’attesa. Se non tocchi niente si gioca con le regole classiche.' }),
+      ...REGOLE.map((def) => {
+        const nome = `regola-${def.chiave}`;
+        return el('fieldset', { class: 'scelta-regola' },
+          el('legend', { class: 'scelta-regola__titolo', text: def.titolo }),
+          el('p', { class: 'scelta-regola__descrizione', text: def.descrizione }),
+          el('div', { class: 'scelta-regola__valori' }, def.valori.map((v, i) => el('label', { class: 'scelta-regola__valore' },
+            el('input', {
+              type: 'radio', name: nome, value: String(i), checked: ctx.scelte[def.chiave] === v.valore,
+              onchange: () => { ctx.scelte[def.chiave] = v.valore; },
+            }),
+            el('span', { class: 'scelta-regola__testo' },
+              el('span', { class: 'scelta-regola__etichetta', text: v.etichetta }),
+              el('span', { class: 'scelta-regola__spiega', text: v.descrizione }))))));
+      }),
+    ];
+  },
+  piede(ctx) {
+    if (!ctx.modifica) return [chiudiPulsante(ctx, 'Chiudi', { primario: true })];
+    const connessi = (ctx.p.giocatori || []).filter((g) => g.connesso !== false).length;
+    const conferma = (avvia) => () => {
+      const regole = regoleValide(ctx.scelte);
+      salvaRegole(regole);
+      ctx.invia(avvia ? { tipo: 'avviaPartita', regole } : { tipo: 'impostaRegole', regole }, { chiudi: true });
+    };
+    return [
+      el('button', {
+        type: 'button', class: 'btn btn--quieto', text: 'Regole classiche',
+        onclick: () => {
+          ctx.scelte = { ...PREDEFINITE };
+          for (const def of REGOLE) {
+            const i = def.valori.findIndex((v) => v.valore === def.predefinito);
+            const input = ctx.corpoEl.querySelector(`input[name="regola-${def.chiave}"][value="${i}"]`);
+            if (input) input.checked = true;
+          }
+          ctx.annuncia('Rimesse le regole classiche');
+        },
+      }),
+      el('button', { type: 'button', class: `btn${ctx.dati.avvia ? ' btn--quieto' : ' btn--primario'}`, 'data-chiave': 'reg-salva', text: 'Salva le regole', onclick: conferma(false) }),
+      pulsante({
+        testo: 'Salva e avvia la partita', chiave: 'reg-avvia', primario: Boolean(ctx.dati.avvia),
+        motivo: connessi < 2 ? 'Servono almeno 2 giocatori connessi' : null,
+        onclick: conferma(true),
+      }),
+    ];
+  },
+  focusIniziale: (ctx) => ctx.corpoEl.querySelector('input:checked') || ctx.piedeEl.querySelector('.btn'),
+};
+
 // --- Carta pescata ---------------------------------------------------------
 
 TIPI.carta = {
@@ -1679,6 +1968,8 @@ TIPI.finePartita = {
     if (!p) return null;
     const vincitore = giocatoreDa(p, p.vincitoreId || (ctx.dati.vincitore && ctx.dati.vincitore.id));
     const ordine = classifica(p);
+    // Chi ha abbandonato (o è stato tolto) non ha fatto bancarotta.
+    const ritirati = new Set((p.log || []).filter((e) => e.tipo === 'abbandono').map((e) => e.giocatoreId));
     return [
       vincitore ? el('div', { class: 'vincitore', style: { '--colore': vincitore.colore } },
         el('span', { class: 'vincitore__corona', 'aria-hidden': 'true' }),
@@ -1688,7 +1979,7 @@ TIPI.finePartita = {
       el('ol', { class: 'classifica' }, ordine.map((g) => el('li', { class: `classifica__voce${g.fallito ? ' classifica__voce--fallito' : ''}${g.id === ctx.mio ? ' classifica__voce--mia' : ''}` },
         pallino(g.colore),
         el('span', { class: 'classifica__nome', text: g.id === ctx.mio ? `${g.nome} (tu)` : g.nome }),
-        el('span', { class: 'classifica__valore', text: g.fallito ? 'bancarotta' : euro(patrimonio(p, g.id)) })))),
+        el('span', { class: 'classifica__valore', text: g.fallito ? (ritirati.has(g.id) ? 'ha abbandonato' : 'bancarotta') : euro(patrimonio(p, g.id)) })))),
       el('p', { class: 'testo-secondario', text: 'Il patrimonio conta denaro, proprietà al prezzo di listino (metà se ipotecate) e case al costo di costruzione.' }),
     ];
   },
@@ -1712,6 +2003,8 @@ const DURATA_TOAST = 4000;
 export function toast(testo, { livello = 'info', durata = DURATA_TOAST, silenzioso = false } = {}) {
   const box = document.getElementById('toast');
   if (!box || !testo) return;
+  // Lo stesso messaggio già a schermo non si ripete.
+  if ([...box.querySelectorAll('.toast__testo')].some((n) => n.textContent === testo)) return;
   const voce = el('div', { class: `toast toast--${livello}`, 'aria-hidden': silenzioso ? 'true' : null },
     el('span', { class: 'toast__testo', text: testo }));
   const chiudi = () => {
@@ -1726,7 +2019,8 @@ export function toast(testo, { livello = 'info', durata = DURATA_TOAST, silenzio
       el('span', { 'aria-hidden': 'true', text: '×' })));
   }
   box.append(voce);
-  while (box.children.length > 4) box.firstElementChild.remove();
+  // Al massimo tre insieme: di più coprivano un terzo del tabellone.
+  while (box.children.length > 3) box.firstElementChild.remove();
   let timer = setTimeout(chiudi, durata);
   const pausa = () => clearTimeout(timer);
   const riprendi = () => { clearTimeout(timer); timer = setTimeout(chiudi, 1500); };

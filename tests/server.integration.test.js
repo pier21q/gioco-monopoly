@@ -112,6 +112,26 @@ async function stanzaConGiocatori(srv, nomi) {
 }
 
 const pausa = (ms) => new Promise((r) => setTimeout(r, ms));
+
+/**
+ * Dopo avviaPartita: chi tocca lancia i dadi (dal proprio socket) finché il
+ * lancio iniziale non ha deciso chi comincia. Ritorna l'ultimo stato.
+ */
+async function completaOrdine(giocatori) {
+  const osservatore = giocatori[0].c;
+  let st = await osservatore.attendi((m) => m.tipo === 'stato' && m.stato.fase !== 'lobby', 'avvio del lancio iniziale');
+  for (let i = 0; st.stato.fase === 'ordine'; i += 1) {
+    assert.ok(i < 100, 'il lancio iniziale non finisce mai');
+    const chi = giocatori.find((g) => g.id === st.stato.turno.giocatoreId);
+    const versione = st.versione;
+    chi.c.invia({ tipo: 'azione', azione: { tipo: 'lanciaDadi' } });
+    st = await osservatore.attendi((m) => m.tipo === 'stato' && m.versione > versione, 'stato dopo un lancio iniziale');
+  }
+  for (const g of giocatori) {
+    await g.c.attendi((m) => m.tipo === 'stato' && m.versione === st.versione, `${g.nome} deve vedere l'ordine deciso`);
+  }
+  return st;
+}
 const get = (porta, percorso) => new Promise((risolvi, rifiuta) => {
   http.get({ host: '127.0.0.1', port: porta, path: percorso, agent: false }, (res) => {
     let corpo = '';
@@ -236,7 +256,8 @@ test('riconnessione: con il token si torna nella partita, con token sbagliati si
   try {
     const { codice, giocatori } = await stanzaConGiocatori(srv, ['Anna', 'Bruno']);
     const [anna, bruno] = giocatori;
-    anna.c.invia({ tipo: 'avviaPartita' });
+    anna.c.invia({ tipo: 'avviaPartita', regole: {} });
+    await completaOrdine(giocatori);
     await bruno.c.attendi((m) => m.tipo === 'stato' && m.stato.fase === 'daLanciare', 'inizio partita');
 
     // Anna cade: Bruno la vede disconnessa.
@@ -375,20 +396,31 @@ test('trasmissione: avvio, lancio dei dadi e errori — tutti i client ricevono 
     assert.equal(nonHost.codice, 'NON_HOST', 'Regola: solo chi ha creato la stanza avvia la partita');
 
     const da = giocatori.map((g) => g.c.messaggi.length);
-    host.c.invia({ tipo: 'avviaPartita' });
+    host.c.invia({ tipo: 'avviaPartita', regole: {} });
     for (const g of giocatori) {
-      await g.c.attendi((m) => m.tipo === 'stato' && m.stato.fase === 'daLanciare', `${g.nome} deve ricevere lo stato di inizio partita`);
+      await g.c.attendi((m) => m.tipo === 'stato' && m.stato.fase === 'ordine', `${g.nome} deve ricevere lo stato del lancio iniziale`);
     }
-    const dopoAvvio = giocatori.map((g) => g.c.ultimoStato());
-    const versione = dopoAvvio[0].versione;
-    for (const s of dopoAvvio) {
-      assert.equal(JSON.stringify(s), JSON.stringify(dopoAvvio[0]), 'tutti i giocatori devono ricevere lo stesso stato');
+    const allAvvio = giocatori.map((g) => g.c.ultimoStato());
+    for (const s of allAvvio) {
+      assert.equal(JSON.stringify(s), JSON.stringify(allAvvio[0]), 'tutti i giocatori devono ricevere lo stesso stato');
       assert.equal('mazzi' in s.stato, false, 'i mazzi non devono arrivare ai client');
       assert.ok(s.stato.giocatori.every((g) => g.denaro === 1500));
     }
     const tipiAvvio = host.c.messaggi.slice(da[0]).map((m) => (m.tipo === 'evento' ? `evento:${m.evento.tipo}` : m.tipo));
     assert.ok(tipiAvvio.indexOf('evento:partitaIniziata') >= 0 && tipiAvvio.indexOf('evento:partitaIniziata') < tipiAvvio.indexOf('stato'),
       'Regola: prima gli eventi, poi lo stato che li riassume');
+
+    // Lancio iniziale: tutti lanciano, chi pareggia rilancia, poi comincia il primo.
+    await completaOrdine(giocatori);
+    for (const g of giocatori) {
+      await g.c.attendi((m) => m.tipo === 'stato' && m.stato.fase === 'daLanciare', `${g.nome} deve ricevere lo stato di inizio partita`);
+    }
+    const dopoAvvio = giocatori.map((g) => g.c.ultimoStato());
+    const versione = dopoAvvio[0].versione;
+    for (const s of dopoAvvio) assert.equal(JSON.stringify(s), JSON.stringify(dopoAvvio[0]), 'ordine deciso uguale per tutti');
+    const tipiOrdine = host.c.messaggi.slice(da[0]).filter((m) => m.tipo === 'evento').map((m) => m.evento.tipo);
+    assert.ok(tipiOrdine.filter((t) => t === 'lancioOrdine').length >= 3, 'ognuno dei tre ha lanciato almeno una volta');
+    assert.ok(tipiOrdine.includes('ordineDeciso'));
 
     // Chi non è di turno viene rifiutato e gli altri non ricevono nulla.
     const diTurnoId = dopoAvvio[0].stato.turno.giocatoreId;

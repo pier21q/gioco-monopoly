@@ -90,6 +90,89 @@ solo. Se chiudi la scheda per sbaglio, riapri il link dallo stesso browser:
 in alto compare il pulsante **Riprendi la partita**, che ti riporta al tuo
 posto (vale per l'ultima partita a cui sei entrato da quel browser).
 
+## Host e admin
+
+Chiunque può creare stanze: chi la crea ne è l'**host**. L'host sceglie le
+regole e avvia la partita (vedi «Regole della partita» qui sotto) e, dal
+pulsante **Gestisci la stanza** in alto, può:
+
+- **Togli dalla stanza** accanto a ogni giocatore. In sala d'attesa chi viene
+  tolto esce, ma con il link d'invito potrebbe rientrare: avvia la partita
+  quando ci sono tutti. In partita esce come se avesse abbandonato (proprietà
+  alla banca e all'asta) e non può più rientrare;
+- **Chiudi la stanza**: escono tutti e la partita finisce.
+
+Se l'host lascia la sala d'attesa, o in partita fa bancarotta, il ruolo passa
+al giocatore successivo.
+
+In più c'è un **admin**, tu, con un link personale. Con quel link:
+
+- in qualunque stanza in cui entri diventi tu l'host, anche se l'ha creata un
+  amico, e lo resti finché ci sei (anche se fai bancarotta); il pulsante si
+  chiama **Admin**;
+- l'admin di una stanza è uno solo: il primo che entra con il link. Se entri
+  con il link in un'altra scheda o da un altro dispositivo mentre c'è già un
+  admin nella stanza, entri come giocatore normale;
+- nella finestra **Admin** il pulsante **Cedi admin** passa il ruolo (admin e
+  host) a un altro giocatore; da quel momento il tuo link non te lo ridà
+  finché lui resta nella stanza;
+- nessuno ti può togliere dalla stanza;
+- non hai i limiti di stanze per connessione e per indirizzo.
+
+Dove trovare il link:
+
+- **Online (Render):** la chiave la genera Render. Nel pannello di Render apri
+  il servizio `gioco-monopoly`, poi **Environment**, e copia il valore di
+  `ADMIN_CHIAVE`. Il link è
+  `https://gioco-monopoly.onrender.com/#admin=` seguito dalla chiave.
+- **Sul tuo computer:** all'avvio il server stampa «Il tuo link da admin».
+  La chiave sta in `.partite/chiave-admin` (esclusa da git); per sceglierla tu
+  imposta `ADMIN_CHIAVE`.
+
+Basta aprire il link una volta: il browser se lo ricorda e toglie la chiave
+dalla barra degli indirizzi. Non condividerlo: chi ce l'ha è admin come te.
+Per cambiare la chiave, su Render modifica `ADMIN_CHIAVE` (il vecchio link
+smette di funzionare); in locale cancella `.partite/chiave-admin`.
+
+## Regole della partita
+
+Prima di avviare, chi guida la stanza (l'host, oppure l'admin quando c'è)
+compila la finestra **Regole della partita**: il pulsante **Scegli le regole e
+avvia** della sala d'attesa la apre, e senza passare di lì la partita non
+parte (il server rifiuta l'avvio con `REGOLE_DA_IMPOSTARE`). Con **Salva le
+regole** le si sceglie senza avviare: gli altri le vedono subito nella sala
+d'attesa, con le varianti evidenziate. Si possono cambiare fino all'avvio, e il
+browser ricorda le ultime scelte per la stanza successiva. In partita il
+pulsante **Regole** in alto le mostra a tutti.
+
+| Regola | Scelte (in grassetto la classica) |
+|---|---|
+| Denaro iniziale | 1.000 €, **1.500 €**, 2.000 €, 2.500 € |
+| Proprietà all'inizio | **nessuna**, 1, 2 o 3 a testa: estratte a caso, gratis, mai un colore completo (per velocizzare l'inizio) |
+| Come si costruisce | **quando vuoi**, oppure solo dove ti fermi |
+| Proprietà non comprate | **vanno all'asta**, oppure restano alla banca |
+| Parcheggio gratuito | **non succede niente**, oppure si vince il piatto: tasse, carte da pagare alla banca e cauzioni finiscono nel piatto, e chi si ferma sul Parcheggio lo incassa |
+| Fermarsi sul Via | **200 €**, oppure 400 € se ci si ferma proprio sopra |
+| Affitti dalla prigione | **si riscuotono**, oppure niente affitti finché si è dentro |
+
+Il catalogo delle regole (titoli, spiegazioni, valori ammessi) è in
+`server/gioco/regole.js`, che il browser riceve come `/dati/regole.js`.
+
+## Chi comincia
+
+La partita comincia con il lancio iniziale: tutti lanciano i due dadi, uno alla
+volta, partendo dal primo della sala d'attesa. Chi fa di più gioca per primo,
+poi gli altri in ordine di punteggio. Chi pareggia rilancia, ma solo contro chi
+ha fatto il suo stesso punteggio e solo per i posti in palio: se Bruno, Carla e
+Dario fanno tutti 5 dietro ad Anna, rilanciano solo loro tre per il 2°, 3° e 4°
+posto, e se Bruno e Carla pareggiano di nuovo rilanciano solo loro due. Si va
+avanti finché l'ordine è completo. Una finestra **Chi comincia?** mostra a
+tutti i lanci e i posti provvisori.
+
+Chi non lancia entro 60 secondi, o è disconnesso da più di 45, lancia in
+automatico (lo fa il gioco al posto suo). Chi abbandona in questa fase esce
+dall'ordine e le sue proprietà tornano alla banca, senza aste.
+
 ## Metterlo online (senza tenere acceso il computer)
 
 Il file `render.yaml` descrive il servizio per [Render](https://render.com),
@@ -131,7 +214,7 @@ Cosa sapere del piano gratuito:
 
 ## Variabili d'ambiente
 
-Nessuna è obbligatoria e nessuna è un segreto.
+Nessuna è obbligatoria. L'unica segreta è `ADMIN_CHIAVE`.
 
 | Variabile | Predefinito | A cosa serve |
 |---|---|---|
@@ -140,6 +223,7 @@ Nessuna è obbligatoria e nessuna è un segreto.
 | `PUBLIC_URL` | l'indirizzo con cui il browser ha raggiunto il server | Base dei link d'invito, da impostare quando usi un tunnel o un dominio. |
 | `ORIGINE_LIBERA` | non impostata | Con `1` disattiva il controllo dell'origine sulle connessioni WebSocket. Serve solo se un proxy riscrive l'host e i giocatori non riescono a collegarsi. |
 | `PROXY_FIDATO` | `1` su Render, altrimenti non impostata | Con `1` il server crede alle intestazioni `X-Forwarded-For`/`-Host`/`-Proto` (indirizzo del giocatore, host pubblico). Impostala quando il server sta dietro un tunnel o un proxy; senza proxy lasciala spenta, perché quelle intestazioni le potrebbe scrivere chiunque. `0` la spegne anche su Render. |
+| `ADMIN_CHIAVE` | generata da Render; in locale `.partite/chiave-admin` | Chiave del link da admin (16–128 caratteri). **Questa è un segreto**: non metterla su GitHub. |
 | `SALVATAGGIO` | `.partite/partite.json` | File in cui salvare le partite. `0` disattiva il salvataggio. Il file contiene i token di sessione dei giocatori: viene creato leggibile solo da te ed è escluso da git. |
 
 Esempio:
@@ -177,7 +261,9 @@ Per un solo file: `node --test tests/motore-affitti.test.js`.
 
 Il gioco segue il regolamento classico dell'edizione italiana, in euro.
 
-- **Partenza.** Da 2 a 6 giocatori, 1.500 € a testa, ordine di turno sorteggiato.
+- **Partenza.** Da 2 a 6 giocatori, 1.500 € a testa (o quanto scelto nelle
+  regole). L'ordine di turno lo decide il lancio iniziale dei dadi, con gli
+  spareggi (vedi «Chi comincia»).
 - **Turno.** Si lanciano due dadi. Con un doppio si rilancia; al terzo doppio
   di fila si va in prigione.
 - **Via.** 200 € ogni volta che si passa o si arriva sul Via.
@@ -192,7 +278,7 @@ Il gioco segue il regolamento classico dell'edizione italiana, in euro.
 - **Case e alberghi.** Si costruisce solo con il gruppo completo e senza
   ipoteche nel gruppo, in modo uniforme. L'albergo sostituisce 4 case. La banca
   ha 32 case e 12 alberghi. Le costruzioni si rivendono a metà prezzo.
-  Chi crea la stanza può scegliere, prima di avviare, la variante **Solo dove
+  Nelle regole della partita si può scegliere la variante **Solo dove
   ti fermi**: si costruisce su un colore solo nel turno in cui la propria
   pedina si ferma su una sua casella (e sempre solo con il gruppo completo).
   Vale ogni sosta del turno: chi fa un doppio, si ferma su un suo colore e poi
@@ -206,7 +292,7 @@ Il gioco segue il regolamento classico dell'edizione italiana, in euro.
 - **Tasse.** Tassa patrimoniale 200 €, tassa di lusso 100 €.
 - **Prigione.** Si esce con un doppio (tre tentativi), pagando 50 € o usando
   la carta. Al terzo tentativo fallito si pagano i 50 € e si esce. Anche dalla
-  prigione si incassano gli affitti.
+  prigione si incassano gli affitti, salvo la variante «Niente affitti».
 - **Debiti e bancarotta.** Il denaro non va mai sotto zero: chi non può pagare
   deve vendere case, ipotecare o scambiare. Se non basta dichiara bancarotta e
   i suoi beni passano al creditore; se il creditore è la banca, le proprietà
@@ -215,7 +301,9 @@ Il gioco segue il regolamento classico dell'edizione italiana, in euro.
 
 Cose che funzionano in modo diverso dal gioco da tavolo:
 
-- Sul Parcheggio gratuito non succede nulla (nessun "piatto" con le tasse).
+- Il "piatto" del Parcheggio gratuito, il Via a 400 €, gli affitti negati dalla
+  prigione e le proprietà che restano alla banca sono varianti facoltative,
+  spente se non le si sceglie (vedi «Regole della partita»).
 - Si costruisce, si vende, si ipoteca e si riscatta solo nel proprio turno,
   oltre che per saldare un proprio debito o durante un'asta a cui si partecipa.
 - Se la banca non ha 4 case da restituire, un albergo si vende per intero.
@@ -273,12 +361,17 @@ Il tabellone è un oggetto 3D fatto con le trasformazioni CSS, senza librerie:
 piano inclinato, pedine, case e alberghi in piedi, dadi a cubo. I pulsanti in
 alto a sinistra girano il tabellone di un lato, avvicinano il lato davanti (su
 telefono è già così, e si scorre trascinando di lato), passano alla vista
-dall'alto, accendono o spengono l'inseguimento della pedina di turno e i suoni.
-Le scelte restano salvate nel browser.
+dall'alto, accendono o spengono l'inseguimento della pedina di turno, le
+**animazioni veloci** (pedine e camera più rapide) e i suoni. Le scelte restano
+salvate nel browser.
 
 Le conseguenze di un lancio (finestra d'acquisto, messaggi, denaro, carta
 pescata) compaiono solo quando i dadi si sono fermati e la pedina è arrivata
-sulla casella. I suoni (dadi, passi, monete, carte) sono sintetizzati nel
+sulla casella. La carta pescata resta al centro 8 secondi (un clic la mette
+via prima); il denaro che sale dalla pedina ha il pallino del suo colore. I
+messaggi a comparsa sono al massimo tre, colorati per tipo (rosso gli avvisi
+urgenti come i 30 secondi d'inattività), e su schermi larghi stanno sopra il
+tabellone, non sopra il pannello del turno. I suoni (dadi, passi, monete, carte) sono sintetizzati nel
 browser da `client/js/suoni.js`: non ci sono file audio.
 
 ## Struttura delle cartelle
@@ -296,6 +389,8 @@ server/
   salvataggio.js      salvataggio delle partite su file e ripristino all'avvio
   gioco/
     motore.js         regole del gioco: creaPartita e applicaAzione (funzioni pure)
+    ordine.js         lancio iniziale per decidere chi comincia, con gli spareggi
+    regole.js         catalogo delle regole scelte prima di avviare (anche /dati/regole.js)
     nucleo.js         pagamenti, debiti, aste, turni
     scambi.js         proposte di scambio
     bancarotta.js     liquidazione di chi fallisce

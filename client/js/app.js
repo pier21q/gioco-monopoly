@@ -33,7 +33,38 @@ export const AZIONI_GIOCO = Object.freeze([
 /** Messaggi di protocollo inviati così come sono (§3.2). */
 export const MESSAGGI_PROTOCOLLO = Object.freeze([
   'creaStanza', 'entraStanza', 'avviaPartita', 'riconnetti', 'esciStanza',
+  'chiudiStanza', 'cacciaGiocatore', 'cediAdmin', 'impostaRegole',
 ]);
+
+/** Dove il browser ricorda la chiave del link da admin. */
+const CHIAVE_ADMIN = 'monopoly.admin';
+
+/**
+ * Legge la chiave admin da un frammento come `#admin=CHIAVE` (il frammento non
+ * viene mai inviato al server nelle richieste HTTP). Ritorna null se manca.
+ */
+export function chiaveAdminDaFrammento(frammento) {
+  const m = /^#?admin=([^&]+)/.exec(String(frammento || ''));
+  if (!m) return null;
+  let chiave;
+  try { chiave = decodeURIComponent(m[1]); } catch { return null; }
+  return /^[A-Za-z0-9+/=_-]{16,128}$/.test(chiave) ? chiave : null;
+}
+
+function leggiChiaveAdmin() {
+  const dalLink = chiaveAdminDaFrammento(globalThis.location?.hash);
+  if (dalLink) {
+    try { globalThis.localStorage?.setItem(CHIAVE_ADMIN, dalLink); } catch { /* si usa solo per questa pagina */ }
+    // Via la chiave dalla barra degli indirizzi: non deve finire in uno screenshot o in un link copiato.
+    history.replaceState(null, '', location.pathname + location.search);
+    return dalLink;
+  }
+  try { return chiaveAdminDaFrammento(`admin=${globalThis.localStorage?.getItem(CHIAVE_ADMIN) || ''}`); } catch { return null; }
+}
+
+function dimenticaChiaveAdmin() {
+  try { globalThis.localStorage?.removeItem(CHIAVE_ADMIN); } catch { /* ignora */ }
+}
 
 /** Quanti eventi tenere nello store (per toast e cronaca). */
 export const MAX_EVENTI = 100;
@@ -361,7 +392,21 @@ export function toastPerEvento(evento, partita, mioId) {
 
   switch (evento.tipo) {
     case 'partitaIniziata':
-      return { testo: 'La partita è iniziata! Buon divertimento.', livello: 'successo' };
+      return d.lancioIniziale
+        ? { testo: 'La partita è iniziata! Prima tutti lanciano i dadi: chi fa di più comincia.', livello: 'successo', durata: 6000 }
+        : { testo: 'La partita è iniziata! Buon divertimento.', livello: 'successo' };
+    case 'spareggio':
+      return Array.isArray(d.giocatori) && d.giocatori.includes(mioId)
+        ? { testo: `Pareggio a ${d.totale}: rilanci per ${d.da === 1 ? 'decidere chi comincia' : `il ${d.da}° posto`}`, livello: 'avviso', durata: 6000 }
+        : { testo, livello: 'info' };
+    case 'regoleImpostate':
+      return suDiMe ? { testo: 'Regole salvate: gli altri le vedono nella sala d\'attesa', livello: 'successo' } : { testo, livello: 'info' };
+    case 'proprietaIniziali':
+      return suDiMe ? { testo: `Parti con: ${testo.replace(/^.*? riceve /, '')}`, livello: 'successo', durata: 7000 } : null;
+    case 'piatto':
+      return { testo, livello: suDiMe ? 'successo' : 'info', durata: 6000 };
+    case 'ordineDeciso':
+      return { testo: suDiMe ? 'Hai fatto il punteggio più alto: cominci tu!' : testo, livello: 'successo', durata: 7000 };
     case 'turno':
       return d.giocatoreId === mioId || (d.giocatoreId === undefined && suDiMe)
         ? { testo: 'Tocca a te: lancia i dadi!', livello: 'successo' }
@@ -381,12 +426,16 @@ export function toastPerEvento(evento, partita, mioId) {
       return { testo, livello };
     }
     case 'acquisto':
+      // All'asta lo dice già "Asta chiusa: … va a …".
+      return d.tramite === 'asta' ? null : { testo, livello: 'info' };
     case 'astaInizio':
     case 'astaFine':
     case 'scambioAccettato':
       return { testo, livello: 'info' };
     case 'carta':
-      return { testo: testo || d.carta?.testo || 'Carta pescata', livello: 'info', durata: 7000 };
+      // La carta compare grande sul tabellone e nella cronaca (letta dagli
+      // screen reader): il messaggio a comparsa la ripeteva soltanto.
+      return null;
     case 'tassa':
       return suDiMe ? { testo, livello: 'avviso' } : null;
     case 'passaggioVia':
@@ -398,13 +447,15 @@ export function toastPerEvento(evento, partita, mioId) {
       if (!Array.isArray(d.giocatori) || !d.giocatori.includes(mioId)) return null;
       return {
         testo: d.debito
-          ? `Hai ancora ${d.secondi || 30} secondi per saldare il debito, poi vieni dichiarato in bancarotta.`
+          ? `Hai ancora ${d.secondi || 30} secondi per saldare il debito, poi scatta la bancarotta.`
           : `Hai ancora ${d.secondi || 30} secondi per giocare, poi la partita va avanti senza aspettarti.`,
         livello: 'errore',
         durata: 8000,
       };
     case 'turnoSaltato':
       return suDiMe && d.motivo === 'inattivo' ? { testo, livello: 'avviso', durata: 6000 } : null;
+    case 'admin':
+      return suDiMe ? { testo: 'Sei l\'admin di questa stanza', livello: 'successo' } : null;
     case 'scambioProposto':
       return d.scambio?.aId === mioId
         ? { testo: `${nome(d.scambio.daId)} ti propone uno scambio`, livello: 'avviso', durata: 6000 }
@@ -471,6 +522,16 @@ async function avvia() {
 
   // ----- Parametri iniziali: ?stanza= e sessione salvata ------------------
   const parametri = new URLSearchParams(location.search);
+  let chiaveAdmin = leggiChiaveAdmin();
+
+  // La barra va su due righe quando ha più pulsanti (Admin, Regole…): i
+  // messaggi a comparsa partono sotto la sua altezza vera, non sopra i pulsanti.
+  const barraEl = document.querySelector('.barra');
+  if (barraEl && typeof ResizeObserver === 'function') {
+    new ResizeObserver(() => {
+      document.documentElement.style.setProperty('--altezza-barra-viva', `${barraEl.offsetHeight}px`);
+    }).observe(barraEl);
+  }
   const codiceUrl = lobby.normalizzaCodice(parametri.get('stanza'));
   rimuoviSessioneCondivisa();
   const salvata = leggiSessione();
@@ -739,6 +800,10 @@ async function avvia() {
         return;
       }
 
+      case 'admin':
+        if (msg.ok) store.setState({ admin: true });
+        return;
+
       case 'errore':
         gestisciErrore(msg);
         return;
@@ -750,6 +815,14 @@ async function avvia() {
 
   function gestisciErrore(msg) {
     const s = store.getState();
+    if (msg.codice === 'ADMIN_NON_VALIDO') {
+      chiaveAdmin = null;
+      dimenticaChiaveAdmin();
+      store.setState({ admin: false });
+      mostraToast('Il link da admin non è valido: questo browser non è più admin.', { livello: 'errore', durata: 8000 });
+      return;
+    }
+    if (msg.codice === 'CACCIATO') return; // ci pensa onChiusura (codice 4003)
     const errore = {
       codice: msg.codice,
       messaggio: msg.messaggio || 'Errore',
@@ -866,6 +939,9 @@ async function avvia() {
 
     if (vista === 'lobby') {
       lobby.render(el.lobby, stato, dispatch);
+      // In sala d'attesa i pannelli non girano: le finestre (admin, conferme)
+      // ricevono qui lo stato nuovo, non quello di una partita precedente.
+      if (typeof dialoghi?.aggiorna === 'function') chiama(() => dialoghi.aggiorna(stato, dispatch), 'dialoghi.aggiorna');
     } else if (!giocoCaricato) {
       mostraErroreCaricamento();
     } else {
@@ -957,7 +1033,12 @@ async function avvia() {
     // Pulsanti della barra: prima la connessione fermata dal server, poi la
     // "Nuova partita" a fine gioco.
     const offriRipresa = Boolean(ripresaPossibile) && !stato.io && !stato.lobby.ripresa;
-    const voluto = [fermata || '', vista === 'fine' ? 'fine' : '', offriRipresa ? 'ripresa' : ''].join('|');
+    // Host e admin comandano la stanza: togliere giocatori e chiuderla.
+    const mioId = stato.io?.giocatoreId;
+    const comando = Boolean(mioId && partita && (partita.hostId === mioId || partita.adminId === mioId));
+    const sonoAdmin = Boolean(mioId && partita && partita.adminId === mioId);
+    const regole = vista === 'partita' || vista === 'fine';
+    const voluto = [fermata || '', vista === 'fine' ? 'fine' : '', offriRipresa ? 'ripresa' : '', comando ? (sonoAdmin ? 'admin' : 'host') : '', regole ? 'regole' : ''].join('|');
     if (el.barraAzioni.dataset.contenuto !== voluto) {
       el.barraAzioni.dataset.contenuto = voluto;
       const pulsanteBarra = (testo, onclick) => {
@@ -974,6 +1055,19 @@ async function avvia() {
           fermata = null;
           conn?.riprovaOra();
           pianificaRender();
+        }));
+      }
+      if (comando) {
+        nodi.push(pulsanteBarra(sonoAdmin ? 'Admin' : 'Gestisci la stanza', () => {
+          const ora = store.getState();
+          if (typeof dialoghi?.apri === 'function') dialoghi.apri('admin', { stato: ora, mioId: ora.io?.giocatoreId }, dispatch);
+        }));
+      }
+      // Le regole scelte prima di cominciare restano consultabili da tutti.
+      if (regole) {
+        nodi.push(pulsanteBarra('Regole', () => {
+          const ora = store.getState();
+          if (typeof dialoghi?.apri === 'function') dialoghi.apri('regole', { stato: ora, mioId: ora.io?.giocatoreId }, dispatch);
         }));
       }
       if (vista === 'fine') nodi.push(pulsanteBarra('Nuova partita', () => dispatch({ tipo: 'ui:nuovaPartita' })));
@@ -1024,6 +1118,9 @@ async function avvia() {
   // ----- Connessione -----------------------------------------------------------
   conn = rete.connetti(rete.urlPredefinito(), {
     onApertura() {
+      // Prima ci si fa riconoscere come admin (se questo browser lo è), così
+      // rientrando nella stanza si torna subito admin e host.
+      if (chiaveAdmin) invia({ tipo: 'autenticaAdmin', chiave: chiaveAdmin, rif: 'admin' });
       // Dopo un refresh o una caduta di rete riprendiamo il nostro giocatore.
       const io = store.getState().io || daRiprendere;
       if (io) invia({ tipo: 'riconnetti', codice: io.codice, token: io.token, rif: 'riconnetti' });
@@ -1049,6 +1146,9 @@ async function avvia() {
         pianificaRender();
       } else if (codice === rete.CHIUSURE.STANZA_CHIUSA) {
         stanzaPersa('La stanza è stata chiusa.');
+        conn?.riprovaOra();
+      } else if (codice === rete.CHIUSURE.CACCIATO) {
+        stanzaPersa('Sei stato tolto dalla stanza.');
         conn?.riprovaOra();
       } else if (codice === 1008 || codice === 1009) {
         fermata = 'definitiva';
