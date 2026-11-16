@@ -28,7 +28,7 @@ Indice
 | Moduli server | **CommonJS** (`'use strict'`, `require`, `module.exports`). In `package.json` **non** c'è `"type": "module"`. |
 | Dipendenze | **una sola**: `ws` (WebSocket). File statici serviti con il modulo nativo `http`. |
 | Client | HTML + CSS + JavaScript puro, **ES module nel browser** (`<script type="module">`), nessun build step |
-| Test | `node:test` + `node:assert/strict`, file `tests/*.test.js`, comando `npm test` (= `node --test tests/`) |
+| Test | `node:test` + `node:assert/strict`, file `tests/*.test.js` e `server/gioco/test/*.test.js`, comando `npm test` (= `node --test`, che li trova da solo) |
 | Avvio | `npm start` (= `node server/index.js`) |
 
 Variabili d'ambiente lette dal server (nessuna è un segreto; non serve `.env`):
@@ -37,7 +37,8 @@ Variabili d'ambiente lette dal server (nessuna è un segreto; non serve `.env`):
 |---|---|---|
 | `PORT` | `3000` | porta HTTP/WebSocket |
 | `HOST` | `0.0.0.0` | interfaccia di ascolto |
-| `PUBLIC_URL` | `http://localhost:PORT` | base del link condiviso (es. dietro un tunnel/proxy) |
+| `PUBLIC_URL` | l'host con cui il browser ha raggiunto il server | base del link condiviso (es. dietro un tunnel/proxy) |
+| `ORIGINE_LIBERA` | non impostata | con `1` disattiva il controllo dell'`Origin` sul WebSocket (§3.5), utile solo dietro proxy che riscrivono l'host |
 
 Se in futuro servissero segreti vanno in `.env` (già in `.gitignore`) e nel
 repository entra solo `.env.example` con valori finti.
@@ -210,8 +211,11 @@ sostituisce il proprio.
 | `mossa` | lancio fatto e casella risolta; il giocatore può gestire proprietà e poi chiudere il turno | `finisciTurno` (turno) · gestione |
 | `daDecidereAcquisto` | il giocatore di turno è su una casella libera | `compra`, `rifiutaAcquisto` (turno) · gestione |
 | `asta` | asta in corso per `asta.casella` | `offertaAsta`, `passaAsta` (ogni partecipante) · `vendiCasa`, `ipoteca` (tutti) |
-| `debito` | `debito.giocatoreId` deve pagare `debito.importo` e non ha liquidità | `vendiCasa`, `ipoteca`, `proponiScambio`, `dichiaraBancarotta` (debitore) · `accettaScambio`/`rifiutaScambio` (destinatario) |
+| `debito` | `debito.giocatoreId` deve pagare `debito.importo` e non ha liquidità | `vendiCasa`, `ipoteca`, `dichiaraBancarotta` (debitore) · `proponiScambio` (chiunque: anche il creditore può offrire uno scambio al debitore) · `accettaScambio`/`rifiutaScambio` (destinatario) |
 | `finePartita` | resta un solo giocatore non fallito | nessuna |
+
+In ogni fase di gioco (non in `lobby` né in `finePartita`) ogni giocatore non
+fallito può inoltre inviare `abbandona` (§2.4).
 
 Con un **doppio** (e senza finire in prigione) la fase torna a `daLanciare`
 per lo stesso giocatore, con `turno.doppiConsecutivi` incrementato; al terzo
@@ -363,7 +367,11 @@ Il client può ignorarli; `statoPubblico` li lascia (non sono segreti).
 
 `log` contiene gli ultimi **200** eventi (§6) in ordine cronologico, stesso
 shape dei messaggi `evento`. Serve a chi si riconnette per ricostruire la
-cronaca.
+cronaca. Per non spedire a ogni azione tutta la cronaca, nei messaggi `stato`
+di aggiornamento il server include solo gli ultimi **30** eventi
+(`LIMITI.LOG_BREVE`); il log completo arriva nello `stato` inviato a chi si
+riconnette (§3.2). Il client ricuce i due (`unisciLog` in `app.js`), quindi
+`StatoClient.partita.log` è sempre la cronaca intera.
 
 ---
 
@@ -451,7 +459,7 @@ Legenda "chi": **T** = solo giocatore di turno · **D** = solo debitore ·
 | `offertaAsta` | `importo` intero | P | `asta` | Offerta `>= offertaMassima + incrementoMinimo` e `<= denaro`. | `OFFERTA_BASSA`, `FONDI_INSUFFICIENTI`, `GIA_PASSATO` |
 | `passaAsta` | — | P | `asta` | Esce dall'asta. Il miglior offerente non può passare. Chiude l'asta quando resta uno solo. | `MIGLIOR_OFFERENTE`, `GIA_PASSATO` |
 | `costruisci` | `casella` | T | gestione | Costruisce una casa (o l'albergo se a 4 case) su `casella`. Richiede gruppo completo, nessuna ipoteca nel gruppo, costruzione uniforme (differenza max 1 nel gruppo), scorte in banca, denaro. | `GRUPPO_INCOMPLETO`, `COSTRUZIONE_NON_UNIFORME`, `CASE_ESAURITE`, `ALBERGHI_ESAURITI`, `IPOTECATA`, `FONDI_INSUFFICIENTI`, `NON_EDIFICABILE` |
-| `vendiCasa` | `casella` | T, D, P | gestione + `debito` + `asta` | Vende una casa (o l'albergo → 4 case, se ci sono 4 case disponibili in banca; altrimenti `CASE_ESAURITE`) alla banca a **metà** del `costoCasa`, rispettando l'uniformità. | `NESSUNA_COSTRUZIONE`, `COSTRUZIONE_NON_UNIFORME` |
+| `vendiCasa` | `casella` | T, D, P | gestione + `debito` + `asta` | Vende una casa alla banca a **metà** del `costoCasa`, rispettando l'uniformità. Un albergo torna a 4 case se la banca ne ha 4; altrimenti viene venduto **per intero** (`caseCostruite` → 0, ricavo `5 × costoCasa / 2`, nessuna casa restituita). | `NESSUNA_COSTRUZIONE`, `COSTRUZIONE_NON_UNIFORME` |
 | `ipoteca` | `casella` | T, D, P | gestione + `debito` + `asta` | Incassa `CASELLE[i].ipoteca`; richiede `caseCostruite === 0` su **tutto il gruppo**. | `HA_COSTRUZIONI`, `GIA_IPOTECATA` |
 | `disipoteca` | `casella` | T | gestione | Paga `ipoteca + ceil(10%)`, toglie l'ipoteca. | `NON_IPOTECATA`, `FONDI_INSUFFICIENTI` |
 | `proponiScambio` | `aId`, `offre: {denaro, proprieta[], cartePrigione}`, `chiede: {…}` | X | tutte tranne `lobby`, `asta`, `finePartita` | Crea `stato.scambio`. Campi mancanti valgono 0 / `[]`. Il proponente deve possedere ciò che offre; il destinatario ciò che gli viene chiesto. | `SCAMBIO_IN_CORSO`, `PROPRIETA_NON_TUA`, `HA_COSTRUZIONI`, `SCAMBIO_VUOTO`, `GIOCATORE_NON_VALIDO` |
@@ -461,6 +469,7 @@ Legenda "chi": **T** = solo giocatore di turno · **D** = solo debitore ·
 | `usaCartaPrigione` | — | T | `daLanciare` (in prigione) | `cartePrigione-1`, la carta torna in coda al suo mazzo, esce; resta in `daLanciare`. | `NON_IN_PRIGIONE`, `NESSUNA_CARTA_PRIGIONE` |
 | `finisciTurno` | — | T | `mossa` | Passa al prossimo giocatore non fallito, `turno.numero+1`, `doppiConsecutivi: 0`, fase `daLanciare`. Uno `scambio` pendente non blocca il cambio di turno (resta pendente). | `FASE_ERRATA` |
 | `dichiaraBancarotta` | — | D | `debito` | Vede `server/gioco/bancarotta.js`: case vendute alla banca a metà prezzo, denaro e proprietà al creditore (o alla banca, che le libera dall'ipoteca e le rimette in vendita), carte prigione al creditore. `fallito: true`. Se resta un solo giocatore → `finePartita`. Se il fallito era di turno → passa il turno. | `FASE_ERRATA`, `NON_DEBITORE` |
+| `abbandona` | — | X | tutte tranne `lobby`, `finePartita` | Uscita volontaria (e bancarotta d'ufficio di un debitore assente, §3.4). Stessa liquidazione di `dichiaraBancarotta`: verso il creditore se chi abbandona ha il debito aperto, altrimenti verso la banca (proprietà all'asta). Se partecipa a un'asta ne esce; se era il miglior offerente l'offerta viene azzerata. Evento `abbandono` seguito da `bancarotta`. | `GIOCATORE_FALLITO`, `FASE_ERRATA` |
 
 Esempi di oggetto `azione`:
 
@@ -474,7 +483,8 @@ Esempi di oggetto `azione`:
 { "tipo": "accettaScambio", "scambioId": "s3" }
 ```
 
-**Stato di avanzamento (fase 2).** Tutte le 16 azioni sono implementate;
+**Stato di avanzamento.** Tutte le 17 azioni (le 16 originali più
+`abbandona`, aggiunta in fase di integrazione) sono implementate;
 `NON_IMPLEMENTATO` non viene più restituito. Precisazioni:
 
 * L'ordine dei controlli è: tipo → giocatore esistente → non fallito → fase
@@ -498,19 +508,19 @@ Esempi di oggetto `azione`:
 
 | Export | Descrizione |
 |---|---|
-| `AZIONI` | array frozen dei 16 `tipo` ammessi |
+| `AZIONI` | array frozen dei 17 `tipo` ammessi (nell'ordine della tabella §2.4) |
 | `FASI` | array frozen delle 7 fasi |
 | `azioniDisponibili(stato, giocatoreId) → string[]` | i `tipo` che `giocatoreId` può eseguire adesso (per abilitare i pulsanti del client). Non valuta i parametri. |
 | `statoPubblico(stato) → StatoPartita` | copia senza `mazzi` (quella che va ai client) |
 | `prossimoGiocatore(stato) → giocatoreId` | prossimo non fallito **e connesso** dopo il giocatore di turno (se nessun altro è connesso: il prossimo non fallito) |
-| `gestisciDisconnessione(stato, giocatoreId, {random, ora}) → { stato, eventi }` | da chiamare dal server quando un disconnesso blocca la partita (es. dopo una tolleranza): annulla il suo scambio pendente, lo fa passare all'asta (se non è il miglior offerente), se è di turno in `daDecidereAcquisto` apre l'asta, in `daLanciare`/`mossa` passa il turno. Un debito resta in attesa. Se non c'è nulla da fare ritorna lo stesso `stato` ed `eventi: []` (versione invariata). |
+| `gestisciDisconnessione(stato, giocatoreId, {random, ora}) → { stato, eventi }` | chiamata da `stanze.js` quando un disconnesso blocca la partita, dopo la tolleranza di §3.4: annulla il suo scambio pendente, lo fa passare all'asta (se non è il miglior offerente), se è di turno in `daDecidereAcquisto` apre l'asta, in `daLanciare`/`mossa` passa il turno. Un debito resta in attesa. Se non c'è nulla da fare ritorna lo stesso `stato` ed `eventi: []` (versione invariata). |
 | `calcolaAffitto(stato, casella, opz?) → { importo, moltiplicatore? }` | affitto corrente di una casella posseduta (società: usa `stato.dadi`) |
 | `patrimonioLiquidabile(stato, giocatoreId)` | come in `bancarotta.js` |
 
 Moduli interni aggiunti in `server/gioco/`: `nucleo.js` (pagamenti, debiti,
 aste, turno: primitive mutanti usate su copie), `errori.js` (codici e
 messaggi del motore, così il motore non dipende da `protocollo.js`). Test:
-`node --test server/gioco/test/`.
+`server/gioco/test/motore.test.js`, eseguito da `npm test` insieme a `tests/`.
 
 ### 2.6 `server/gioco/scambi.js`
 
@@ -539,8 +549,13 @@ Usato dal motore; esportato per i test.
   '://' + location.host + '/ws'`.
 * Ogni frame è **testo JSON** con un oggetto che ha sempre il campo `tipo`
   (stringa). Frame non JSON o senza `tipo` → `errore MESSAGGIO_NON_VALIDO`.
-* Dimensione massima di un messaggio: 16 KiB. Il server chiude la connessione
-  dopo 3 messaggi non validi consecutivi.
+* Dimensione massima di un messaggio: 16 KiB (`LIMITI.MESSAGGIO_MAX_BYTE`);
+  oltre, il server risponde `errore MESSAGGIO_NON_VALIDO`. Un frame oltre
+  64 KiB (`LIMITI.FRAME_MAX_BYTE`) viene rifiutato dalla libreria, che chiude
+  la connessione con codice 1009. Il server chiude la connessione (1008) dopo
+  3 messaggi non validi consecutivi o dopo un flusso eccessivo di messaggi
+  (più di 30 al secondo vengono scartati con `TROPPI_MESSAGGI`).
+* All'handshake il server verifica l'intestazione `Origin` (§3.5).
 * Il client può includere un campo opzionale `rif` (stringa, max 32) in
   qualunque messaggio: il server lo riporta uguale nell'eventuale `errore`.
 * Il server invia nell'ordine: prima gli `evento` (uno per evento), poi lo
@@ -550,12 +565,12 @@ Usato dal motore; esportato per i test.
 
 | `tipo` | Campi | Risposta | Note |
 |---|---|---|---|
-| `creaStanza` | — | `stanzaCreata` al mittente | Non entra nella stanza: va seguito da `entraStanza`. |
+| `creaStanza` | — | `stanzaCreata` al mittente | Non entra nella stanza: va seguito da `entraStanza`. `TROPPE_STANZE` oltre 200 stanze aperte o 5 create dalla stessa connessione. |
 | `entraStanza` | `codice`, `nome`, `colore?` | `entrato` al mittente, poi `evento giocatoreEntrato` + `stato` a tutti | Solo in fase `lobby`, max 6 giocatori. |
 | `avviaPartita` | — | `evento partitaIniziata` + `stato` a tutti | Solo `hostId`, almeno 2 giocatori connessi. |
 | `azione` | `azione: { tipo, … }` (§2.4) | a tutti `evento`* + `stato`; al mittente `errore` se rifiutata | Il server ricava `giocatoreId` dal socket, mai dal messaggio. |
-| `riconnetti` | `codice`, `token` | `entrato` + `stato` al mittente; `evento connessione` + `stato` a tutti | Riassocia il socket al giocatore. Funziona anche in lobby. |
-| `esciStanza` | — | `evento giocatoreUscito` + `stato` a tutti | Solo in `lobby`. In partita si usa la disconnessione (il giocatore resta, `connesso: false`). |
+| `riconnetti` | `codice`, `token` | `entrato` + `stato` (con il log **completo**) al mittente; poi `evento connessione` + `stato` a tutti | Riassocia il socket al giocatore. Funziona anche in lobby. L'eventuale socket precedente dello stesso giocatore viene chiuso con codice `4001`. |
+| `esciStanza` | — | `evento giocatoreUscito` + `stato` a tutti | Solo in `lobby`. In partita si esce con l'azione `abbandona` (§2.4); la semplice disconnessione lascia il giocatore in partita (`connesso: false`). |
 | `ping` | — | `pong` | opzionale, keep-alive dal browser ogni 25 s |
 
 Esempi:
@@ -603,14 +618,42 @@ Esempi:
 1. Il client apre `/ws`. Se in `sessionStorage` c'è una sessione
    (`{codice, giocatoreId, token}`) invia subito `riconnetti`; altrimenti
    mostra la lobby (con il codice precompilato se l'URL ha `?stanza=`).
+   La sessione sta **solo** in `sessionStorage`: sopravvive al refresh ma non
+   è condivisa fra schede, quindi ogni scheda è un giocatore distinto. Una
+   copia dell'ultima sessione sta in `localStorage` (chiave
+   `monopoly.ripresa`) ma non viene mai usata in automatico: se la scheda è
+   stata chiusa, riaprendo il link compare il pulsante «Riprendi la partita»,
+   che invia `riconnetti` solo su richiesta dell'utente.
 2. Alla chiusura del socket il server marca il giocatore `connesso: false` e
    manda `evento connessione` + `stato` agli altri. In **lobby** il giocatore
-   viene rimosso dopo 60 s senza riconnessione; in **partita** resta per sempre
-   (il suo turno può essere giocato quando torna).
+   viene rimosso dopo 60 s senza riconnessione (timer per giocatore). In
+   **partita** resta e può rientrare col token; se però tiene ferma la
+   partita (`stanze.TEMPI`):
+   * dopo **45 s** (`TOLLERANZA_DISCONNESSIONE_MS`) il server chiama
+     `motore.gestisciDisconnessione`: il suo turno passa, all'asta passa, il
+     suo scambio pendente è annullato;
+   * se è il **debitore** in fase `debito`, dopo **3 minuti**
+     (`BANCAROTTA_DISCONNESSO_MS`) il server esegue per lui `abbandona`
+     (bancarotta d'ufficio).
+
+   I timer partono quando il giocatore diventa "bloccante" (anche dopo la
+   disconnessione: `stanze.sorvegliaDisconnessi` è richiamata a ogni cambio di
+   stato), si annullano alla riconnessione e non scattano se nessun giocatore
+   in gara è collegato (la partita aspetta).
 3. Una stanza viene eliminata quando è vuota da 10 minuti o inattiva da 2 ore,
-   o quando la partita è in `finePartita` da 30 minuti.
+   o quando la partita è in `finePartita` da 30 minuti. Ai socket ancora
+   collegati arriva `errore STANZA_INESISTENTE` (senza `rif`) e poi la
+   chiusura con codice `4002`; il client torna alla schermata iniziale.
 4. Un socket appartiene al massimo a una stanza. `creaStanza`/`entraStanza` da
    un socket già in stanza → `errore GIA_IN_STANZA`.
+5. Codici di chiusura WebSocket dedicati (`protocollo.CHIUSURE`):
+
+   | Codice | Significato | Comportamento del client |
+   |---|---|---|
+   | `4001` `SOSTITUITO` | lo stesso giocatore (stesso token) si è collegato da un altro socket | **non** si riconnette da solo; mostra «Usa questa scheda» che richiama `conn.riprovaOra()` e reinvia `riconnetti` |
+   | `4002` `STANZA_CHIUSA` | la stanza è stata eliminata | dimentica la sessione, torna al form, riapre una connessione pulita |
+   | `1008`, `1009` | troppi messaggi non validi / frame troppo grande | non si riconnette da solo; pulsante «Riconnetti» |
+   | `4000` | usato **dal client** per chiudere il proprio socket quando il browser va offline | riconnessione automatica normale |
 
 ### 3.5 Rotte HTTP (`server/index.js`)
 
@@ -620,8 +663,16 @@ Esempi:
 | `GET /<file>` | file statico sotto `client/` (MIME per `.html .css .js .mjs .json .svg .png .jpg .webp .woff2 .ico`); percorsi con `..` → 403; non trovato → 404. Cache: `no-cache` in sviluppo. |
 | `GET /dati/tabellone.js` | ES module **generato** dal CommonJS `server/gioco/tabellone.js`: una riga `export const NOME = <JSON>;` per ogni export JSON-serializzabile (funzioni escluse). Il client fa `import { CASELLE, GRUPPI } from '/dati/tabellone.js'`. |
 | `GET /dati/carte.js` | idem per `server/gioco/carte.js`: `import { PROBABILITA, IMPREVISTI } from '/dati/carte.js'`. |
-| `GET /salute` | `{ "ok": true, "stanze": 3, "versione": "0.1.0" }` |
-| `GET /ws` con Upgrade | WebSocket |
+| `GET /salute` | `{ "ok": true, "stanze": 3, "versione": "0.1.0", "websocket": true }` |
+| `GET /ws` con Upgrade | WebSocket. L'handshake è accettato solo se manca `Origin` (client non browser) o se il suo host coincide con `Host`, `X-Forwarded-Host` o `PUBLIC_URL` (`index.origineAmmessa`); `ORIGINE_LIBERA=1` disattiva il controllo. |
+
+Ogni risposta HTTP porta `X-Content-Type-Options: nosniff`,
+`X-Frame-Options: DENY`, `Referrer-Policy: same-origin` e una
+`Content-Security-Policy` che ammette solo risorse della stessa origine
+(`script-src 'self'`; `style-src 'self' 'unsafe-inline'` per gli attributi
+`style` impostati dal client; `img-src 'self' data:`; `connect-src 'self' ws:
+wss:`; `frame-ancestors 'none'`). Il client quindi **non può** usare script
+inline né risorse esterne.
 
 ### 3.6 `server/stanze.js`
 
@@ -634,19 +685,28 @@ stanze.trova(codice) → Stanza | undefined                  // codice normalizz
 stanze.entra(stanza, { nome, colore, socket, ora }) → { giocatore, token } | { errore }
 stanze.riconnetti(codice, token, socket) → { stanza, giocatore } | { errore }
 stanze.esci(stanza, giocatoreId) → void                    // solo in lobby
-stanze.disconnetti(stanza, giocatoreId) → void             // connesso=false
+stanze.disconnetti(stanza, giocatoreId, { ora, random }) → { eventi }   // connesso=false + timer di §3.4
 stanze.avvia(stanza, giocatoreId, { random, ora }) → { eventi } | { errore }
 stanze.applica(stanza, giocatoreId, azione, { random, ora }) → { eventi } | { errore }
-stanze.statoPerClient(stanza) → StatoPartita               // senza mazzi
+stanze.statoPerClient(stanza, { completo? }) → StatoPartita   // senza mazzi; log breve salvo completo: true
 stanze.broadcast(stanza, messaggio) → void                 // a tutti i socket connessi
+stanze.diffondiAggiornamento(stanza, eventi) → void        // prima gli `evento`, poi lo `stato` (log breve)
+stanze.sorvegliaDisconnessi(stanza, { ora, random }) → void   // programma i timer dei disconnessi bloccanti
+stanze.sbloccaDisconnesso(stanza, giocatoreId, { ora, random }) → void     // ciò che fa il timer dei 45 s
+stanze.bancarottaDisconnesso(stanza, giocatoreId, { ora, random }) → void  // ciò che fa il timer dei 3 minuti
 stanze.pulisci({ ora }) → numero stanze rimosse            // chiamata da un timer in index.js
+stanze.rimuovi(codice) → boolean                           // chiude la stanza (errore + chiusura 4002)
+stanze.azzera() → void                                     // svuota il registro e annulla i timer (test)
 stanze.generaCodice(random) → 'K7PQ2M'
 stanze.tutte() → Stanza[]
+stanze.TEMPI                                               // durate di §3.4 in millisecondi
 ```
 
 `Stanza = { codice, hostId, creataIl, aggiornataIl, stato: StatoPartita,
-giocatori: Map<giocatoreId, { id, nome, colore, token, connesso, socket }> }`.
-I `token` e i `socket` **non** finiscono mai nello stato.
+giocatori: Map<giocatoreId, { id, nome, colore, token, connesso, socket }>,
+timer: Map<'giocatoreId|nome', Timeout> }`.
+I `token` e i `socket` **non** finiscono mai nello stato. I nomi sono unici
+nella stanza ignorando maiuscole e segni diacritici (`protocollo.chiaveNome`).
 
 ### 3.7 `server/protocollo.js`
 
@@ -656,7 +716,10 @@ P.MESSAGGI_CLIENT      // ['creaStanza','entraStanza','avviaPartita','azione','r
 P.MESSAGGI_SERVER      // ['stanzaCreata','entrato','stato','evento','errore','pong']
 P.ERRORI               // { NON_IL_TUO_TURNO: 'Non è il tuo turno', ... } (§7)
 P.COLORI_GIOCATORE     // palette §0.5
-P.LIMITI               // { MAX_GIOCATORI: 6, MIN_GIOCATORI: 2, NOME_MAX: 16, MESSAGGIO_MAX_BYTE: 16384, LOG_MAX: 200 }
+P.LIMITI               // { MAX_GIOCATORI: 6, MIN_GIOCATORI: 2, NOME_MAX: 16, MESSAGGIO_MAX_BYTE: 16384, FRAME_MAX_BYTE: 65536,
+                       //   LOG_MAX: 200, LOG_BREVE: 30, MAX_STANZE: 200, MAX_STANZE_PER_SOCKET: 5, MESSAGGI_AL_SECONDO_MAX: 30, … }
+P.CHIUSURE             // { SOSTITUITO: 4001, STANZA_CHIUSA: 4002 } (§3.4)
+P.chiaveNome(str) → 'anna'   // chiave di confronto dei nomi: minuscolo, senza diacritici
 P.REGEX_CODICE         // /^[A-Z0-9]{6}$/
 P.REGEX_COLORE         // /^#[0-9a-f]{6}$/
 P.analizza(testo) → { ok: true, messaggio } | { ok: false, errore }   // JSON.parse + validazione shape per tipo
@@ -700,9 +763,12 @@ perdere focus o selezione quando possibile.
 Gli asset usano percorsi **assoluti** (`/js/app.js`, `/css/base.css`) perché
 l'URL può contenere `?stanza=…`.
 
-### 4.2 `app.js` — `creaStore(iniziale?)`
+### 4.2 `app.js` — `creaStore(iniziale?, gestori?)`
 
 Lo store vive in `app.js` (esportato per i test e per gli altri moduli).
+`gestori` collega lo store a rete e interfaccia (`invia`, `protocollo`,
+`apriDialogo`, `chiudiDialogo`, `toast`, `altro`): sono iniettati, così lo
+store resta utilizzabile da solo.
 
 ```js
 import { creaStore } from '/js/app.js';
@@ -723,14 +789,23 @@ store.dispatch(azione)                // vedi sotto
   "eventi": [],
   "errore": null,
   "selezione": null,
-  "dialogo": null
+  "dialogo": null,
+  "lobby": { "codiceUrl": "K7PQ2M", "inAttesa": false, "ripresa": false, "link": "http://…/?stanza=K7PQ2M" },
+  "preferenze": { "nome": "Anna", "colore": null }
 }
 ```
 
-* `io` è `null` finché non si riceve `entrato`; viene salvato in
+* `io` è `null` finché non si riceve `entrato`; viene salvato **solo** in
   `sessionStorage` con chiave `monopoly.sessione` per la riconnessione dopo
-  un refresh.
-* `partita` è l'ultimo `StatoPartita` ricevuto (o `null`).
+  un refresh. La copia in `localStorage` (`monopoly.ripresa`) serve solo alla
+  ripresa esplicita di §3.4: due schede non devono condividere la sessione.
+* `partita` è l'ultimo `StatoPartita` ricevuto (o `null`), con il `log`
+  ricucito a quello già noto (§1.10).
+* `lobby` serve a `lobby.js`: codice letto da `?stanza=`, richiesta in corso,
+  ripresa della sessione in corso, link ricevuto dal server.
+* `preferenze` (nome e colore dell'ultima volta) sta in `localStorage` con
+  chiave `monopoly.preferenze`. `colore: null` = nessuna scelta: il server
+  assegna un colore libero.
 * `eventi` sono gli ultimi 100 `Evento` ricevuti (per toast e cronaca).
 * `selezione` è l'indice della casella evidenziata nel tabellone o `null`.
 
@@ -738,12 +813,16 @@ store.dispatch(azione)                // vedi sotto
 
 | `azione.tipo` | Comportamento |
 |---|---|
-| uno dei 16 tipi di §2.4 | invia `{ tipo: 'azione', azione }` al server |
-| `creaStanza`, `entraStanza`, `avviaPartita`, `riconnetti`, `esciStanza` | invia l'oggetto così com'è come messaggio di protocollo |
+| uno dei 17 tipi di §2.4 | invia `{ tipo: 'azione', azione, rif }` al server. **Mai in coda**: se si è offline l'azione non parte e compare un avviso. |
+| `creaStanza` `{ nome, colore }` | invia `creaStanza` e, ricevuto `stanzaCreata`, `entraStanza` con nome e colore |
+| `entraStanza` `{ codice, nome, colore }` | invia `entraStanza` (senza `colore` se `null`); su `COLORE_OCCUPATO` riprova una volta senza colore |
+| `avviaPartita`, `riconnetti`, `esciStanza` | invia il messaggio di protocollo corrispondente |
 | `ui:seleziona` `{ indice }` | `selezione = indice` |
 | `ui:apriDialogo` `{ dialogo, dati }` | `dialoghi.apri(dialogo, dati, dispatch)` |
 | `ui:chiudiDialogo` | chiude il dialogo corrente |
 | `ui:toast` `{ testo, livello }` | mostra un toast |
+| `ui:errore` `{ errore }` / `ui:pulisciErrore` | imposta o azzera `errore` (validazione del form d'ingresso) |
+| `ui:abbandonaSessione`, `ui:nuovaPartita` | dimentica la sessione e torna alla schermata iniziale |
 
 Il `dispatch` passato ai moduli di rendering è sempre `store.dispatch`.
 
@@ -758,13 +837,22 @@ const conn = rete.connetti(url, {
   onErrore(err)           {},
   onRiconnessione(n, ms)  {},   // tentativo n, prossimo tra ms
 });
-conn.invia(messaggio)      // JSON.stringify + send; se chiuso accoda (max 20) e invia alla riapertura
+conn.invia(messaggio, { accoda? })  // JSON.stringify + send → true se inviato; se chiuso accoda (max 20, scadenza 2 min)
+                                    // e invia alla riapertura, salvo accoda: false
 conn.chiudi()              // chiusura volontaria, niente riconnessione
 conn.stato()               // 'connessione' | 'connesso' | 'riconnessione' | 'chiuso'
+conn.riprovaOra()          // riapre subito, anche dopo una chiusura definitiva
+conn.inCoda()              // messaggi in attesa
 ```
 
+Altri callback: `onStato(stato, { tentativo, prossimoTra, coda })`. Esporta
+anche `CHIUSURE` (`{ SOSTITUITO: 4001, STANZA_CHIUSA: 4002 }`) e
+`aggiornaIndicatore(elemento, stato, dettagli)`.
+
 Riconnessione automatica con backoff esponenziale 1 s → 30 s (×2, con jitter
-±20%). Dopo la riapertura, `app.js` reinvia `riconnetti` con il token salvato.
+±20%), **tranne** dopo le chiusure definitive di §3.4 (1008, 1009, 4001,
+4002): lì si riparte solo con `riprovaOra()`. Dopo la riapertura, `app.js`
+reinvia `riconnetti` con il token salvato.
 `rete.urlPredefinito()` ritorna l'URL del §3.1 a partire da `location`.
 
 ### 4.4 `tabellone.js` — `render(radice, stato, opzioni)` e `aggiorna(stato)`
@@ -813,25 +901,37 @@ ecc. Per le azioni con parametri aprono un dialogo (`ui:apriDialogo`).
 
 ```js
 import * as dialoghi from '/js/dialoghi.js';
-const d = dialoghi.apri('acquisto', { casella: CASELLE[11], denaro: 1340 }, dispatch);
+const d = dialoghi.apri('acquisto', {}, dispatch);
 d.chiudi();
 dialoghi.chiudiTutti();
 dialoghi.toast('Anna compra Via Accademia', { livello: 'info', durata: 4000 });  // livello: info | successo | avviso | errore
 ```
 
+I dialoghi leggono lo stato di gioco dall'ultimo `StatoClient` passato a
+`dialoghi.aggiorna(statoClient, dispatch)` (lo fa `pannelli.render` a ogni
+cambio): `dati` contiene quindi solo ciò che lo stato non dice. I dialoghi
+"vivi" si ridisegnano a ogni nuovo stato e si chiudono da soli quando non
+hanno più senso (asta finita, debito saldato, scambio risolto).
+
 | `tipo` | `dati` | Azioni emesse |
 |---|---|---|
-| `acquisto` | `{ casella, denaro }` | `compra` / `rifiutaAcquisto` |
-| `asta` | `{ asta, casella, mioId, giocatori, denaro }` | `offertaAsta {importo}` / `passaAsta` |
-| `scambio` | `{ mioId, giocatori, proprieta, caselle, scambio? }` (proposta nuova o ricevuta) | `proponiScambio` / `accettaScambio` / `rifiutaScambio` |
-| `costruzioni` | `{ casella, proprieta, denaro, caseDisponibili, alberghiDisponibili }` | `costruisci` / `vendiCasa` |
-| `ipoteca` | `{ casella, proprieta, denaro }` | `ipoteca` / `disipoteca` |
-| `prigione` | `{ denaro, cartePrigione, turniInPrigione }` | `lanciaDadi` / `pagaCauzione` / `usaCartaPrigione` |
-| `debito` | `{ debito, proprieta, caselle, denaro }` | `vendiCasa` / `ipoteca` / `proponiScambio` / `dichiaraBancarotta` |
-| `carta` | `{ mazzo, carta }` (sola lettura) | — |
-| `dettaglioCasella` | `{ casella, proprieta, proprietario }` | eventuale `costruisci` / `ipoteca` tramite sottodialoghi |
-| `finePartita` | `{ vincitore, giocatori }` | — |
-| `conferma` | `{ titolo, testo, conferma, annulla }` + `onConferma()` | — |
+| `acquisto` | `{}` | `compra` / `rifiutaAcquisto` |
+| `asta` | `{}` | `offertaAsta {importo}` / `passaAsta` |
+| `scambio` | `{}` (mostra la proposta pendente) oppure `{ nuovo: true, aId? }` (nuova proposta) | `proponiScambio` / `accettaScambio` / `rifiutaScambio` |
+| `gestione` | `{ modalita: 'costruisci' \| 'vendi' \| 'ipoteca' \| 'disipoteca' }` | `costruisci` / `vendiCasa` / `ipoteca` / `disipoteca` |
+| `costruzioni`, `ipoteca` | `{ indice?, modalita? }`: alias di `gestione` con la casella evidenziata | come `gestione` |
+| `prigione` | `{}` | `lanciaDadi` / `pagaCauzione` / `usaCartaPrigione` |
+| `debito` | `{}` | `vendiCasa` / `ipoteca` / `proponiScambio` / apre `bancarotta` |
+| `bancarotta` | `{}` (conferma) | `dichiaraBancarotta` |
+| `carta` | `{ mazzo, carta, chi? }` (sola lettura) | — |
+| `dettaglioCasella` | `{ indice }` | eventuali azioni di gestione tramite `gestione` |
+| `finePartita` | `{}` | — |
+| `conferma` | `{ titolo, testo, conferma, annulla, pericolo?, azione? }` + `onConferma()` | `azione`, se presente (usato per `abbandona`) |
+
+`toast(testo, { livello, durata, silenzioso })`: con `silenzioso: true` la
+notifica è solo visiva (`aria-hidden`), per gli eventi che gli screen reader
+sentono già dalla cronaca. Altri export usati da `pannelli.js`: `aperto()`,
+`aggiorna()`, le utilità `euro`, `el`, `pulsante`, `motivoAzione`, …
 
 Usa `<dialog>` nativo con `showModal()`, focus trap del browser, chiusura con
 Esc, `aria-labelledby`. Un solo dialogo modale alla volta; aprirne un altro
@@ -975,11 +1075,12 @@ Esempi:
 | `partitaIniziata` | `{ ordine: [giocatoreId…], denaroIniziale }` |
 | `turno` | `{ giocatoreId, numero }` |
 | `turnoSaltato` | `{ giocatoreId, motivo: 'disconnesso' }` (fase 2) |
-| `dadi` | `{ dadi: [d1, d2], doppio, inPrigione, doppiConsecutivi }` |
+| `dadi` | `{ dadi: [d1, d2], doppio, inPrigione, doppiConsecutivi, perAffitto? }` (`perAffitto: true` per il lancio della carta "società più vicina") |
 | `movimento` | `{ da, a, passi, passatoDalVia, causa: 'dadi' \| 'carta' }` (`passi` negativo per `indietro`) |
 | `passaggioVia` | `{ importo }` |
 | `acquisto` | `{ casella, prezzo, tramite: 'banca' \| 'asta' }` |
-| `affitto` | `{ daId, aId, casella, importo, moltiplicatore? }` |
+| `affitto` | `{ daId, aId, casella, importo, moltiplicatore?, dadi? }`; su casella ipotecata l'affitto non è dovuto: `importo: 0` e `ipotecata: true` |
+| `abbandono` | `{ creditoreId \| null }` (sempre seguito da `bancarotta`) |
 | `tassa` | `{ casella, importo }` |
 | `carta` | `{ mazzo: 'probabilita' \| 'imprevisti', carta: { id, testo, effetto } }` |
 | `pagamento` | `{ daId, aId \| null, importo, motivo }` (carte, cauzione, interessi, riparazioni) |
@@ -1015,7 +1116,9 @@ Protocollo e stanze:
 `COLORE_NON_VALIDO` · `COLORE_OCCUPATO` · `GIA_IN_STANZA` · `NON_IN_STANZA` ·
 `NON_HOST` · `POCHI_GIOCATORI` · `TOKEN_NON_VALIDO` · `SOLO_IN_LOBBY` ·
 `ERRORE_INTERNO` (eccezione nel motore o nel server: l'azione non è
-applicata) · `TROPPI_MESSAGGI` (anti-flood, più di 30 messaggi al secondo)
+applicata) · `TROPPI_MESSAGGI` (anti-flood, più di 30 messaggi al secondo) ·
+`TROPPE_STANZE` (200 stanze aperte sul server o 5 create dalla stessa
+connessione)
 
 Motore:
 `AZIONE_NON_VALIDA` · `PARAMETRI_NON_VALIDI` · `GIOCATORE_NON_VALIDO` ·
@@ -1027,8 +1130,8 @@ Motore:
 `OFFERTA_BASSA` · `GIA_PASSATO` · `MIGLIOR_OFFERENTE` · `SCAMBIO_IN_CORSO` ·
 `SCAMBIO_NON_TROVATO` · `SCAMBIO_VUOTO` · `NON_DESTINATARIO` · `NON_COINVOLTO` ·
 `NON_IN_PRIGIONE` · `NESSUNA_CARTA_PRIGIONE` · `NON_DEBITORE` ·
-`NON_IMPLEMENTATO` (solo fase 1: l'azione esiste nel contratto ma la regola
-non è ancora codificata; `dettagli.azione` dice quale)
+`NON_IMPLEMENTATO` (riservato: non viene più emesso, tutte le azioni sono
+implementate)
 
 ---
 
@@ -1050,7 +1153,11 @@ Regolamento ufficiale, con queste scelte esplicite:
 4. **Costruzioni**: solo con gruppo completo e non ipotecato, uniformi
    (differenza max 1 casa tra le caselle del gruppo), limitate dalle scorte
    (32 case, 12 alberghi). Albergo = 4 case + `costoCasa`; costruirlo
-   restituisce 4 case alla banca. Vendita a metà prezzo, sempre uniforme.
+   restituisce 4 case alla banca. Vendita a metà prezzo, sempre uniforme; se
+   la banca non ha 4 case da restituire l'albergo si vende per intero.
+   **Semplificazione**: costruire, vendere, ipotecare e riscattare si può
+   solo nel proprio turno (oltre che durante un proprio debito o un'asta a cui
+   si partecipa), non "in qualunque momento" come nel regolamento ufficiale.
 5. **Ipoteca**: incassa `ipoteca` (= prezzo/2), richiede nessuna costruzione in
    tutto il gruppo; disipoteca a `ipoteca + ceil(10%)`.
 6. **Prigione**: 3 tentativi con i dadi; esce col doppio (muove, nessun
@@ -1075,10 +1182,13 @@ Regolamento ufficiale, con queste scelte esplicite:
 11. **Carte**: `esciGratis` resta al giocatore e torna in coda al **suo** mazzo
     quando usata; le altre tornano in coda subito. Nessun limite di tempo per
     i turni.
-12. **Disconnessioni**: in partita il giocatore resta e può riconnettersi col
-    token. Quando il turno passa, i disconnessi vengono **saltati** (evento
-    `turnoSaltato`); se il disconnesso è già di turno o blocca un'asta il
-    server può chiamare `motore.gestisciDisconnessione`.
+12. **Disconnessioni e abbandono**: in partita il giocatore resta e può
+    riconnettersi col token. Quando il turno passa, i disconnessi vengono
+    **saltati** (evento `turnoSaltato`); se il disconnesso è già di turno,
+    blocca un'asta o ha uno scambio pendente, dopo 45 s il server chiama
+    `motore.gestisciDisconnessione`; un debitore assente da 3 minuti viene
+    dichiarato in bancarotta d'ufficio (§3.4). Chi vuole lasciare la partita
+    usa `abbandona`: equivale a una bancarotta volontaria.
 13. **Prigione al terzo tentativo** senza liquidità: il giocatore esce, si
     muove e la cauzione diventa un `debito` (`motivo: 'cauzione'`) verso la
     banca; gli effetti della casella d'arrivo si applicano dopo.

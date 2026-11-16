@@ -31,6 +31,8 @@ const LIMITI = Object.freeze({
   MESSAGGI_AL_SECONDO_MAX: 30,
   // Tetto alle stanze aperte contemporaneamente (creaStanza → TROPPE_STANZE).
   MAX_STANZE: 200,
+  // Stanze che una singola connessione può creare (anti-abuso).
+  MAX_STANZE_PER_SOCKET: 5,
   // Eventi di log inclusi in ogni `stato` di aggiornamento; il log completo
   // (fino a LOG_MAX) arriva solo con `entrato`/`riconnetti`.
   LOG_BREVE: 30,
@@ -169,7 +171,7 @@ function normalizzaNome(valore) {
  * segni diacritici, così "Anna", "ANNA" e "Ánna" contano come lo stesso nome.
  */
 function chiaveNome(nome) {
-  return String(nome).normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase();
+  return String(nome).normalize('NFD').replace(/\p{M}/gu, '').toLowerCase();
 }
 
 /** '#D62828' → '#d62828'; non valido → null. */

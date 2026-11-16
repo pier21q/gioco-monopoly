@@ -180,10 +180,10 @@ function prossimoGiocatore(stato) {
 
 /** Copia dello stato destinata ai client: senza mazzi e contatori interni. */
 function statoPubblico(stato) {
-  const { mazzi, contatoreScambi, ...pubblico } = stato;
-  void mazzi;
-  void contatoreScambi;
-  return structuredClone(pubblico);
+  const pubblico = structuredClone(stato);
+  delete pubblico.mazzi;
+  delete pubblico.contatoreScambi;
+  return pubblico;
 }
 
 // ---------------------------------------------------------------------------
@@ -702,12 +702,14 @@ const GESTORI = {
         'Vendi in modo uniforme: prima vendi dalle proprietà del gruppo con più costruzioni', { casella: i });
     }
     const albergo = voce.caseCostruite === 5;
-    if (albergo && stato.caseDisponibili < 4) {
-      return errore('CASE_ESAURITE',
-        `Per vendere l'albergo la banca deve restituirti 4 case, ma ne ha solo ${stato.caseDisponibili}`, { casella: i });
-    }
-    const ricavo = c.costoCasa / 2;
-    if (albergo) {
+    // Regolamento: se la banca non ha 4 case da restituire, l'albergo si vende
+    // per intero (albergo + le 4 case che rappresenta) e il terreno resta vuoto.
+    const tutto = albergo && stato.caseDisponibili < 4;
+    const ricavo = tutto ? N.valoreVenditaCostruzioni(i, 5) : c.costoCasa / 2;
+    if (tutto) {
+      stato.alberghiDisponibili += 1;
+      voce.caseCostruite = 0;
+    } else if (albergo) {
       stato.alberghiDisponibili += 1;
       stato.caseDisponibili -= 4;
       voce.caseCostruite = 4;
@@ -716,8 +718,11 @@ const GESTORI = {
       voce.caseCostruite -= 1;
     }
     g.denaro += ricavo;
+    let cosa = 'una casa';
+    if (tutto) cosa = 'l\'albergo per intero (la banca non ha 4 case da restituire)';
+    else if (albergo) cosa = 'l\'albergo';
     emetti(ctx, 'vendita', g.id,
-      `${g.nome} vende ${albergo ? 'l\'albergo' : 'una casa'} su ${c.nome} e incassa ${euro(ricavo)}`,
+      `${g.nome} vende ${cosa} su ${c.nome} e incassa ${euro(ricavo)}`,
       { casella: i, caseCostruite: voce.caseCostruite, ricavo });
     return undefined;
   },

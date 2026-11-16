@@ -105,8 +105,14 @@ test('vendita dell\'albergo: torna a 4 case se la banca ne ha 4, a metà prezzo'
   assert.equal(r.stato.alberghiDisponibili, 12);
   assert.equal(r.stato.caseDisponibili, s.caseDisponibili - 4, 'le 4 case vengono prese dalla scorta della banca');
   assert.equal(giocatore(r.stato, A).denaro, 1525);
+  // INTERFACCE.md §2.4 e §8.4: se la banca non ha 4 case da restituire,
+  // l'albergo si vende per intero (5 × 50 € / 2 = 125 €) e il terreno resta vuoto.
   const povera = H.modifica(s, (x) => { x.caseDisponibili = 3; });
-  H.rifiuta(povera, A, { tipo: 'vendiCasa', casella: 1 }, 'CASE_ESAURITE', 'Senza 4 case in banca non si può scendere dall\'albergo');
+  const t = H.esegui(povera, A, { tipo: 'vendiCasa', casella: 1 }, undefined, 'Senza 4 case in banca l\'albergo si vende per intero');
+  assert.equal(voce(t.stato, 1).caseCostruite, 0, 'Regola: senza 4 case in banca l\'albergo viene demolito del tutto');
+  assert.equal(t.stato.alberghiDisponibili, 12);
+  assert.equal(t.stato.caseDisponibili, 3, 'la banca non restituisce case');
+  assert.equal(giocatore(t.stato, A).denaro, 1625, 'si incassa metà del valore di albergo e 4 case');
 });
 
 test('ipoteca: incassa metà prezzo; vietata con costruzioni nel gruppo o se già ipotecata', () => {

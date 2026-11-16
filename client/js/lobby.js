@@ -182,7 +182,10 @@ function costruisciRipresa(radice, dispatch) {
 function costruisciIngresso(radice, stato, dispatch) {
   const pref = stato.preferenze || {};
   const codiceUrl = (stato.lobby && stato.lobby.codiceUrl) || '';
-  const coloreIniziale = COLORI.some((c) => c.valore === pref.colore) ? pref.colore : COLORI[0].valore;
+  // Nessun colore preselezionato se l'utente non ne ha mai scelto uno: in quel
+  // caso il server assegna il primo libero (niente COLORE_OCCUPATO a chi entra
+  // con il link senza toccare la scelta).
+  const coloreIniziale = COLORI.some((c) => c.valore === pref.colore) ? pref.colore : null;
 
   const campoNome = el('input', {
     id: 'lobby-nome',
@@ -272,9 +275,11 @@ function costruisciIngresso(radice, stato, dispatch) {
         el('p', { id: 'lobby-nome-aiuto', classe: 'campo__aiuto' },
           `Da 1 a ${NOME_MAX} caratteri, diverso da quello degli altri giocatori.`),
       ),
-      el('fieldset', { classe: 'scelta-colore', id: 'lobby-colore' },
-        el('legend', {}, 'Colore della pedina'),
+      el('fieldset', { classe: 'scelta-colore', id: 'lobby-colore', 'aria-describedby': 'lobby-colore-aiuto' },
+        el('legend', {}, 'Colore della pedina (facoltativo)'),
         el('div', { classe: 'scelta-colore__opzioni' }, opzioniColore),
+        el('p', { id: 'lobby-colore-aiuto', classe: 'campo__aiuto' },
+          'Se non scegli, o se il colore è già preso, te ne viene assegnato uno libero.'),
       ),
     ),
     zonaErrore,
@@ -462,6 +467,10 @@ function costruisciSala(radice, dispatch) {
         el('h2', { id: 'sala-codice-titolo', classe: 'campo__etichetta' }, 'Codice della stanza'),
         el('p', { id: 'sala-codice', classe: 'sala__codice-valore' }),
         el('div', { classe: 'sala__link' }, campoLink, pulsanteCopia, pulsanteCondividi),
+        el('p', { id: 'sala-nota-locale', classe: 'messaggio messaggio--avviso', role: 'note', hidden: true },
+          'Attenzione: questo link contiene «localhost» e funziona solo su questo computer. '
+          + 'Per invitare gli amici apri il gioco dall\'indirizzo di rete mostrato all\'avvio del server '
+          + '(per esempio http://192.168.1.20:3000) oppure usa un tunnel e imposta PUBLIC_URL: i dettagli sono nel README.'),
       ),
       el('section', { classe: 'scheda lobby__riquadro', 'aria-labelledby': 'sala-giocatori-titolo' },
         el('h2', { id: 'sala-giocatori-titolo' }, 'Giocatori'),
@@ -502,6 +511,8 @@ function aggiornaSala(radice, stato) {
   const link = (stato.lobby && stato.lobby.link) || linkStanza(codice);
   const campoLink = radice.querySelector('#sala-link');
   if (campoLink.value !== link) campoLink.value = link;
+  const notaLocale = radice.querySelector('#sala-nota-locale');
+  if (notaLocale) notaLocale.hidden = !linkSoloLocale(link);
 
   // Elenco giocatori: ricostruito per intero (non contiene elementi focalizzabili).
   const lista = radice.querySelector('#sala-giocatori');
@@ -556,6 +567,16 @@ export function linkStanza(codice) {
   if (!codice) return '';
   const base = typeof location !== 'undefined' ? location.origin : '';
   return `${base}/?stanza=${encodeURIComponent(codice)}`;
+}
+
+/** Vero se il link punta a questo stesso computer (localhost): gli amici non potrebbero aprirlo. */
+export function linkSoloLocale(link) {
+  try {
+    const host = new URL(link).hostname.toLowerCase();
+    return host === 'localhost' || host === '[::1]' || host === '::1' || host.startsWith('127.');
+  } catch {
+    return false;
+  }
 }
 
 /**

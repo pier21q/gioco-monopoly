@@ -230,8 +230,11 @@ function el(tag, classe, testo) {
   return e;
 }
 
+/** 1500 → "1.500 €": stessa regola di dialoghi.js, app.js e del server. */
 function euro(n) {
-  return `${Number(n).toLocaleString('it-IT')} €`;
+  const v = Math.round(Number(n) || 0);
+  const cifre = String(Math.abs(v)).replace(/\B(?=(\d{3})+(?!\d))/g, '.');
+  return `${v < 0 ? '−' : ''}${cifre} €`;
 }
 
 function nomeBreve(nome) {
