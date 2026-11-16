@@ -92,7 +92,7 @@
   touch-action: pan-y;
 }
 
-.tab--zoom .tab__scena { cursor: grab; }
+.tab__scena { cursor: grab; }
 .tab__scena.in-trascinamento { cursor: grabbing; }
 .tab__scena.in-trascinamento .tab__camera { transition: none; }
 
@@ -105,7 +105,7 @@
   margin: calc(var(--lato) / -2) 0 0 calc(var(--lato) / -2);
   transform-style: preserve-3d;
   transform:
-    translate3d(var(--pan), var(--su), 0)
+    translate3d(var(--pan), calc(var(--su) + var(--pan-y, 0px)), 0)
     scale(var(--zoom))
     rotateX(var(--tilt))
     rotateZ(var(--giro));
@@ -746,11 +746,11 @@
   height: 100%;
   overflow: visible;
 }
-.p-base { fill: color-mix(in srgb, currentColor 68%, #000); }
-.p-corpo, .p-testa { fill: currentColor; }
-.p-collo { fill: color-mix(in srgb, currentColor 82%, #fff); }
-.p-ombra { fill: rgba(0, 0, 0, 0.2); }
-.p-luce { fill: rgba(255, 255, 255, 0.5); }
+/* Birillo laccato: il colore pieno sotto, luci e ombre sopra (tabellone.js). */
+.p-col { fill: currentColor; }
+.p-piano { fill: rgba(255, 255, 255, 0.22); }
+.p-contatto { fill: rgba(0, 0, 0, 0.3); }
+.p-luce { fill: rgba(255, 255, 255, 0.82); }
 .pedina__lettera {
   position: absolute;
   left: 0;
@@ -761,9 +761,10 @@
   place-items: center;
   color: var(--testo-giocatore, #fff);
   font-family: var(--tab-font-titolo);
-  font-size: calc(var(--u) * 0.27);
+  font-size: calc(var(--u) * 0.24);
   font-weight: 800;
   line-height: 1;
+  text-shadow: 0 calc(var(--u) * 0.012) calc(var(--u) * 0.02) rgba(0, 0, 0, 0.35);
 }
 .pedina__ombra {
   position: absolute;
@@ -1133,3 +1134,80 @@
 @media (max-width: 40rem) {
   .tab__comando { width: 2.25rem; height: 2.25rem; padding: 0.5rem; }
 }
+
+/* --------------------------------------------------------------------------
+ * I pezzi si toccano
+ * ------------------------------------------------------------------------ */
+
+/* I dadi: quando tocca a te lanciare si alzano dal piano e aspettano il tocco
+   (vale come "Lancia i dadi"; la classe la mette app.js su #tabellone). */
+#tabellone.tab--dadi-pronti .tab-dadi {
+  pointer-events: auto;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+}
+/* Area di tocco più larga dei due cubi. */
+#tabellone.tab--dadi-pronti .tab-dadi::before {
+  content: "";
+  position: absolute;
+  inset: calc(var(--u) * -0.4) calc(var(--u) * -0.7) calc(var(--u) * -0.75);
+}
+#tabellone.tab--dadi-pronti .tab-dadi:not(.in-lancio) .dado {
+  animation: dado-pronto 1.4s ease-in-out infinite alternate;
+}
+#tabellone.tab--dadi-pronti .tab-dadi:not(.in-lancio) .dado + .dado { animation-delay: -0.7s; }
+@keyframes dado-pronto {
+  from { translate: 0 0 0; }
+  to   { translate: 0 0 calc(var(--u) * 0.2); }
+}
+@media (hover: hover) {
+  #tabellone.tab--dadi-pronti .tab-dadi:not(.in-lancio):hover .dado {
+    animation: none;
+    translate: 0 0 calc(var(--u) * 0.42);
+  }
+}
+#tabellone.tab--dadi-pronti .tab-dadi__totale { display: none; }
+#tabellone.tab--dadi-pronti .tab-dadi:not(.in-lancio)::after {
+  content: "Tocca i dadi";
+  position: absolute;
+  left: 50%;
+  top: 100%;
+  margin-top: calc(var(--u) * 0.12);
+  transform: translateX(-50%);
+  padding: calc(var(--u) * 0.04) calc(var(--u) * 0.18);
+  border-radius: 999px;
+  background: #ecbb4a;
+  color: #14231e;
+  font-family: var(--tab-font-titolo);
+  font-size: calc(var(--u) * 0.26);
+  font-weight: 700;
+  white-space: nowrap;
+  box-shadow: 0 calc(var(--u) * 0.03) 0 #a97a12;
+}
+
+/* Giocatore in luce (ci si passa sopra nel pannello): le sue caselle si
+   alzano col suo colore, le altre si abbassano, la sua pedina si accende. */
+.casella__faccia {
+  transition: background-color 120ms, transform 160ms cubic-bezier(0.2, 0.8, 0.3, 1), box-shadow 160ms, filter 200ms;
+}
+.tab--luce .casella:not(.in-luce) .casella__faccia {
+  filter: brightness(0.5) saturate(0.5);
+}
+.tab--luce .casella.in-luce .casella__faccia {
+  transform: translate(-50%, -50%) rotate(var(--verso, 0deg)) translateZ(calc(var(--u) * 0.14));
+  box-shadow:
+    inset 0 0 0 calc(var(--u) * 0.05) var(--proprietario, #ecbb4a),
+    0 0 calc(var(--u) * 0.4) var(--proprietario, #ecbb4a);
+}
+.pedina--in-luce .pedina__figura {
+  filter: drop-shadow(0 0 calc(var(--u) * 0.1) #fff) drop-shadow(0 0 calc(var(--u) * 0.28) var(--colore-giocatore, #fff));
+}
+
+@media (prefers-reduced-motion: reduce) {
+  #tabellone.tab--dadi-pronti .tab-dadi:not(.in-lancio) .dado { animation: none; }
+  .casella__faccia { transition: none; }
+}
+
+/* Mentre si gira o si avvicina il tabellone con le dita, camera, pedine e
+   scritte seguono subito, senza la transizione dei movimenti automatici. */
+#tabellone .tab.tab--in-presa { --camera-durata: 0ms; }

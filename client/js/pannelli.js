@@ -54,6 +54,59 @@ let versioneCorrente = null;
 let invioInAttesa = null; // { tipo, versione, scade }
 
 /**
+ * Il lancio dai dadi del tabellone: vale come il pulsante "Lancia i dadi".
+ * `puoLanciare` dice se adesso tocca a me lanciare, `lancia` invia il lancio.
+ */
+export function puoLanciare(stato) {
+  const p = partitaDi(stato);
+  const mio = mioIdDi(stato);
+  if (!p || !mio || !Array.isArray(p.giocatori) || p.fase === 'lobby') return false;
+  return !motivoAzione(p, mio, 'lanciaDadi');
+}
+
+export function lancia() {
+  if (ui && ui.radice.classList.contains('pn-attesa')) return;
+  inviaUnaVolta({ tipo: 'lanciaDadi' });
+}
+
+// --- Denaro che scorre -------------------------------------------------------
+
+const DURATA_CONTEGGIO = 650;
+const denaroVisto = new Map(); // 'io' o id del giocatore -> ultimo importo mostrato
+
+function movimentoRidotto() {
+  try {
+    return window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * L'importo non scatta: scorre dal valore di prima a quello nuovo, verde se
+ * sale e rosso se scende. Senza animazioni (o a scheda nascosta) resta fermo
+ * sul valore nuovo, già scritto da chi ha costruito il nodo.
+ */
+function scorriImporto(nodo, chiave, valore) {
+  const prima = denaroVisto.get(chiave);
+  denaroVisto.set(chiave, valore);
+  if (!nodo || prima === undefined || prima === valore || movimentoRidotto()
+    || typeof requestAnimationFrame !== 'function' || document.visibilityState !== 'visible') return;
+  const inizio = performance.now();
+  nodo.classList.add(valore > prima ? 'importo--sale' : 'importo--scende');
+  nodo.textContent = euro(prima);
+  const passo = (ora) => {
+    if (!nodo.isConnected) return;
+    const t = Math.min(1, Math.max(0, (ora - inizio) / DURATA_CONTEGGIO));
+    const k = 1 - (1 - t) ** 3;
+    nodo.textContent = euro(Math.round(prima + (valore - prima) * k));
+    if (t < 1) requestAnimationFrame(passo);
+    else setTimeout(() => nodo.classList.remove('importo--sale', 'importo--scende'), 600);
+  };
+  requestAnimationFrame(passo);
+}
+
+/**
  * Invia un'azione del turno ignorando il doppio clic: finché il server non
  * risponde con un nuovo stato (o per ATTESA_INVIO_MS) la stessa azione non
  * viene rimandata, altrimenti il secondo invio tornerebbe indietro come errore.
@@ -293,6 +346,23 @@ function monta(radice) {
     stretto: window.matchMedia ? window.matchMedia(QUERY_STRETTO) : { matches: false, addEventListener() {} },
   };
 
+  // Passando su un giocatore (o entrando con Tab fra le sue proprietà) il
+  // tabellone mette in luce le sue caselle e la sua pedina.
+  let inLuce = null;
+  const mettiInLuce = (id) => {
+    if (id === inLuce) return;
+    inLuce = id;
+    radice.dispatchEvent(new CustomEvent('giocatore-in-luce', { bubbles: true, detail: { id } }));
+  };
+  const giocatoreDi = (e) => {
+    const li = e.target && e.target.closest ? e.target.closest('.pn-giocatore') : null;
+    return li ? li.dataset.id : null;
+  };
+  elencoGiocatori.addEventListener('pointerover', (e) => { if (e.pointerType !== 'touch') mettiInLuce(giocatoreDi(e)); });
+  elencoGiocatori.addEventListener('pointerleave', () => mettiInLuce(null));
+  elencoGiocatori.addEventListener('focusin', (e) => mettiInLuce(giocatoreDi(e)));
+  elencoGiocatori.addEventListener('focusout', () => mettiInLuce(null));
+
   // Cassetto delle azioni (schermi stretti).
   maniglia.addEventListener('click', () => impostaCassetto(maniglia.getAttribute('aria-expanded') !== 'true'));
   turno.addEventListener('keydown', (e) => {
@@ -512,6 +582,7 @@ function disegnaTurno(p, mio) {
       ? [el('span', { class: 'pn-turno__denaro-etichetta', text: 'Il tuo denaro' }), el('strong', { class: 'importo', text: testoDenaro })]
       : [testoDenaro]));
     ui.mioDenaro.hidden = !io;
+    if (io && !io.fallito) scorriImporto(ui.mioDenaro.querySelector('.importo'), 'io', io.denaro);
   }
 
   disegnaAvvisi(p, mio);
@@ -690,6 +761,7 @@ function disegnaGiocatori(p, mio) {
       else lista.append(nuovo);
       li = nuovo;
       ui.firmeGiocatori.set(g.id, firma);
+      if (!g.fallito) scorriImporto(li.querySelector('.pn-giocatore__denaro .importo'), g.id, g.denaro);
       if (chiave) {
         const dest = li.querySelector(`[data-chiave="${CSS.escape(chiave)}"]`);
         if (dest) dest.focus({ preventScroll: true });
@@ -897,6 +969,7 @@ export function render(radice, stato, dispatch) {
   if (p.codice !== codicePartita) {
     codicePartita = p.codice;
     dialoghiMostrati.clear();
+    denaroVisto.clear();
     ultimaChiaveLog = null;
     ui.cronaca.replaceChildren();
     ui.cronaca.setAttribute('aria-live', 'off');

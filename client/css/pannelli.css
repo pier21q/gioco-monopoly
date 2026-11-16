@@ -2123,3 +2123,16 @@
 .dlg__piede .admin__chiudi-stanza {
   margin-right: auto;
 }
+
+/* Denaro che scorre: verde mentre sale, rosso mentre scende (pannelli.js). */
+.pn .importo { transition: color 350ms; }
+.pn .importo.importo--sale { color: var(--colore-successo, #8be0a6); }
+.pn .importo.importo--scende { color: var(--colore-errore, #ffa398); }
+
+/* La scheda di un giocatore accende le sue caselle sul tabellone. */
+@media (hover: hover) {
+  .pn-giocatore { transition: border-color 150ms, background-color 150ms; }
+  .pn-giocatore:hover {
+    border-color: var(--colore, var(--pn-bordo));
+  }
+}

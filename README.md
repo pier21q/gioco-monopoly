@@ -374,6 +374,41 @@ urgenti come i 30 secondi d'inattività), e su schermi larghi stanno sopra il
 tabellone, non sopra il pannello del turno. I suoni (dadi, passi, monete, carte) sono sintetizzati nel
 browser da `client/js/suoni.js`: non ci sono file audio.
 
+Il tabellone si muove con le dita:
+
+- **un dito** (o il mouse) trascinato di lato lo fa **girare** liberamente;
+  lasciandolo vicino a un lato si raddrizza da solo. In verticale, con un
+  dito, la pagina scorre come sempre;
+- **due dita** lo **avvicinano e allontanano** (da 1 a 3,2 volte) e lo
+  spostano. Sul trackpad vale il pizzico; col mouse, Maiusc + trascina sposta;
+- i pulsanti restano: giro di un quarto, "Avvicina" (che riporta anche lontano
+  dopo uno zoom fatto con le dita), vista dall'alto (lì un dito sposta invece
+  di girare);
+- se "Segui la pedina di turno" è acceso, la vista torna sulla pedina quando
+  cambia il turno o la pedina si muove, non a ogni aggiornamento.
+
+I pezzi si toccano:
+
+- **i dadi al centro del tabellone**: quando tocca a te lanciare si alzano e
+  compare "Tocca i dadi"; un clic vale come il pulsante "Lancia i dadi" (che
+  resta, anche per chi usa la tastiera);
+- **le proprietà di un giocatore**: passando col mouse sulla sua scheda nel
+  pannello (o entrandoci con Tab) le sue caselle si accendono del suo colore
+  e le altre si abbassano;
+- **il denaro**: nel pannello non scatta, scorre fino al nuovo importo (verde
+  se sale, rosso se scende);
+- **i dadi sopra il titolo**, all'ingresso: si lanciano con un clic, solo per
+  gioco.
+
+Le pedine sono birilli laccati (base a disco, corpo a campana, collare, testa
+a sfera con l'iniziale del giocatore): un solo disegno SVG nel colore del
+giocatore, con luci e ombre sovrapposte.
+
+Sul telefono, con i suoni accesi, l'inizio del tuo turno dà anche un colpetto
+di vibrazione (dove il browser lo permette). Il nome del giocatore non viene
+salvato nel browser: a ogni apertura il campo è vuoto; resta salvato solo il
+colore della pedina.
+
 ## Struttura delle cartelle
 
 ```

@@ -270,11 +270,18 @@ export function cancellaSessione() {
   }
 }
 
+/**
+ * Nel browser resta solo il colore della pedina. Il nome no: su un computer
+ * condiviso il campo si apriva già compilato con il nome di chi aveva giocato
+ * prima. Un nome salvato dalle versioni precedenti viene cancellato.
+ */
 function leggiPreferenze() {
   try {
     const p = JSON.parse(globalThis.localStorage?.getItem(CHIAVE_PREFERENZE) || 'null');
     if (p && typeof p === 'object') {
-      return { nome: typeof p.nome === 'string' ? p.nome : '', colore: typeof p.colore === 'string' ? p.colore : null };
+      const colore = typeof p.colore === 'string' ? p.colore : null;
+      if ('nome' in p) salvaPreferenze({ colore });
+      return { nome: '', colore };
     }
   } catch {
     /* ignora */
@@ -284,7 +291,7 @@ function leggiPreferenze() {
 
 function salvaPreferenze(preferenze) {
   try {
-    globalThis.localStorage?.setItem(CHIAVE_PREFERENZE, JSON.stringify(preferenze));
+    globalThis.localStorage?.setItem(CHIAVE_PREFERENZE, JSON.stringify({ colore: preferenze.colore ?? null }));
   } catch {
     /* ignora */
   }
@@ -968,22 +975,37 @@ async function avvia() {
         clearTimeout(timerPannelli);
         if (attesa > 40) {
           el.pannelli.classList.add('pn-attesa');
+          segnaDadiPronti(null);
           timerPannelli = setTimeout(() => {
             el.pannelli.classList.remove('pn-attesa');
             const ora = store.getState();
             if (vistaCorrente !== 'lobby' && ora.partita) {
               chiama(() => pannelli.render(el.pannelli, ora, dispatch), 'pannelli.render');
+              segnaDadiPronti(ora);
             }
           }, attesa);
         } else {
           el.pannelli.classList.remove('pn-attesa');
           chiama(() => pannelli.render(el.pannelli, stato, dispatch), 'pannelli.render');
+          segnaDadiPronti(stato);
         }
       }
     }
 
     disegnaBarra(stato, vista);
     aggiornaTitolo(stato, vista);
+  }
+
+  /**
+   * I dadi al centro del tabellone si possono toccare quando tocca a me
+   * lanciare (`null`: mai, per esempio mentre la pedina si muove).
+   */
+  function segnaDadiPronti(stato) {
+    let pronti = false;
+    if (stato && typeof pannelli?.puoLanciare === 'function') {
+      try { pronti = pannelli.puoLanciare(stato); } catch { pronti = false; }
+    }
+    el.tabellone.classList.toggle('tab--dadi-pronti', pronti);
   }
 
   /** Dati o moduli di gioco non caricati: messaggio visibile con "Ricarica". */
@@ -1107,6 +1129,19 @@ async function avvia() {
   // Selezione di una casella sul tabellone (il dettaglio lo apre pannelli.js).
   el.tabellone.addEventListener('casella-selezionata', (e) => {
     if (e.detail && Number.isInteger(e.detail.indice)) dispatch({ tipo: 'ui:seleziona', indice: e.detail.indice });
+  });
+
+  // Un tocco sui dadi del tabellone vale come "Lancia i dadi".
+  el.tabellone.addEventListener('dadi-toccati', () => {
+    if (!el.tabellone.classList.contains('tab--dadi-pronti')) return;
+    if (typeof pannelli?.lancia === 'function') chiama(() => pannelli.lancia(), 'pannelli.lancia');
+  });
+
+  // Passando su un giocatore nel pannello, il tabellone ne illumina le caselle.
+  el.pannelli.addEventListener('giocatore-in-luce', (e) => {
+    if (typeof tabellone?.evidenzia === 'function') {
+      chiama(() => tabellone.evidenzia(e.detail ? e.detail.id : null), 'tabellone.evidenzia');
+    }
   });
 
   // Se l'utente cambia la preferenza sul movimento, il tabellone si ricostruisce.

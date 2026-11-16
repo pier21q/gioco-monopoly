@@ -76,7 +76,41 @@ const ICONE = {
 // Sagome in piedi sul tabellone: due facce (fronte e fianco) per dare volume.
 const SVG_CASA = '<svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path class="e-fianco" d="M15.5 10.5 22 7.2v11L15.5 22z"/><path class="e-fronte" d="M3 10.5h12.5V22H3z"/><path class="e-tetto-fianco" d="M9.2 3 15.6.6 23 7.2l-6.4 3.6z"/><path class="e-tetto" d="M1.6 10.9 9.2 3l7.6 7.9z"/><path class="e-porta" d="M7.4 22v-5.6h3.6V22z"/></svg>';
 const SVG_ALBERGO = '<svg viewBox="0 0 36 28" aria-hidden="true" focusable="false"><path class="e-fianco" d="M26 11.5 34 8v14.5L26 27z"/><path class="e-fronte" d="M3 11.5h23V27H3z"/><path class="e-tetto-fianco" d="M9.5 3 18 .6 35 8l-8.5 3.8z"/><path class="e-tetto" d="M1.4 12 9.5 3h9.8l7.9 9z"/><path class="e-porta" d="M12.4 27v-6.4h4.4V27zM6 15.5h3.4v3.2H6zm13.8 0h3.4v3.2h-3.4z"/></svg>';
-const SVG_PEDINA = '<svg viewBox="0 0 40 60" aria-hidden="true" focusable="false"><ellipse class="p-base" cx="20" cy="53" rx="15" ry="6"/><path class="p-corpo" d="M13.5 28c0 12-8 15-8 25h29c0-10-8-13-8-25z"/><path class="p-ombra" d="M22 28c1 12 6 16 6 25h6.5c0-10-8-13-8-25z"/><ellipse class="p-collo" cx="20" cy="28.5" rx="9.5" ry="3.4"/><circle class="p-testa" cx="20" cy="15" r="12"/><path class="p-ombra" d="M20 3a12 12 0 0 1 0 24 14 14 0 0 0 0-24z"/><ellipse class="p-luce" cx="15" cy="9.5" rx="4.2" ry="3" transform="rotate(-30 15 9.5)"/></svg>';
+/**
+ * La pedina: un birillo tornito e laccato (base a disco, corpo a campana,
+ * collare, testa a sfera). Il colore del giocatore è `currentColor`; luci e
+ * ombre sono sfumature bianche e nere sovrapposte, uguali per tutti i colori.
+ * Gli id delle sfumature sono diversi per ogni pedina.
+ */
+let contaPedine = 0;
+function svgPedina() {
+  contaPedine += 1;
+  const k = contaPedine;
+  const base = 'M4 49.5v4c0 3.3 7.2 6 16 6s16-2.7 16-6v-4z';
+  const corpo = 'M14.6 29.5c-.2 9.5-3.4 14.5-8 19.2 0 2.4 6 4.3 13.4 4.3s13.4-1.9 13.4-4.3c-4.6-4.7-7.8-9.7-8-19.2z';
+  const collare = 'x="10.8" y="26" width="18.4" height="5.4" rx="2.7"';
+  const testa = 'cx="20" cy="15.5" r="11.5"';
+  return `<svg viewBox="0 0 40 60" aria-hidden="true" focusable="false"><defs>`
+    + `<linearGradient id="p-lato-${k}" x1="0" x2="1" y1="0" y2="0">`
+    + '<stop offset="0" stop-color="#000" stop-opacity=".3"/><stop offset=".17" stop-color="#fff" stop-opacity=".45"/>'
+    + '<stop offset=".36" stop-color="#fff" stop-opacity=".05"/><stop offset=".62" stop-color="#000" stop-opacity=".14"/>'
+    + '<stop offset=".88" stop-color="#000" stop-opacity=".5"/><stop offset="1" stop-color="#000" stop-opacity=".28"/></linearGradient>'
+    + `<radialGradient id="p-sfera-${k}" cx=".36" cy=".3" r=".82">`
+    + '<stop offset="0" stop-color="#fff" stop-opacity=".72"/><stop offset=".26" stop-color="#fff" stop-opacity=".14"/>'
+    + '<stop offset=".58" stop-color="#000" stop-opacity=".08"/><stop offset="1" stop-color="#000" stop-opacity=".58"/></radialGradient>'
+    + `<linearGradient id="p-sotto-${k}" x1="0" x2="0" y1="0" y2="1">`
+    + '<stop offset="0" stop-color="#000" stop-opacity=".42"/><stop offset=".3" stop-color="#000" stop-opacity="0"/>'
+    + '<stop offset=".8" stop-color="#000" stop-opacity="0"/><stop offset="1" stop-color="#000" stop-opacity=".22"/></linearGradient>'
+    + '</defs>'
+    + `<path class="p-col" d="${base}"/><path fill="url(#p-lato-${k})" d="${base}"/>`
+    + '<ellipse class="p-col" cx="20" cy="49.5" rx="16" ry="5.2"/><ellipse class="p-piano" cx="20" cy="49.5" rx="16" ry="5.2"/>'
+    + '<ellipse class="p-contatto" cx="20" cy="49.2" rx="13.6" ry="4.2"/>'
+    + `<path class="p-col" d="${corpo}"/><path fill="url(#p-lato-${k})" d="${corpo}"/><path fill="url(#p-sotto-${k})" d="${corpo}"/>`
+    + `<circle class="p-col" ${testa}/><circle fill="url(#p-sfera-${k})" ${testa}/>`
+    + `<rect class="p-col" ${collare}/><rect fill="url(#p-lato-${k})" ${collare}/><rect class="p-piano" x="12.5" y="26.5" width="15" height="1.3" rx=".65"/>`
+    + '<ellipse class="p-luce" cx="13.6" cy="8.2" rx="2.3" ry="1.2" transform="rotate(-38 13.6 8.2)"/>'
+    + '</svg>';
+}
 
 const ICONE_CAMERA = {
   sinistra: SVG('<path d="M4 4v6h6"/><path d="M4.6 10A8 8 0 1 1 6 17.5"/>'),
@@ -89,6 +123,11 @@ const ICONE_CAMERA = {
 };
 const CHIAVE_CAMERA = 'monopoly.camera';
 const TILT_3D = 54;                     // gradi di inclinazione del piano
+const ZOOM_VICINO = 1.75;               // il pulsante "Avvicina"
+const ZOOM_MIN = 1;                     // con due dita si va da qui…
+const ZOOM_MAX = 3.2;                   // …a qui
+const BORDO_DAVANTI = 0.3886;           // bordo vicino sotto il centro (più un margine), in lati, a zoom 1
+const SCATTO_GIRO = 14;                 // gradi: lasciando vicino a un lato, il tabellone si raddrizza
 
 /** Istanza corrente (il client ha un solo tabellone). */
 let corrente = null;
@@ -212,6 +251,30 @@ export function seleziona(indice) {
   if (!ist) return;
   ist.selezione = Number.isInteger(indice) ? indice : null;
   disegnaSelezione(ist);
+}
+
+/**
+ * Mette in luce le caselle e la pedina di un giocatore (null: nessuno): le
+ * altre caselle si abbassano. Lo chiama app.js quando nel pannello si passa
+ * su un giocatore.
+ */
+export function evidenzia(giocatoreId) {
+  const ist = corrente;
+  if (!ist || !ist.el.tab) return;
+  ist.inLuce = giocatoreId || null;
+  disegnaLuce(ist);
+}
+
+function disegnaLuce(ist) {
+  const id = ist.inLuce || null;
+  let quante = 0;
+  ist.pulsanti.forEach((b) => {
+    const sua = id !== null && b.dataset.proprietario === id;
+    if (sua) quante += 1;
+    b.classList.toggle('in-luce', sua);
+  });
+  ist.el.tab.classList.toggle('tab--luce', quante > 0);
+  ist.pedine.forEach((pedina, gid) => pedina.classList.toggle('pedina--in-luce', gid === id));
 }
 
 /** Smonta il tabellone: ferma animazioni e rimuove gli ascoltatori. */
@@ -384,6 +447,12 @@ function costruisci(ist) {
     if (ist.trascinato) return; // era uno spostamento della vista, non un tocco
     const b = e.target.closest('.casella');
     if (b && griglia.contains(b)) scegli(ist, Number(b.dataset.indice));
+  });
+  // I dadi si toccano: quando tocca a te lanciare valgono come il pulsante
+  // "Lancia i dadi" (decide app.js, che sa se il lancio è possibile).
+  ascolta(ist, ist.el.zonaDadi, 'click', () => {
+    if (ist.trascinato) return;
+    radice.dispatchEvent(new CustomEvent('dadi-toccati', { bubbles: true }));
   });
   ascolta(ist, griglia, 'keydown', (e) => tastiera(ist, e));
   ascolta(ist, griglia, 'focusin', (e) => {
@@ -674,8 +743,10 @@ function aggiornaCaselle(ist, { partita, perId, giocatori }) {
           badge.style.setProperty('--colore-giocatore', prop.colore);
           badge.style.color = testoSu(prop.colore);
           b.style.setProperty('--proprietario', prop.colore);
+          b.dataset.proprietario = prop.id;
         } else {
           b.style.removeProperty('--proprietario');
+          delete b.dataset.proprietario;
         }
         if (prop && ist.prec && animazioniAttive(ist)) {
           b.classList.remove('appena-comprata');
@@ -712,6 +783,7 @@ function aggiornaCaselle(ist, { partita, perId, giocatori }) {
     if (b.getAttribute('aria-label') !== etichetta) b.setAttribute('aria-label', etichetta);
     b.classList.toggle('turno-qui', qui.some((g) => partita.turno && g.id === partita.turno.giocatoreId));
   });
+  if (ist.inLuce) disegnaLuce(ist);
 }
 
 /** Punto (in unità) lungo la fascia colore della casella: k-esimo edificio di n. */
@@ -925,7 +997,7 @@ function aggiornaPedine(ist, { partita, giocatori, perId }, iniziale_, ritardo) 
       pedina = el('span', 'pedina');
       const corpo = el('span', 'pedina__corpo');
       const figura = el('span', 'pedina__figura');
-      figura.innerHTML = SVG_PEDINA;
+      figura.innerHTML = svgPedina();
       figura.appendChild(el('span', 'pedina__lettera'));
       corpo.appendChild(figura);
       pedina.appendChild(corpo);
@@ -1408,7 +1480,7 @@ function tastiera(ist, e) {
 // ---------------------------------------------------------------------------
 
 function leggiCamera() {
-  const base = { giro: 0, vista: '3d', zoom: null, segui: true, pan: 0 };
+  const base = { giro: 0, vista: '3d', zoom: null, segui: true, pan: 0, panY: 0, pizzico: 1 };
   try {
     const salvata = JSON.parse(localStorage.getItem(CHIAVE_CAMERA) || 'null');
     if (salvata && typeof salvata === 'object') {
@@ -1449,8 +1521,11 @@ function creaComandiCamera(ist) {
   pulsante('sinistra', ICONE_CAMERA.sinistra, 'Gira il tabellone a sinistra', () => gira(ist, 90));
   pulsante('destra', ICONE_CAMERA.destra, 'Gira il tabellone a destra', () => gira(ist, -90));
   pulsante('zoom', ICONE_CAMERA.zoom, 'Avvicina il lato davanti', () => {
-    ist.camera.zoom = !zoomAttivo(ist);
+    // Vale anche dopo uno zoom fatto con due dita: se si è vicini, si torna lontani.
+    ist.camera.zoom = !(fattoreZoom(ist) > 1.05);
+    ist.camera.pizzico = 1;
     ist.camera.pan = 0;
+    ist.camera.panY = 0;
     salvaCamera(ist);
     misura(ist);
     centraSuTurno(ist);
@@ -1464,6 +1539,7 @@ function creaComandiCamera(ist) {
     ist.camera.segui = !ist.camera.segui;
     salvaCamera(ist);
     applicaCamera(ist);
+    ist.chiaveSegui = null;
     if (ist.camera.segui && ist.prec) seguiTurno(ist, contestoDi(ist.prec), 0);
   }, true);
   const rapido = pulsante('veloce', ICONE_CAMERA.veloce, 'Animazioni veloci', () => {
@@ -1494,10 +1570,31 @@ function zoomAttivo(ist) {
   return ist.larghezza > 0 && ist.larghezza < 620;
 }
 
-/** Giro manuale di un quarto: l'inseguimento automatico si spegne. */
+/** Quanto è ingrandito il tabellone: il pulsante "Avvicina" per lo zoom fatto con due dita. */
+function fattoreZoom(ist) {
+  const base = zoomAttivo(ist) ? ZOOM_VICINO : 1;
+  return Math.max(ZOOM_MIN, Math.min(ZOOM_MAX, base * (ist.camera.pizzico || 1)));
+}
+
+/** Porta lo zoom complessivo al valore chiesto (entro i limiti). */
+function impostaZoom(ist, totale) {
+  const base = zoomAttivo(ist) ? ZOOM_VICINO : 1;
+  ist.camera.pizzico = Math.max(ZOOM_MIN, Math.min(ZOOM_MAX, totale)) / base;
+  if (fattoreZoom(ist) <= 1.02) {
+    ist.camera.pan = 0;
+    ist.camera.panY = 0;
+  }
+}
+
+/**
+ * Giro manuale di un quarto: l'inseguimento automatico si spegne. Da un angolo
+ * libero (lasciato col dito) si va al lato successivo, non 90 gradi più in là.
+ */
 function gira(ist, gradi) {
-  ist.camera.giro += gradi;
+  const quarti = ist.camera.giro / 90;
+  ist.camera.giro = gradi > 0 ? (Math.floor(quarti + 1e-6) + 1) * 90 : (Math.ceil(quarti - 1e-6) - 1) * 90;
   ist.camera.pan = 0;
+  ist.camera.panY = 0;
   if (ist.camera.segui) {
     ist.camera.segui = false;
     salvaCamera(ist);
@@ -1539,10 +1636,12 @@ function misura(ist) {
   tab.style.setProperty('--lato', `${lato}px`);
   tab.style.setProperty('--u', `${(lato / UNITA_TOTALI).toFixed(3)}px`);
   tab.style.setProperty('--scena-alta', `${Math.round(altezzaScena)}px`);
+  ist.scenaAlta = altezzaScena;
   // Spostamento verticale della camera: da vicino il bordo davanti resta in fondo alla scena.
-  if (alto) tab.style.setProperty('--su', '0px');
-  else if (zoomAttivo(ist)) tab.style.setProperty('--su', `${Math.round(altezzaScena / 2 - lato * 0.68)}px`);
-  else tab.style.setProperty('--su', `${Math.round(lato * -0.035)}px`);
+  if (alto) ist.su = 0;
+  else if (zoomAttivo(ist)) ist.su = Math.round(altezzaScena / 2 - lato * BORDO_DAVANTI * ZOOM_VICINO);
+  else ist.su = Math.round(lato * -0.035);
+  tab.style.setProperty('--su', `${ist.su}px`);
   tab.classList.toggle('tab--piccolo', lato / UNITA_TOTALI < 34 && !zoomAttivo(ist));
   applicaCamera(ist);
   // Da vicino, dopo un cambio di misura, si torna sulla pedina di turno.
@@ -1554,25 +1653,28 @@ function applicaCamera(ist) {
   if (!tab) return;
   const c = ist.camera;
   const alto = c.vista === 'alto';
-  const zoom = zoomAttivo(ist) ? 1.75 : 1;
+  const zoom = fattoreZoom(ist);
   const lato = ist.lato || 0;
-  // Di quanto si può scorrere di lato quando il tabellone avvicinato esce dalla scena.
+  // Di quanto si può scorrere quando il tabellone avvicinato esce dalla scena.
   const fuori = Math.max(0, (lato * zoom * 1.2 - (ist.larghezza || lato)) / 2);
+  const fuoriY = zoom > 1.02 ? Math.max(0, (lato * zoom * (alto ? 1 : 0.86) - (ist.scenaAlta || lato)) / 2) : 0;
   c.pan = Math.max(-fuori, Math.min(fuori, c.pan));
+  c.panY = Math.max(-fuoriY, Math.min(fuoriY, c.panY || 0));
   tab.style.setProperty('--tilt', `${alto ? 0 : TILT_3D}deg`);
   tab.style.setProperty('--giro', `${alto ? 0 : c.giro}deg`);
-  tab.style.setProperty('--zoom', String(zoom));
+  tab.style.setProperty('--zoom', zoom.toFixed(3));
   tab.style.setProperty('--pan', `${Math.round(c.pan)}px`);
+  tab.style.setProperty('--pan-y', `${Math.round(c.panY)}px`);
   tab.dataset.vista = alto ? 'alto' : '3d';
-  tab.classList.toggle('tab--zoom', zoom > 1);
+  tab.classList.toggle('tab--zoom', zoom > 1.05);
   const premi = (chiave, valore) => {
     const b = ist.el[`comando_${chiave}`];
     if (b) b.setAttribute('aria-pressed', String(valore));
   };
   premi('alto', alto);
-  premi('zoom', zoom > 1);
+  premi('zoom', zoom > 1.05);
   premi('segui', c.segui);
-  ['sinistra', 'destra', 'zoom', 'segui'].forEach((chiave) => {
+  ['sinistra', 'destra', 'segui'].forEach((chiave) => {
     const b = ist.el[`comando_${chiave}`];
     if (b) b.disabled = alto;
   });
@@ -1591,8 +1693,13 @@ const GIRO_PER_LATO = [0, -90, 180, 90];
 function seguiTurno(ist, { partita, perId }, ritardo) {
   const g = partita.turno ? perId.get(partita.turno.giocatoreId) : null;
   if (!g || g.fallito) return;
-  clearTimeout(ist.timerCamera);
   const posizione = Number(g.posizione) || 0;
+  // Si torna sulla pedina solo quando cambia chi gioca o dove sta: gli altri
+  // aggiornamenti non spostano una vista scelta con le dita.
+  const chiave = `${g.id}|${posizione}`;
+  if (chiave === ist.chiaveSegui) return;
+  ist.chiaveSegui = chiave;
+  clearTimeout(ist.timerCamera);
   ist.timerCamera = setTimeout(() => {
     if (corrente !== ist) return;
     if (ist.camera.segui && ist.camera.vista !== 'alto') {
@@ -1607,7 +1714,8 @@ function seguiTurno(ist, { partita, perId }, ritardo) {
 
 /** Con lo zoom acceso scorre di lato fino ad avere la pedina di turno al centro. */
 function centraSuTurno(ist, posizione) {
-  if (!zoomAttivo(ist)) return;
+  const zoom = fattoreZoom(ist);
+  if (zoom <= 1.05 || ist.camera.vista === 'alto') return;
   let pos = posizione;
   if (pos === undefined) {
     const p = ist.prec;
@@ -1620,33 +1728,146 @@ function centraSuTurno(ist, posizione) {
   const y = centro.y - UNITA_TOTALI / 2;
   const a = (ist.camera.giro * Math.PI) / 180;
   const ruotato = x * Math.cos(a) - y * Math.sin(a);
-  ist.camera.pan = -(ruotato / UNITA_TOTALI) * ist.lato * 1.75 * 1.15;
+  ist.camera.pan = -(ruotato / UNITA_TOTALI) * ist.lato * zoom * 1.15;
+  // Il bordo davanti (dove sta la pedina) resta dentro la scena a ogni zoom.
+  ist.camera.panY = Math.min(0, (ist.scenaAlta || ist.lato) / 2 - (ist.su || 0) - ist.lato * BORDO_DAVANTI * zoom);
   applicaCamera(ist);
 }
 
-/** Trascinando di lato si scorre il tabellone avvicinato (in verticale la pagina scorre normalmente). */
+/**
+ * Gesti sulla scena.
+ *  - Un dito (o il mouse) trascinato di lato fa girare il tabellone: sotto il
+ *    centro il bordo vicino segue il dito, sopra il centro lo segue quello
+ *    lontano. Lasciando vicino a un lato, il tabellone si raddrizza. Con un
+ *    dito in verticale la pagina scorre come sempre (touch-action: pan-y).
+ *  - Due dita avvicinano, allontanano e spostano. Sul trackpad vale il
+ *    pizzico (rotella con Ctrl); col mouse, Maiusc + trascina sposta.
+ *  - Dall'alto il tabellone non gira: un dito lo sposta.
+ */
 function trascinamento(ist, scena) {
-  let inizio = null;
+  const tab = ist.el.tab;
+  const punti = new Map();   // pointerId -> { x, y }
+  let giro = null;           // gesto a un dito
+  let pizzico = null;        // gesto a due dita
+  let timerRotella = null;
+
+  const presa = (si) => {
+    scena.classList.toggle('in-trascinamento', si);
+    tab.classList.toggle('tab--in-presa', si);
+  };
+  const dueDita = () => {
+    const [a, b] = [...punti.values()];
+    return { distanza: Math.hypot(a.x - b.x, a.y - b.y) || 1, cx: (a.x + b.x) / 2, cy: (a.y + b.y) / 2 };
+  };
+
   ascolta(ist, scena, 'pointerdown', (e) => {
-    ist.trascinato = false;
-    if (!zoomAttivo(ist) || (e.pointerType === 'mouse' && e.button !== 0)) return;
-    inizio = { x: e.clientX, pan: ist.camera.pan };
+    if (e.pointerType === 'mouse' && e.button !== 0) return;
+    if (punti.size === 0) ist.trascinato = false;
+    punti.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    if (punti.size === 2) {
+      giro = null;
+      pizzico = { ...dueDita(), zoom: fattoreZoom(ist), pan: ist.camera.pan, panY: ist.camera.panY };
+      ist.trascinato = true;
+      presa(true);
+    } else if (punti.size === 1) {
+      const r = scena.getBoundingClientRect();
+      giro = {
+        id: e.pointerId,
+        x: e.clientX,
+        y: e.clientY,
+        giro: ist.camera.giro,
+        verso: e.clientY < r.top + r.height * 0.42 ? 1 : -1,
+        gradiPerPx: 180 / Math.max(280, r.width * 0.9),
+        sposta: e.pointerType === 'mouse' && e.shiftKey,
+        pan: ist.camera.pan,
+        panY: ist.camera.panY,
+      };
+    }
   });
+
   ascolta(ist, scena, 'pointermove', (e) => {
-    if (!inizio) return;
-    const dx = e.clientX - inizio.x;
-    if (!ist.trascinato && Math.abs(dx) < 8) return;
-    ist.trascinato = true;
-    scena.classList.add('in-trascinamento');
-    ist.camera.pan = inizio.pan + dx;
+    const p = punti.get(e.pointerId);
+    if (!p) return;
+    p.x = e.clientX;
+    p.y = e.clientY;
+    if (pizzico && punti.size >= 2) {
+      const ora = dueDita();
+      impostaZoom(ist, pizzico.zoom * (ora.distanza / pizzico.distanza));
+      ist.camera.pan = pizzico.pan + (ora.cx - pizzico.cx);
+      ist.camera.panY = pizzico.panY + (ora.cy - pizzico.cy);
+      applicaCamera(ist);
+      return;
+    }
+    if (!giro || giro.id !== e.pointerId) return;
+    const dx = e.clientX - giro.x;
+    const dy = e.clientY - giro.y;
+    if (!ist.trascinato) {
+      if (Math.hypot(dx, dy) < 8) return;
+      ist.trascinato = true;
+      presa(true);
+      try { scena.setPointerCapture(e.pointerId); } catch { /* puntatore già rilasciato */ }
+    }
+    if (giro.sposta || ist.camera.vista === 'alto') {
+      ist.camera.pan = giro.pan + dx;
+      ist.camera.panY = giro.panY + dy;
+    } else {
+      ist.camera.giro = giro.giro + giro.verso * dx * giro.gradiPerPx;
+    }
     applicaCamera(ist);
   });
-  const fine = () => {
-    inizio = null;
-    scena.classList.remove('in-trascinamento');
+
+  const fine = (e) => {
+    if (!punti.delete(e.pointerId)) return;
+    if (punti.size < 2) pizzico = null;
+    if (punti.size > 0) {
+      giro = null; // il dito rimasto dopo un pizzico non fa girare
+      return;
+    }
+    const girato = giro && ist.trascinato && !giro.sposta && ist.camera.vista !== 'alto';
+    giro = null;
+    presa(false);
+    if (girato) {
+      const lato = Math.round(ist.camera.giro / 90) * 90;
+      if (Math.abs(ist.camera.giro - lato) < SCATTO_GIRO) {
+        ist.camera.giro = lato;
+        applicaCamera(ist);
+      }
+    }
     // Il click che segue un trascinamento va ignorato: si azzera al giro dopo.
     setTimeout(() => { ist.trascinato = false; }, 0);
   };
   ascolta(ist, scena, 'pointerup', fine);
   ascolta(ist, scena, 'pointercancel', fine);
+
+  // Con due dita sulla scena la pagina non deve né scorrere né ingrandirsi.
+  const attivo = (tipo, fn) => {
+    scena.addEventListener(tipo, fn, { passive: false });
+    ist.ascoltatori.push([scena, tipo, fn]);
+  };
+  const fermaDueDita = (e) => {
+    if (e.touches && e.touches.length >= 2 && e.cancelable) e.preventDefault();
+  };
+  attivo('touchstart', fermaDueDita);
+  attivo('touchmove', fermaDueDita);
+  attivo('gesturestart', (e) => e.preventDefault()); // Safari
+
+  // Trackpad: il pizzico arriva come rotella con Ctrl; lo scorrimento di lato sposta.
+  attivo('wheel', (e) => {
+    if (e.ctrlKey) {
+      e.preventDefault();
+      impostaZoom(ist, fattoreZoom(ist) * Math.exp(-e.deltaY * 0.012));
+    } else if (fattoreZoom(ist) > 1.05 && Math.abs(e.deltaX) > Math.abs(e.deltaY)) {
+      const prima = ist.camera.pan;
+      ist.camera.pan -= e.deltaX;
+      applicaCamera(ist);
+      if (ist.camera.pan === prima) return; // già al bordo: la pagina scorre
+      e.preventDefault();
+    } else {
+      return;
+    }
+    presa(true);
+    applicaCamera(ist);
+    clearTimeout(timerRotella);
+    timerRotella = setTimeout(() => { if (punti.size === 0) presa(false); }, 160);
+  });
 }

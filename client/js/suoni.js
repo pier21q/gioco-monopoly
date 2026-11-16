@@ -99,6 +99,14 @@ function rumore(durata, { volume = 0.08, ritardo = 0, frequenza = 1800, q = 1.2,
   sorgente.start(t, Math.random() * 0.3, durata + 0.02);
 }
 
+/** Sul telefono, con i suoni accesi, un colpetto di vibrazione (dove esiste). */
+function vibra(ms) {
+  if (!acceso || typeof navigator === 'undefined' || typeof navigator.vibrate !== 'function') return;
+  // Prima di un tocco il browser la blocca (e lo scrive in console): si aspetta.
+  if (navigator.userActivation && !navigator.userActivation.hasBeenActive) return;
+  try { navigator.vibrate(ms); } catch { /* non concessa: niente */ }
+}
+
 export const suoni = {
   /** Dadi che rotolano: una manciata di colpetti sempre più radi. */
   dadi() {
@@ -134,6 +142,7 @@ export const suoni = {
     });
   },
   turno() {
+    vibra(35);
     nota(659, 0.12, { volume: 0.05 });
     nota(988, 0.25, { volume: 0.05, ritardo: 0.11 });
   },

@@ -32,6 +32,7 @@
  */
 
 import { REGOLE } from '/dati/regole.js';
+import { suoni } from '/js/suoni.js';
 
 /** Palette dei giocatori, uguale a COLORI_GIOCATORE di server/protocollo.js. */
 export const COLORI = Object.freeze([
@@ -198,7 +199,7 @@ function costruisciIngresso(radice, stato, dispatch) {
     name: 'nome',
     classe: 'campo__input',
     type: 'text',
-    autocomplete: 'nickname',
+    autocomplete: 'off',
     maxlength: String(NOME_MAX),
     required: true,
     spellcheck: 'false',
@@ -588,7 +589,17 @@ function aggiornaSala(radice, stato) {
   if (suggerimento.textContent !== testo) suggerimento.textContent = testo;
 }
 
-/** Due dadi che girano piano sopra il titolo: stessi cubi del tabellone (tabellone.css). */
+// Rotazione del cubo che mostra la faccia n (le stesse facce di tabellone.css).
+const GIRO_FACCIA = { 1: [0, 0], 2: [-90, 0], 3: [0, -90], 4: [0, 90], 5: [90, 0], 6: [180, 0] };
+const DURATA_LANCIO_EROE = 760;
+// Il cubo resta un po' girato: si vedono anche il sopra e un fianco.
+const POSA_EROE = 'rotateX(-22deg) rotateY(-26deg)';
+
+/**
+ * Due dadi sopra il titolo: girano piano finché non li tocchi, poi si lanciano
+ * davvero (un lancio per gioco, non conta per nessuna partita). Sono gli
+ * stessi cubi del tabellone (tabellone.css).
+ */
 function dadiEroe() {
   const dado = () => {
     const cubo = el('span', { classe: 'dado__cubo' });
@@ -598,7 +609,50 @@ function dadiEroe() {
     }
     return el('span', { classe: 'dado' }, cubo);
   };
-  return el('div', { classe: 'eroe-dadi', 'aria-hidden': 'true' }, dado(), dado());
+  const dadi = [dado(), dado()];
+  const esito = el('p', { classe: 'eroe__esito', role: 'status' }, 'Toccali per lanciarli');
+  const lancio = el('button', {
+    type: 'button',
+    classe: 'eroe-dadi',
+    'aria-label': 'Lancia i dadi, solo per gioco',
+  }, dadi);
+
+  let giri = 0;
+  let timer = null;
+  lancio.addEventListener('click', () => {
+    const valori = dadi.map(() => 1 + Math.floor(Math.random() * 6));
+    giri += 2;
+    lancio.classList.remove('eroe-dadi--lancio');
+    void lancio.offsetWidth; // riavvia il salto
+    const primo = !lancio.classList.contains('eroe-dadi--lanciati');
+    lancio.classList.add('eroe-dadi--lanciati', 'eroe-dadi--lancio');
+    dadi.forEach((d, k) => {
+      const cubo = d.firstElementChild;
+      if (primo) {
+        // Dal giro lento alla posa di partenza senza transizione: così il
+        // primo lancio fa i suoi giri interi come i successivi.
+        cubo.style.transition = 'none';
+        cubo.style.transform = `${POSA_EROE} rotateX(0deg) rotateY(0deg)`;
+        void cubo.offsetWidth;
+        cubo.style.transition = '';
+      }
+      const [x, y] = GIRO_FACCIA[valori[k]];
+      cubo.style.transform = `${POSA_EROE} rotateX(${x + giri * 360}deg) rotateY(${y + giri * 360}deg)`;
+    });
+    suoni.dadi();
+    esito.textContent = '\u00a0';
+    esito.classList.remove('eroe__esito--doppio');
+    clearTimeout(timer);
+    timer = setTimeout(() => {
+      lancio.classList.remove('eroe-dadi--lancio');
+      const doppio = valori[0] === valori[1];
+      esito.classList.toggle('eroe__esito--doppio', doppio);
+      esito.textContent = doppio
+        ? `Doppio ${valori[0]}: in partita rilanceresti`
+        : `${valori[0]} e ${valori[1]}: avanzeresti di ${valori[0] + valori[1]}`;
+    }, DURATA_LANCIO_EROE);
+  });
+  return el('div', { classe: 'eroe' }, lancio, esito);
 }
 
 /** Riepilogo delle regole nella sala d'attesa: le varianti scelte e chi le decide. */

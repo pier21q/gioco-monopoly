@@ -275,25 +275,48 @@ h1, h2, h3,
   background: #3a1f1c;
 }
 
-/* --- Dadi sopra il titolo (ingresso) -------------------------------------- */
+/* --- Dadi sopra il titolo (ingresso): si toccano e si lanciano ----------- */
 
+.eroe {
+  display: grid;
+  justify-items: center;
+  margin-bottom: var(--spazio-4);
+}
 .eroe-dadi {
   --u: 4.25rem;
   --tab-via: var(--ceralacca);
   display: flex;
   justify-content: center;
   gap: 2.25rem;
-  height: 5.5rem;
-  margin-bottom: var(--spazio-5);
+  height: 7rem;
+  margin: 0;
+  padding: 0.75rem 1.75rem;
+  border: 0;
+  border-radius: var(--raggio-m);
+  background: none;
+  color: inherit;
+  font: inherit;
   perspective: 38rem;
+  cursor: pointer;
+  touch-action: manipulation;
+  -webkit-tap-highlight-color: transparent;
+}
+.eroe-dadi:focus-visible {
+  outline: 3px solid var(--colore-focus);
+  outline-offset: 2px;
 }
 .eroe-dadi .dado {
   transform: none;
   filter: drop-shadow(0 1.1rem 0.9rem rgb(0 0 0 / 0.45));
+  transition: translate 180ms cubic-bezier(0.2, 0.8, 0.3, 1);
 }
 .eroe-dadi .dado::after {
   display: none;
 }
+@media (hover: hover) {
+  .eroe-dadi:hover .dado { translate: 0 -0.35rem; }
+}
+.eroe-dadi:active .dado { translate: 0 0.15rem; }
 .eroe-dadi .dado__cubo {
   transition: none;
   animation: eroe-gira 11s linear infinite;
@@ -302,12 +325,38 @@ h1, h2, h3,
   animation-duration: 14s;
   animation-direction: reverse;
 }
+/* Dopo il primo lancio i cubi smettono di girare e mostrano la faccia uscita. */
+.eroe-dadi.eroe-dadi--lanciati .dado .dado__cubo {
+  animation: none;
+  transition: transform 720ms cubic-bezier(0.2, 0.75, 0.25, 1);
+}
+.eroe-dadi.eroe-dadi--lancio .dado { animation: eroe-salto 700ms cubic-bezier(0.3, 0, 0.4, 1); }
+.eroe-dadi.eroe-dadi--lancio .dado + .dado { animation-delay: 50ms; }
 @keyframes eroe-gira {
   from { transform: rotateX(-24deg) rotateY(0deg) rotateZ(8deg); }
   to   { transform: rotateX(-24deg) rotateY(360deg) rotateZ(8deg); }
 }
+@keyframes eroe-salto {
+  0%   { translate: 0 0; }
+  35%  { translate: 0 -2.6rem; }
+  70%  { translate: 0 0; }
+  82%  { translate: 0 -0.45rem; }
+  100% { translate: 0 0; }
+}
+.eroe__esito {
+  min-height: 1.5em;
+  margin: 0;
+  font-size: var(--testo-s);
+  color: var(--colore-testo-tenue);
+}
+.eroe__esito--doppio {
+  color: var(--ottone);
+  font-weight: 700;
+}
 @media (prefers-reduced-motion: reduce) {
   .eroe-dadi .dado__cubo { animation: none; transform: rotateX(-24deg) rotateY(-34deg) rotateZ(8deg); }
+  .eroe-dadi.eroe-dadi--lanciati .dado .dado__cubo { transition: none; }
+  .eroe-dadi.eroe-dadi--lancio .dado { animation: none; }
 }
 
 /* --- Mentre dadi e pedina si muovono -------------------------------------- */
