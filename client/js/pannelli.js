@@ -696,7 +696,7 @@ export function testoEvento(ev, p) {
     case 'giocatoreEntrato': return `${d.nome || chi} entra nella stanza`;
     case 'giocatoreUscito': return `${chi} esce dalla stanza`;
     case 'connessione': return d.connesso ? `${chi} si è riconnesso` : `${chi} si è disconnesso`;
-    case 'partitaIniziata': return `La partita comincia: ${d.denaroIniziale ? `${euro(d.denaroIniziale)} a testa` : 'buon divertimento'}`;
+    case 'partitaIniziata': return `La partita comincia: ${d.denaroIniziale ? `${euro(d.denaroIniziale)} a testa` : 'buon divertimento'}${d.costruzione === 'sosta' ? '. Si costruisce solo sul colore su cui ci si ferma' : ''}`;
     case 'turno': return `Turno ${d.numero}: tocca a ${chi}`;
     case 'dadi': return d.dadi ? `${chi} lancia ${d.dadi[0]} e ${d.dadi[1]}${d.doppio ? ' (doppio)' : ''}` : `${chi} lancia i dadi`;
     case 'movimento': return `${chi} va su ${nomeCasella(d.a)}`;

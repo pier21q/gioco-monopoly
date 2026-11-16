@@ -1,0 +1,14 @@
+# Pubblicazione su Render (https://render.com): un servizio web Node gratuito
+# che tiene il gioco raggiungibile da un link pubblico, senza il tuo computer.
+# Vedi "Metterlo online" nel README.
+services:
+  - type: web
+    name: gioco-monopoly
+    runtime: node
+    plan: free
+    buildCommand: npm install
+    startCommand: npm start
+    healthCheckPath: /salute
+    envVars:
+      - key: NODE_VERSION
+        value: "22"

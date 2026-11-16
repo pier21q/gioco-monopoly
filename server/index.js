@@ -388,7 +388,7 @@ function collegaSocket(socket, { publicUrl, random, ora }) {
 
     avviaPartita(m) {
       if (!inStanza()) return inviaErrore(socket, 'NON_IN_STANZA', { rif: m.rif });
-      const esito = stanze.avvia(ctx.stanza, ctx.giocatoreId, { random, ora });
+      const esito = stanze.avvia(ctx.stanza, ctx.giocatoreId, { random, ora, regole: m.regole });
       if (esito.errore) return inviaErrore(socket, esito.errore.codice, extraErrore(esito.errore, m.rif));
       return stanze.diffondiAggiornamento(ctx.stanza, esito.eventi);
     },

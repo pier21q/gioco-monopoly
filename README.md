@@ -24,6 +24,13 @@ npm install
 
 ## Avvio
 
+Su Mac basta un doppio clic su **Avvia Monopoly.command** nella cartella del
+progetto: accende il gioco e apre il browser. Finché la finestra del Terminale
+resta aperta il gioco è acceso; chiudila per spegnerlo. La prima volta macOS
+può chiedere conferma: tasto destro sul file, poi **Apri**.
+
+Da terminale:
+
 ```bash
 npm start
 ```
@@ -66,12 +73,34 @@ dove lo apri:
 
 - **Hosting.** Su un servizio che esegue applicazioni Node basta `npm start`;
   la porta viene letta da `PORT`. Il servizio deve supportare i WebSocket.
+  Vedi il capitolo qui sotto per farlo gratis con Render.
 
 Ogni scheda del browser è un giocatore distinto: per provare da solo puoi
 aprire il link in più schede. Se ricarichi la pagina rientri al tuo posto da
 solo. Se chiudi la scheda per sbaglio, riapri il link dallo stesso browser:
 in alto compare il pulsante **Riprendi la partita**, che ti riporta al tuo
 posto (vale per l'ultima partita a cui sei entrato da quel browser).
+
+## Metterlo online (senza tenere acceso il computer)
+
+Il file `render.yaml` descrive il servizio per [Render](https://render.com),
+che ha un piano gratuito adatto a un gioco fra amici.
+
+1. Il progetto deve stare su GitHub (`git push`).
+2. Su Render: **New → Blueprint**, scegli il repository e conferma. Render
+   legge `render.yaml`, installa e avvia il gioco.
+3. A fine installazione Render mostra l'indirizzo pubblico, del tipo
+   `https://gioco-monopoly.onrender.com`: è il link da aprire dal telefono e
+   da mandare agli amici. I link d'invito delle stanze lo usano da soli.
+
+Cosa sapere del piano gratuito:
+
+- Dopo circa 15 minuti senza nessuno collegato il servizio si addormenta. Il
+  primo che riapre il link aspetta fino a un minuto, poi tutto è normale.
+  Finché almeno una pagina del gioco è aperta il servizio resta sveglio.
+- Le partite vivono in memoria: quando il servizio si addormenta o viene
+  aggiornato, le partite in corso si perdono.
+- A ogni `git push` sul ramo collegato Render ripubblica da solo.
 
 ## Variabili d'ambiente
 
@@ -126,6 +155,9 @@ Il gioco segue il regolamento classico dell'edizione italiana, in euro.
 - **Case e alberghi.** Si costruisce solo con il gruppo completo e senza
   ipoteche nel gruppo, in modo uniforme. L'albergo sostituisce 4 case. La banca
   ha 32 case e 12 alberghi. Le costruzioni si rivendono a metà prezzo.
+  Chi crea la stanza può scegliere, prima di avviare, la variante **Solo dove
+  ti fermi**: si costruisce su un colore solo nel turno in cui la propria
+  pedina si ferma su una sua casella (e sempre solo con il gruppo completo).
 - **Ipoteche.** Si incassa metà del prezzo; per riscattare si paga il valore
   d'ipoteca più il 10%. Non si ipoteca un terreno se nel gruppo ci sono case.
 - **Scambi.** Denaro, proprietà senza costruzioni e carte "Uscite gratis di
@@ -166,13 +198,25 @@ frecce (Home, Fine, Pagina su/giù per saltare), Invio o Spazio aprono il
 contratto della casella. Le finestre di dialogo trattengono il focus, si
 chiudono con Esc e lo restituiscono al pulsante da cui sono partite. I pulsanti
 non disponibili restano raggiungibili e spiegano perché non si possono usare.
-Proprietari e ipoteche si distinguono anche senza il colore. L'interfaccia
-rispetta tema scuro, riduzione delle animazioni e alto contrasto.
+Proprietari e ipoteche si distinguono anche senza il colore. L'interfaccia ha
+un solo tema (il tavolo verde) e rispetta la riduzione delle animazioni e
+l'alto contrasto.
+
+## Il tabellone 3D
+
+Il tabellone è un oggetto 3D fatto con le trasformazioni CSS, senza librerie:
+piano inclinato, pedine, case e alberghi in piedi, dadi a cubo. I pulsanti in
+alto a sinistra girano il tabellone di un lato, avvicinano il lato davanti (su
+telefono è già così, e si scorre trascinando di lato), passano alla vista
+dall'alto e accendono o spengono l'inseguimento della pedina di turno. Le
+scelte restano salvate nel browser.
 
 ## Struttura delle cartelle
 
 ```
 package.json          script npm e dipendenza ws
+Avvia Monopoly.command  doppio clic per avviare il gioco su Mac
+render.yaml           configurazione per pubblicarlo su Render
 INTERFACCE.md         contratti fra motore, server e client (stato, azioni, protocollo)
 REVISIONE.md          revisione del codice fatta prima dell'integrazione
 server/
@@ -190,12 +234,12 @@ server/
     test/             test delle regole del motore
 client/               pagine servite al browser, senza build
   index.html
-  css/                base.css, tabellone.css, pannelli.css
+  css/                base.css, tabellone.css, pannelli.css, tema.css
   js/
     app.js            avvio, stato locale, smistamento dei messaggi
     rete.js           WebSocket con riconnessione automatica
     lobby.js          schermata iniziale e sala d'attesa
-    tabellone.js      tabellone, pedine, dadi
+    tabellone.js      tabellone 3D, camera, pedine, dadi
     pannelli.js       giocatori, azioni del turno, cronaca
     dialoghi.js       finestre di dialogo (acquisto, asta, scambio, debito…) e notifiche
 tests/                test del server, delle stanze e di integrazione

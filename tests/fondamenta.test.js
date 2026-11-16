@@ -163,7 +163,7 @@ test('motore: applicaAzione rifiuta azioni sconosciute, giocatori fuori turno e 
   assert.equal(motore.applicaAzione(s, secondo, { tipo: 'lanciaDadi' }).errore.codice, 'NON_IL_TUO_TURNO');
   assert.equal(motore.applicaAzione(s, primo, { tipo: 'finisciTurno' }).errore.codice, 'FASE_ERRATA');
   assert.equal(motore.applicaAzione(s, primo, { tipo: 'compra' }).errore.codice, 'FASE_ERRATA');
-  assert.equal(motore.applicaAzione(s, primo, { tipo: 'pagaCauzione' }).errore.codice, 'FASE_ERRATA');
+  assert.equal(motore.applicaAzione(s, primo, { tipo: 'pagaCauzione' }).errore.codice, 'NON_IN_PRIGIONE');
 
   const lobby = motore.creaStatoLobby({ codice: 'K7PQ2M', hostId: primo, giocatori: giocatoriDiProva(2), ora: ORA_FISSA });
   assert.equal(motore.applicaAzione(lobby, primo, { tipo: 'lanciaDadi' }).errore.codice, 'FASE_ERRATA');

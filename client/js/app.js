@@ -551,7 +551,7 @@ async function avvia() {
         return;
       case 'avviaPartita':
         aggiornaLobby({ inAttesa: true });
-        invia({ tipo: 'avviaPartita', rif: 'avvia' });
+        invia({ tipo: 'avviaPartita', rif: 'avvia', regole: azione.regole || undefined });
         return;
       case 'esciStanza':
         invia({ tipo: 'esciStanza', rif: 'esci' });
@@ -1051,4 +1051,9 @@ function toastDiRiserva(contenitore, testo, { livello = 'info', durata = 4000 } 
 // Nel browser si avvia da solo; importato altrove (test, altri moduli) no.
 if (typeof document !== 'undefined' && document.getElementById('app')) {
   avvia().catch((err) => console.error('[app] avvio fallito:', err));
+  // Su un hosting gratuito il server si addormenta se non riceve richieste:
+  // finché una pagina è aperta lo teniamo sveglio con una richiesta leggera.
+  setInterval(() => {
+    if (document.visibilityState === 'visible') fetch('/salute', { cache: 'no-store' }).catch(() => {});
+  }, 4 * 60 * 1000);
 }

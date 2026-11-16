@@ -379,7 +379,7 @@ function bancarottaDisconnesso(stanza, giocatoreId, { ora = Date.now, random = M
 }
 
 /** Avvia la partita (solo host, almeno 2 giocatori connessi). */
-function avvia(stanza, giocatoreId, { random = Math.random, ora = Date.now } = {}) {
+function avvia(stanza, giocatoreId, { random = Math.random, ora = Date.now, regole = null } = {}) {
   if (!stanza) return errore('STANZA_INESISTENTE');
   if (stanza.stato.fase !== 'lobby') return errore('PARTITA_INIZIATA');
   if (stanza.hostId !== giocatoreId) return errore('NON_HOST');
@@ -397,6 +397,7 @@ function avvia(stanza, giocatoreId, { random = Math.random, ora = Date.now } = {
       giocatori: connessi.map((g) => ({ id: g.id, nome: g.nome, colore: g.colore, connesso: true })),
       random,
       ora,
+      opzioni: regole && regole.costruzione ? { costruzione: regole.costruzione } : undefined,
     });
   } catch (e) {
     console.error('[stanze] creaPartita fallita', stanza.codice, e);

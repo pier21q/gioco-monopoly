@@ -22,6 +22,7 @@ const ERRORI = Object.freeze({
   PROPRIETA_NON_TUA: 'Non possiedi questa proprietà',
   NON_EDIFICABILE: 'Su questa casella non si può costruire',
   GRUPPO_INCOMPLETO: 'Devi possedere tutto il gruppo di colore',
+  NON_SULLA_CASELLA: 'In questa partita costruisci solo sul colore su cui ti sei fermato in questo turno',
   COSTRUZIONE_NON_UNIFORME: 'Le costruzioni devono essere distribuite in modo uniforme',
   CASE_ESAURITE: 'La banca non ha più case disponibili',
   ALBERGHI_ESAURITI: 'La banca non ha più alberghi disponibili',

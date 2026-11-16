@@ -7,9 +7,16 @@
  *   aggiorna(stato)                 applica le differenze senza ricostruire
  *
  * Il tabellone è una griglia CSS 11x11: le 40 caselle stanno sul bordo (gli
- * angoli sono più grandi, rapporto RAPPORTO_ANGOLO), al centro c'è il
- * "tappeto" con il turno, i dadi e i mazzi Probabilità/Imprevisti. Le pedine
- * vivono in uno strato sovrapposto e si muovono casella per casella.
+ * angoli sono più grandi, rapporto RAPPORTO_ANGOLO), al centro ci sono il
+ * turno, i dadi e i mazzi Probabilità/Imprevisti. Le pedine vivono in uno
+ * strato sovrapposto e si muovono casella per casella.
+ *
+ * Il tabellone è un oggetto 3D fatto con le trasformazioni CSS: il piano di
+ * gioco è inclinato (`--tilt`) e ruotato (`--giro`) dentro una scena con
+ * prospettiva; pedine, case e alberghi sono sagome che stanno in piedi sul
+ * piano e guardano sempre verso chi gioca; i dadi sono cubi veri. La "camera"
+ * (vedi sezione Camera) segue la pedina di turno, si può ruotare di lato in
+ * lato, avvicinare e mettere a perpendicolo (vista dall'alto).
  *
  * Ogni casella è un <button class="casella" data-indice="N"> con aria-label
  * completo (nome, proprietario, costruzioni, ipoteca, affitto, pedine).
@@ -45,8 +52,20 @@ const ICONE = {
   manette: SVG('<circle cx="7" cy="15.5" r="4"/><circle cx="17" cy="15.5" r="4"/><path d="M7 11.5V8.2M17 11.5V8.2M5.2 8.2h3.6M15.2 8.2h3.6M8.8 6.5c1-2 5.4-2 6.4 0"/>'),
   freccia: SVG('<path d="M21 12H4.5M11 5.5 4.5 12l6.5 6.5"/>'),
 };
-const SVG_CASA = '<svg class="edificio casa" viewBox="0 0 16 16" aria-hidden="true" focusable="false"><path d="M1.5 8.2 8 2.2l6.5 6v6.3h-13z"/></svg>';
-const SVG_ALBERGO = '<svg class="edificio albergo" viewBox="0 0 28 16" aria-hidden="true" focusable="false"><path d="M1.5 7.5 6 2.5h16l4.5 5v7h-25z"/><path d="M12 14.5v-4h4v4" class="porta"/></svg>';
+// Sagome in piedi sul tabellone: due facce (fronte e fianco) per dare volume.
+const SVG_CASA = '<svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path class="e-fianco" d="M15.5 10.5 22 7.2v11L15.5 22z"/><path class="e-fronte" d="M3 10.5h12.5V22H3z"/><path class="e-tetto-fianco" d="M9.2 3 15.6.6 23 7.2l-6.4 3.6z"/><path class="e-tetto" d="M1.6 10.9 9.2 3l7.6 7.9z"/><path class="e-porta" d="M7.4 22v-5.6h3.6V22z"/></svg>';
+const SVG_ALBERGO = '<svg viewBox="0 0 36 28" aria-hidden="true" focusable="false"><path class="e-fianco" d="M26 11.5 34 8v14.5L26 27z"/><path class="e-fronte" d="M3 11.5h23V27H3z"/><path class="e-tetto-fianco" d="M9.5 3 18 .6 35 8l-8.5 3.8z"/><path class="e-tetto" d="M1.4 12 9.5 3h9.8l7.9 9z"/><path class="e-porta" d="M12.4 27v-6.4h4.4V27zM6 15.5h3.4v3.2H6zm13.8 0h3.4v3.2h-3.4z"/></svg>';
+const SVG_PEDINA = '<svg viewBox="0 0 40 60" aria-hidden="true" focusable="false"><ellipse class="p-base" cx="20" cy="53" rx="15" ry="6"/><path class="p-corpo" d="M13.5 28c0 12-8 15-8 25h29c0-10-8-13-8-25z"/><path class="p-ombra" d="M22 28c1 12 6 16 6 25h6.5c0-10-8-13-8-25z"/><ellipse class="p-collo" cx="20" cy="28.5" rx="9.5" ry="3.4"/><circle class="p-testa" cx="20" cy="15" r="12"/><path class="p-ombra" d="M20 3a12 12 0 0 1 0 24 14 14 0 0 0 0-24z"/><ellipse class="p-luce" cx="15" cy="9.5" rx="4.2" ry="3" transform="rotate(-30 15 9.5)"/></svg>';
+
+const ICONE_CAMERA = {
+  sinistra: SVG('<path d="M4 4v6h6"/><path d="M4.6 10A8 8 0 1 1 6 17.5"/>'),
+  destra: SVG('<path d="M20 4v6h-6"/><path d="M19.4 10A8 8 0 1 0 18 17.5"/>'),
+  alto: SVG('<rect x="4" y="4" width="16" height="16" rx="1.5"/><rect x="8.5" y="8.5" width="7" height="7"/>'),
+  zoom: SVG('<circle cx="10.5" cy="10.5" r="6.5"/><path d="m15.5 15.5 5 5M10.5 7.8v5.4M7.8 10.5h5.4"/>'),
+  segui: SVG('<circle cx="12" cy="12" r="3.2" class="pieno"/><path d="M12 2.5v4M12 17.5v4M2.5 12h4M17.5 12h4"/><circle cx="12" cy="12" r="7.2"/>'),
+};
+const CHIAVE_CAMERA = 'monopoly.camera';
+const TILT_3D = 54;                     // gradi di inclinazione del piano
 
 /** Istanza corrente (il client ha un solo tabellone). */
 let corrente = null;
@@ -113,6 +132,9 @@ export function render(radice, stato, opzioni = {}) {
     selezione: null,
     focoIndice: 0,
     ascoltatori: [],
+    camera: leggiCamera(),
+    lato: 0,                      // lato del tabellone in px
+    osservatore: null,
   };
   corrente = ist;
 
@@ -156,8 +178,9 @@ export function distruggi() {
   const ist = corrente;
   if (!ist) return;
   ist.animazioni.forEach((token) => { token.annullato = true; });
-  clearInterval(ist.timerDadi);
+  clearTimeout(ist.timerDadi);
   ist.ascoltatori.forEach(([el, tipo, fn]) => el.removeEventListener(tipo, fn));
+  if (ist.osservatore) ist.osservatore.disconnect();
   if (ist.el.tab && ist.el.tab.parentNode === ist.radice) ist.radice.removeChild(ist.el.tab);
   corrente = null;
 }
@@ -260,18 +283,48 @@ function costruisci(ist) {
   const centro = creaCentro(ist);
   griglia.appendChild(centro);
 
+  const edifici = el('div', 'tab__edifici');
+  edifici.setAttribute('aria-hidden', 'true');
+  griglia.appendChild(edifici);
+
   const strato = el('div', 'tab__pedine');
   strato.setAttribute('aria-hidden', 'true');
   griglia.appendChild(strato);
 
-  tab.appendChild(griglia);
+  // Scena 3D: prospettiva → camera (inclinazione e giro) → piano di gioco con il suo spessore.
+  const scena = el('div', 'tab__scena');
+  const camera = el('div', 'tab__camera');
+  camera.appendChild(griglia);
+  ['sud', 'ovest', 'nord', 'est'].forEach((lato) => {
+    const fianco = el('span', `tab__fianco tab__fianco--${lato}`);
+    fianco.setAttribute('aria-hidden', 'true');
+    camera.appendChild(fianco);
+  });
+  const ombra = el('span', 'tab__ombra');
+  ombra.setAttribute('aria-hidden', 'true');
+  camera.appendChild(ombra);
+  scena.appendChild(camera);
+  tab.appendChild(scena);
+  tab.appendChild(creaComandiCamera(ist));
   radice.replaceChildren(tab);
 
   ist.el.tab = tab;
+  ist.el.scena = scena;
   ist.el.griglia = griglia;
   ist.el.strato = strato;
+  ist.el.edifici = edifici;
+
+  applicaCamera(ist);
+  misura(ist);
+  if (typeof ResizeObserver === 'function') {
+    ist.osservatore = new ResizeObserver(() => misura(ist));
+    ist.osservatore.observe(radice);
+  }
+  ascolta(ist, window, 'resize', () => misura(ist));
+  trascinamento(ist, scena);
 
   ascolta(ist, griglia, 'click', (e) => {
+    if (ist.trascinato) return; // era uno spostamento della vista, non un tocco
     const b = e.target.closest('.casella');
     if (b && griglia.contains(b)) scegli(ist, Number(b.dataset.indice));
   });
@@ -298,12 +351,15 @@ function creaCasella(ist, c, i) {
   b.style.gridRow = String(riga + 1);
   b.style.gridColumn = String(colonna + 1);
 
+  // La "faccia" è il cartoncino della casella, girato come sul tabellone vero:
+  // la fascia colore verso il centro, il testo leggibile da fuori.
+  const faccia = el('span', 'casella__faccia');
   const gruppo = c.gruppo && ist.gruppi[c.gruppo];
   if (c.tipo === 'proprieta') {
     b.style.setProperty('--gruppo', (gruppo && gruppo.colore) || '#888888');
     const banda = el('span', 'casella__banda');
     banda.appendChild(el('span', 'casella__edifici'));
-    b.appendChild(banda);
+    faccia.appendChild(banda);
   }
 
   const testo = el('span', 'casella__testo');
@@ -327,18 +383,19 @@ function creaCasella(ist, c, i) {
     if (c.prezzo != null) testo.appendChild(el('span', 'casella__prezzo', euro(c.prezzo)));
     else if (c.importoTassa != null) testo.appendChild(el('span', 'casella__prezzo', `Paga ${euro(c.importoTassa)}`));
   }
-  b.appendChild(testo);
+  faccia.appendChild(testo);
 
   if (c.prezzo != null) {
     const prop = el('span', 'casella__proprietario');
     prop.hidden = true;
     prop.setAttribute('aria-hidden', 'true');
-    b.appendChild(prop);
+    faccia.appendChild(prop);
     const timbro = el('span', 'casella__timbro', 'Ipotecata');
     timbro.hidden = true;
     timbro.setAttribute('aria-hidden', 'true');
-    b.appendChild(timbro);
+    faccia.appendChild(timbro);
   }
+  b.appendChild(faccia);
 
   b.setAttribute('aria-label', c.nome);
   return b;
@@ -434,7 +491,9 @@ function creaCentro(ist) {
 
   const codice = el('p', 'tab-centro__codice');
 
-  centro.append(turno, zonaDadi, mazzi, codice);
+  const dritto = el('div', 'tab__centro-dritto');
+  dritto.append(turno, zonaDadi, mazzi, codice);
+  centro.appendChild(dritto);
   Object.assign(ist.el, {
     centro, turnoSegno: segno, turnoNome: nome, turnoFase: fase, turnoNumero: numero,
     zonaDadi, dadi, totale, mazzoP, mazzoI, carta, cartaGlifo, cartaMazzo, cartaTesto, cartaChi, codice,
@@ -442,11 +501,32 @@ function creaCentro(ist) {
   return centro;
 }
 
+/** Un dado è un cubo: 6 facce con i puntini, girato per mostrare in alto il valore. */
 function creaDado() {
   const d = el('span', 'dado');
   d.dataset.valore = '0';
-  for (let k = 0; k < 9; k += 1) d.appendChild(el('i'));
+  const cubo = el('span', 'dado__cubo');
+  for (let n = 1; n <= 6; n += 1) {
+    const f = el('span', `dado__faccia dado__faccia--${n}`);
+    for (let k = 0; k < n; k += 1) f.appendChild(el('i'));
+    cubo.appendChild(f);
+  }
+  d.appendChild(cubo);
   return d;
+}
+
+// Rotazione del cubo che porta in alto la faccia n (vedi le facce in tabellone.css).
+const GIRO_DADO = {
+  0: [0, 0], 1: [0, 0], 2: [-90, 0], 3: [0, -90], 4: [0, 90], 5: [90, 0], 6: [180, 0],
+};
+
+function mostraDado(d, valore, giriExtra = 0) {
+  d.dataset.valore = String(valore);
+  const [x, y] = GIRO_DADO[valore] || GIRO_DADO[0];
+  const cubo = d.firstElementChild;
+  d.dataset.giri = String((Number(d.dataset.giri) || 0) + giriExtra);
+  const giri = Number(d.dataset.giri) * 360;
+  cubo.style.transform = `rotateX(${x + giri}deg) rotateY(${y + giri}deg)`;
 }
 
 function creaMazzo(mazzo) {
@@ -478,6 +558,8 @@ function applica(ist, partita, { iniziale }) {
   aggiornaCarta(ist, ctx, iniziale);
   disegnaSelezione(ist);
   ist.prec = partita;
+  seguiTurno(ist, ctx, lanciati ? DURATA_DADI : 0);
+  if (iniziale) requestAnimationFrame(() => misura(ist)); // i pannelli arrivano dopo il tabellone
 }
 
 function animazioniAttive(ist) {
@@ -539,15 +621,10 @@ function aggiornaCaselle(ist, { partita, perId, giocatori }) {
     const edifici = b.querySelector('.casella__edifici');
     if (edifici && edifici.dataset.n !== String(case_)) {
       edifici.dataset.n = String(case_);
-      edifici.innerHTML = case_ >= 5 ? SVG_ALBERGO : SVG_CASA.repeat(Math.max(0, case_));
       b.classList.toggle('con-albergo', case_ >= 5);
       b.classList.toggle('con-case', case_ > 0 && case_ < 5);
-      if (!edifici.hidden && case_ > 0 && b.dataset.caseVisti !== undefined
-          && Number(b.dataset.caseVisti) < case_) {
-        edifici.classList.remove('nuovo');
-        void edifici.offsetWidth; // riavvia l'animazione
-        edifici.classList.add('nuovo');
-      }
+      const cresciuto = b.dataset.caseVisti !== undefined && Number(b.dataset.caseVisti) < case_;
+      disegnaEdifici(ist, i, case_, cresciuto);
       b.dataset.caseVisti = String(case_);
     }
 
@@ -556,6 +633,39 @@ function aggiornaCaselle(ist, { partita, perId, giocatori }) {
     if (b.getAttribute('aria-label') !== etichetta) b.setAttribute('aria-label', etichetta);
     b.classList.toggle('turno-qui', qui.some((g) => partita.turno && g.id === partita.turno.giocatoreId));
   });
+}
+
+/** Punto (in unità) lungo la fascia colore della casella: k-esimo edificio di n. */
+function puntoEdificio(indice, k, n) {
+  const { lato } = coordinate(indice);
+  const base = centroCasella(indice);
+  const R = RAPPORTO_ANGOLO;
+  const scarto = (k - (n - 1) / 2) * 0.22;
+  const dentro = 0.22; // distanza dal bordo interno della casella
+  if (lato === 'sud') return { x: base.x + scarto, y: R + 9 + dentro };
+  if (lato === 'nord') return { x: base.x - scarto, y: R - dentro };
+  if (lato === 'ovest') return { x: R - dentro, y: base.y + scarto };
+  return { x: R + 9 + dentro, y: base.y - scarto };
+}
+
+/** Case (1-4) o albergo (5) in piedi sulla fascia colore della casella. */
+function disegnaEdifici(ist, indice, quanti, cresciuto) {
+  const strato = ist.el.edifici;
+  strato.querySelectorAll(`[data-casella="${indice}"]`).forEach((e) => e.remove());
+  const albergo = quanti >= 5;
+  const n = albergo ? 1 : Math.max(0, quanti);
+  for (let k = 0; k < n; k += 1) {
+    const e = el('span', `edificio ${albergo ? 'albergo' : 'casa'}`);
+    e.dataset.casella = String(indice);
+    const sagoma = el('span', 'edificio__sagoma');
+    sagoma.innerHTML = albergo ? SVG_ALBERGO : SVG_CASA;
+    e.appendChild(sagoma);
+    const punto = puntoEdificio(indice, k, n);
+    e.style.left = `${(punto.x / UNITA_TOTALI) * 100}%`;
+    e.style.top = `${(punto.y / UNITA_TOTALI) * 100}%`;
+    if (cresciuto && (albergo || k === n - 1) && animazioniAttive(ist)) e.classList.add('nuovo');
+    strato.appendChild(e);
+  }
 }
 
 function etichettaCasella(ist, c, i, { p, prop, case_, ipotecata, qui, partita }) {
@@ -735,8 +845,12 @@ function aggiornaPedine(ist, { partita, giocatori, perId }, iniziale_, ritardo) 
     if (nuova) {
       pedina = el('span', 'pedina');
       const corpo = el('span', 'pedina__corpo');
-      corpo.appendChild(el('span', 'pedina__lettera'));
+      const figura = el('span', 'pedina__figura');
+      figura.innerHTML = SVG_PEDINA;
+      figura.appendChild(el('span', 'pedina__lettera'));
+      corpo.appendChild(figura);
       pedina.appendChild(corpo);
+      pedina.appendChild(el('span', 'pedina__ombra'));
       strato.appendChild(pedina);
       ist.pedine.set(g.id, pedina);
     }
@@ -860,7 +974,7 @@ function aggiornaDadi(ist, { partita, perId }, iniziale_) {
 
   const zona = ist.el.zonaDadi;
   if (!dadi) {
-    ist.el.dadi.forEach((d) => { d.dataset.valore = '0'; });
+    ist.el.dadi.forEach((d) => mostraDado(d, 0));
     ist.el.totale.textContent = '';
     zona.setAttribute('aria-label', 'Dadi: nessun lancio ancora');
     zona.classList.remove('doppio');
@@ -871,16 +985,16 @@ function aggiornaDadi(ist, { partita, perId }, iniziale_) {
   const etichetta = `Ultimo lancio${chi ? ` di ${chi.nome}` : ''}: ${dadi[0]} e ${dadi[1]}, totale ${dadi[0] + dadi[1]}${doppio ? ', doppio' : ''}`;
   zona.setAttribute('aria-label', etichetta);
 
-  const finisci = () => {
-    ist.el.dadi[0].dataset.valore = String(dadi[0]);
-    ist.el.dadi[1].dataset.valore = String(dadi[1]);
+  const finisci = (giri = 0) => {
+    mostraDado(ist.el.dadi[0], dadi[0], giri);
+    mostraDado(ist.el.dadi[1], dadi[1], giri);
     ist.el.totale.textContent = doppio ? `${dadi[0] + dadi[1]} · doppio` : String(dadi[0] + dadi[1]);
     zona.classList.toggle('doppio', doppio);
     zona.classList.remove('in-lancio');
   };
 
   const daAnimare = !iniziale_ && (ev ? nuovo : (nuovo && cambiatiValori)) && animazioniAttive(ist);
-  clearInterval(ist.timerDadi);
+  clearTimeout(ist.timerDadi);
   if (!daAnimare) {
     finisci();
     return false;
@@ -889,15 +1003,10 @@ function aggiornaDadi(ist, { partita, perId }, iniziale_) {
   void zona.offsetWidth;
   zona.classList.add('in-lancio');
   ist.el.totale.textContent = '';
-  const inizio = Date.now();
-  ist.timerDadi = setInterval(() => {
-    if (Date.now() - inizio >= DURATA_DADI - 60) {
-      clearInterval(ist.timerDadi);
-      finisci();
-      return;
-    }
-    ist.el.dadi.forEach((d) => { d.dataset.valore = String(1 + Math.floor(Math.random() * 6)); });
-  }, 85);
+  // I cubi rotolano (due giri completi) fino a mostrare il valore; il totale arriva a fine lancio.
+  mostraDado(ist.el.dadi[0], dadi[0], 2);
+  mostraDado(ist.el.dadi[1], dadi[1], 2);
+  ist.timerDadi = setTimeout(() => finisci(0), DURATA_DADI - 40);
   return true;
 }
 
@@ -1056,7 +1165,10 @@ function tastiera(ist, e) {
   let dest = null;
   if (DIREZIONI[e.key]) {
     const { riga, colonna } = coordinate(i);
-    const [dr, dc] = DIREZIONI[e.key];
+    // Le frecce seguono quello che si vede: con il tabellone girato cambiano direzione.
+    let [dr, dc] = DIREZIONI[e.key];
+    const quarti = ((Math.round(ist.camera.giro / 90) % 4) + 4) % 4;
+    for (let q = 0; q < quarti; q += 1) [dr, dc] = [-dc, dr];
     const vicina = INDICE_DA_CELLA.get(`${riga + dr},${colonna + dc}`);
     if (vicina !== undefined) dest = vicina;
   } else if (e.key === 'Home') {
@@ -1072,4 +1184,237 @@ function tastiera(ist, e) {
   }
   e.preventDefault();
   if (dest !== null) impostaFoco(ist, dest, true);
+}
+
+// ---------------------------------------------------------------------------
+// Camera: inclinazione, giro, zoom, inseguimento della pedina di turno
+// ---------------------------------------------------------------------------
+
+function leggiCamera() {
+  const base = { giro: 0, vista: '3d', zoom: null, segui: true, pan: 0 };
+  try {
+    const salvata = JSON.parse(localStorage.getItem(CHIAVE_CAMERA) || 'null');
+    if (salvata && typeof salvata === 'object') {
+      if (salvata.vista === 'alto') base.vista = 'alto';
+      if (typeof salvata.zoom === 'boolean') base.zoom = salvata.zoom;
+      if (typeof salvata.segui === 'boolean') base.segui = salvata.segui;
+    }
+  } catch { /* preferenze non disponibili: valori predefiniti */ }
+  try {
+    if (window.matchMedia('(prefers-reduced-motion: reduce)').matches && base.segui) base.segui = false;
+  } catch { /* nessun matchMedia */ }
+  return base;
+}
+
+function salvaCamera(ist) {
+  const { vista, zoom, segui } = ist.camera;
+  try {
+    localStorage.setItem(CHIAVE_CAMERA, JSON.stringify({ vista, zoom, segui }));
+  } catch { /* la scelta vale solo per questa pagina */ }
+}
+
+function creaComandiCamera(ist) {
+  const barra = el('div', 'tab__comandi');
+  barra.setAttribute('role', 'group');
+  barra.setAttribute('aria-label', 'Vista del tabellone');
+  const pulsante = (chiave, icona, etichetta, azione, premibile) => {
+    const b = el('button', 'tab__comando');
+    b.type = 'button';
+    b.innerHTML = icona;
+    b.setAttribute('aria-label', etichetta);
+    b.title = etichetta;
+    if (premibile) b.setAttribute('aria-pressed', 'false');
+    b.addEventListener('click', azione);
+    ist.el[`comando_${chiave}`] = b;
+    barra.appendChild(b);
+    return b;
+  };
+  pulsante('sinistra', ICONE_CAMERA.sinistra, 'Gira il tabellone a sinistra', () => gira(ist, 90));
+  pulsante('destra', ICONE_CAMERA.destra, 'Gira il tabellone a destra', () => gira(ist, -90));
+  pulsante('zoom', ICONE_CAMERA.zoom, 'Avvicina il lato davanti', () => {
+    ist.camera.zoom = !zoomAttivo(ist);
+    ist.camera.pan = 0;
+    salvaCamera(ist);
+    misura(ist);
+    centraSuTurno(ist);
+  }, true);
+  pulsante('alto', ICONE_CAMERA.alto, 'Vista dall\'alto', () => {
+    ist.camera.vista = ist.camera.vista === 'alto' ? '3d' : 'alto';
+    salvaCamera(ist);
+    misura(ist);
+  }, true);
+  pulsante('segui', ICONE_CAMERA.segui, 'Segui la pedina di turno', () => {
+    ist.camera.segui = !ist.camera.segui;
+    salvaCamera(ist);
+    applicaCamera(ist);
+    if (ist.camera.segui && ist.prec) seguiTurno(ist, contestoDi(ist.prec), 0);
+  }, true);
+  return barra;
+}
+
+function contestoDi(partita) {
+  const giocatori = Array.isArray(partita.giocatori) ? partita.giocatori : [];
+  return { partita, giocatori, perId: new Map(giocatori.map((g) => [g.id, g])) };
+}
+
+/** Lo zoom è acceso per scelta oppure, senza scelta, sugli schermi stretti. */
+function zoomAttivo(ist) {
+  if (ist.camera.vista === 'alto') return false;
+  if (typeof ist.camera.zoom === 'boolean') return ist.camera.zoom;
+  return ist.larghezza > 0 && ist.larghezza < 620;
+}
+
+/** Giro manuale di un quarto: l'inseguimento automatico si spegne. */
+function gira(ist, gradi) {
+  ist.camera.giro += gradi;
+  ist.camera.pan = 0;
+  if (ist.camera.segui) {
+    ist.camera.segui = false;
+    salvaCamera(ist);
+  }
+  applicaCamera(ist);
+}
+
+/** Misura lo spazio disponibile e sceglie il lato del tabellone e l'altezza della scena. */
+function misura(ist) {
+  if (corrente !== ist || !ist.el.tab) return;
+  const larghezza = ist.radice.clientWidth || 320;
+  const barra = document.querySelector('.barra');
+  const altoFinestra = window.innerHeight || 800;
+  const affiancato = window.matchMedia('(min-width: 64rem)').matches;
+  // Su schermi stretti il cassetto del turno è fisso in basso: il tabellone deve starci sopra.
+  const cassetto = affiancato ? null : document.querySelector('.pn--stretto .pn-turno');
+  const sotto = cassetto ? Math.min(cassetto.offsetHeight, altoFinestra * 0.42) : (affiancato ? 0 : altoFinestra * 0.3);
+  const altezzaUtile = Math.max(260, altoFinestra - (barra ? barra.offsetHeight : 56) - sotto - 40);
+  const alto = ist.camera.vista === 'alto';
+  ist.larghezza = larghezza;
+  let lato;
+  let altezzaScena;
+  if (alto) {
+    lato = Math.min(larghezza, altezzaUtile);
+    altezzaScena = lato;
+  } else {
+    // In prospettiva il lato vicino appare più largo (~1,2 volte) e il piano più basso (~0,7).
+    lato = Math.min(larghezza / 1.2, altezzaUtile / 0.74);
+    altezzaScena = lato * 0.76;
+    if (zoomAttivo(ist)) {
+      // Da vicino si guarda il lato davanti: tabellone largo quanto lo schermo, scena più alta.
+      lato = Math.max(lato, Math.min(larghezza, altezzaUtile / 0.74));
+      altezzaScena = Math.min(altezzaUtile, lato * 1.05);
+    }
+  }
+  lato = Math.max(260, Math.floor(lato));
+  ist.lato = lato;
+  const tab = ist.el.tab;
+  tab.style.setProperty('--lato', `${lato}px`);
+  tab.style.setProperty('--u', `${(lato / UNITA_TOTALI).toFixed(3)}px`);
+  tab.style.setProperty('--scena-alta', `${Math.round(altezzaScena)}px`);
+  // Spostamento verticale della camera: da vicino il bordo davanti resta in fondo alla scena.
+  if (alto) tab.style.setProperty('--su', '0px');
+  else if (zoomAttivo(ist)) tab.style.setProperty('--su', `${Math.round(altezzaScena / 2 - lato * 0.68)}px`);
+  else tab.style.setProperty('--su', `${Math.round(lato * -0.035)}px`);
+  tab.classList.toggle('tab--piccolo', lato / UNITA_TOTALI < 34 && !zoomAttivo(ist));
+  applicaCamera(ist);
+}
+
+function applicaCamera(ist) {
+  const tab = ist.el.tab;
+  if (!tab) return;
+  const c = ist.camera;
+  const alto = c.vista === 'alto';
+  const zoom = zoomAttivo(ist) ? 1.75 : 1;
+  const lato = ist.lato || 0;
+  // Di quanto si può scorrere di lato quando il tabellone avvicinato esce dalla scena.
+  const fuori = Math.max(0, (lato * zoom * 1.2 - (ist.larghezza || lato)) / 2);
+  c.pan = Math.max(-fuori, Math.min(fuori, c.pan));
+  tab.style.setProperty('--tilt', `${alto ? 0 : TILT_3D}deg`);
+  tab.style.setProperty('--giro', `${alto ? 0 : c.giro}deg`);
+  tab.style.setProperty('--zoom', String(zoom));
+  tab.style.setProperty('--pan', `${Math.round(c.pan)}px`);
+  tab.dataset.vista = alto ? 'alto' : '3d';
+  tab.classList.toggle('tab--zoom', zoom > 1);
+  const premi = (chiave, valore) => {
+    const b = ist.el[`comando_${chiave}`];
+    if (b) b.setAttribute('aria-pressed', String(valore));
+  };
+  premi('alto', alto);
+  premi('zoom', zoom > 1);
+  premi('segui', c.segui);
+  ['sinistra', 'destra', 'zoom', 'segui'].forEach((chiave) => {
+    const b = ist.el[`comando_${chiave}`];
+    if (b) b.disabled = alto;
+  });
+}
+
+/** Lato (0 sud, 1 ovest, 2 nord, 3 est) da cui si vede meglio la casella. */
+function latoDi(posizione) {
+  const p = ((posizione % NUMERO_CASELLE) + NUMERO_CASELLE) % NUMERO_CASELLE;
+  if (p === 0) return 0;
+  return Math.floor((p - 1) / 10);
+}
+
+const GIRO_PER_LATO = [0, -90, 180, 90];
+
+/** Porta davanti il lato su cui si trova la pedina di turno, lungo la via più breve. */
+function seguiTurno(ist, { partita, perId }, ritardo) {
+  const g = partita.turno ? perId.get(partita.turno.giocatoreId) : null;
+  if (!g || g.fallito) return;
+  clearTimeout(ist.timerCamera);
+  const posizione = Number(g.posizione) || 0;
+  ist.timerCamera = setTimeout(() => {
+    if (corrente !== ist) return;
+    if (ist.camera.segui && ist.camera.vista !== 'alto') {
+      const meta = GIRO_PER_LATO[latoDi(posizione)];
+      const ora = ist.camera.giro;
+      ist.camera.giro = ora + ((((meta - ora) % 360) + 540) % 360) - 180;
+    }
+    centraSuTurno(ist, posizione);
+    applicaCamera(ist);
+  }, ritardo);
+}
+
+/** Con lo zoom acceso scorre di lato fino ad avere la pedina di turno al centro. */
+function centraSuTurno(ist, posizione) {
+  if (!zoomAttivo(ist)) return;
+  let pos = posizione;
+  if (pos === undefined) {
+    const p = ist.prec;
+    const g = p && p.turno && (p.giocatori || []).find((x) => x.id === p.turno.giocatoreId);
+    if (!g) return;
+    pos = Number(g.posizione) || 0;
+  }
+  const centro = centroCasella(pos);
+  const x = centro.x - UNITA_TOTALI / 2;
+  const y = centro.y - UNITA_TOTALI / 2;
+  const a = (ist.camera.giro * Math.PI) / 180;
+  const ruotato = x * Math.cos(a) - y * Math.sin(a);
+  ist.camera.pan = -(ruotato / UNITA_TOTALI) * ist.lato * 1.75 * 1.15;
+  applicaCamera(ist);
+}
+
+/** Trascinando di lato si scorre il tabellone avvicinato (in verticale la pagina scorre normalmente). */
+function trascinamento(ist, scena) {
+  let inizio = null;
+  ascolta(ist, scena, 'pointerdown', (e) => {
+    ist.trascinato = false;
+    if (!zoomAttivo(ist) || (e.pointerType === 'mouse' && e.button !== 0)) return;
+    inizio = { x: e.clientX, pan: ist.camera.pan };
+  });
+  ascolta(ist, scena, 'pointermove', (e) => {
+    if (!inizio) return;
+    const dx = e.clientX - inizio.x;
+    if (!ist.trascinato && Math.abs(dx) < 8) return;
+    ist.trascinato = true;
+    scena.classList.add('in-trascinamento');
+    ist.camera.pan = inizio.pan + dx;
+    applicaCamera(ist);
+  });
+  const fine = () => {
+    inizio = null;
+    scena.classList.remove('in-trascinamento');
+    // Il click che segue un trascinamento va ignorato: si azzera al giro dopo.
+    setTimeout(() => { ist.trascinato = false; }, 0);
+  };
+  ascolta(ist, scena, 'pointerup', fine);
+  ascolta(ist, scena, 'pointercancel', fine);
 }

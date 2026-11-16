@@ -446,8 +446,34 @@ function costruisciSala(radice, dispatch) {
     id: 'sala-avvia',
     classe: 'pulsante pulsante--primario pulsante--grande',
     'aria-describedby': 'sala-suggerimento',
-    onclick: () => dispatch({ tipo: 'avviaPartita' }),
+    onclick: () => dispatch({ tipo: 'avviaPartita', regole: { costruzione: regolaScelta() } }),
   }, 'Avvia la partita');
+
+  // Regole della partita: le sceglie chi ha creato la stanza, prima di avviare.
+  const salvata = leggiRegolaSalvata();
+  const opzioneRegola = (valore, titolo, descrizione) => el('label', { classe: 'regola__opzione' },
+    el('input', {
+      type: 'radio',
+      name: 'regola-costruzione',
+      value: valore,
+      checked: salvata === valore,
+      onchange: () => salvaRegola(valore),
+    }),
+    el('span', { classe: 'regola__testo' },
+      el('span', { classe: 'regola__titolo' }, titolo),
+      el('span', { classe: 'regola__descrizione' }, descrizione)),
+  );
+  const riquadroRegole = el('fieldset', { id: 'sala-regole', classe: 'scheda regola', hidden: true },
+    el('legend', { classe: 'regola__legenda' }, 'Come si costruisce'),
+    opzioneRegola('libera', 'Quando vuoi',
+      'Regola classica: nel tuo turno costruisci su qualsiasi colore che possiedi per intero.'),
+    opzioneRegola('sosta', 'Solo dove ti fermi',
+      'Costruisci su un colore solo nel turno in cui la tua pedina si ferma su una sua casella, e solo se lo possiedi tutto.'),
+  );
+  function regolaScelta() {
+    const scelto = riquadroRegole.querySelector('input[name="regola-costruzione"]:checked');
+    return scelto && scelto.value === 'sosta' ? 'sosta' : 'libera';
+  }
 
   const pulsanteEsci = el('button', {
     type: 'button',
@@ -482,6 +508,7 @@ function costruisciSala(radice, dispatch) {
           'aria-relevant': 'additions removals',
         }),
       ),
+      riquadroRegole,
       el('div', { classe: 'sala__comandi' },
         el('div', { classe: 'lobby__riquadro' },
           pulsanteAvvia,
@@ -548,6 +575,8 @@ function aggiornaSala(radice, stato) {
   const suggerimento = radice.querySelector('#sala-suggerimento');
   const occupato = Boolean(stato.lobby && stato.lobby.inAttesa);
   pulsanteAvvia.hidden = !sonoHost;
+  const riquadroRegole = radice.querySelector('#sala-regole');
+  if (riquadroRegole) riquadroRegole.hidden = !sonoHost;
   pulsanteAvvia.disabled = !sonoHost || connessi < MIN_GIOCATORI || occupato || stato.connessione !== 'connesso';
   let testo;
   if (sonoHost) {
@@ -560,6 +589,22 @@ function aggiornaSala(radice, stato) {
       : 'In attesa che l\'host avvii la partita…';
   }
   if (suggerimento.textContent !== testo) suggerimento.textContent = testo;
+}
+
+const CHIAVE_REGOLA = 'monopoly.regola-costruzione';
+
+function leggiRegolaSalvata() {
+  try {
+    return localStorage.getItem(CHIAVE_REGOLA) === 'sosta' ? 'sosta' : 'libera';
+  } catch {
+    return 'libera';
+  }
+}
+
+function salvaRegola(valore) {
+  try {
+    localStorage.setItem(CHIAVE_REGOLA, valore);
+  } catch { /* archivio non disponibile: la scelta vale solo per questa pagina */ }
 }
 
 /** Link d'invito ricostruito dalla pagina corrente (se il server non l'ha dato). */

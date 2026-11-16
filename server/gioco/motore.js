@@ -62,6 +62,21 @@ const FASI = Object.freeze([
 /** Fasi in cui il giocatore di turno può gestire il proprio patrimonio. */
 const FASI_GESTIONE = Object.freeze(['daLanciare', 'mossa', 'daDecidereAcquisto']);
 
+/**
+ * Regola di costruzione scelta dall'host: 'libera' (classica: su ogni gruppo
+ * completo, nel proprio turno) oppure 'sosta' (solo sul gruppo della casella
+ * su cui la pedina si è fermata in questo turno).
+ */
+const COSTRUZIONE = Object.freeze(['libera', 'sosta']);
+
+/** Con la regola 'sosta': true se g si è fermato in questo turno su una casella del gruppo. */
+function fermoSulGruppo(stato, g, gruppo) {
+  const qui = TAB.CASELLE[g.posizione];
+  if (!qui || qui.tipo !== 'proprieta' || qui.gruppo !== gruppo) return false;
+  // Prima del primo lancio del turno la pedina è ancora dove era arrivata al turno scorso.
+  return stato.fase !== 'daLanciare' || stato.turno.doppiConsecutivi > 0;
+}
+
 const { CASE_TOTALI, ALBERGHI_TOTALI, NUMERO_CASELLE } = N;
 
 // ---------------------------------------------------------------------------
@@ -124,6 +139,7 @@ function creaStatoLobby(o) {
     log: [],
     vincitoreId: null,
     contatoreScambi: 0,
+    regole: { costruzione: 'libera' },
   };
 }
 
@@ -146,7 +162,10 @@ function creaPartita(o) {
 
   const random = typeof o.random === 'function' ? o.random : Math.random;
   const ora = typeof o.ora === 'function' ? o.ora : Date.now;
-  const opzioni = { denaroIniziale: 1500, ordineCasuale: true, ...(o.opzioni || {}) };
+  const opzioni = { denaroIniziale: 1500, ordineCasuale: true, costruzione: 'libera', ...(o.opzioni || {}) };
+  if (!COSTRUZIONE.includes(opzioni.costruzione)) {
+    throw new TypeError("creaPartita: costruzione deve essere 'libera' o 'sosta'");
+  }
   if (!Number.isInteger(opzioni.denaroIniziale) || opzioni.denaroIniziale < 0) {
     throw new TypeError('creaPartita: denaroIniziale deve essere un intero >= 0');
   }
@@ -154,6 +173,7 @@ function creaPartita(o) {
   const ordine = opzioni.ordineCasuale ? N.mescola(o.giocatori, random) : o.giocatori.slice();
   const stato = creaStatoLobby({ codice: o.codice, hostId: o.hostId ?? ordine[0].id, giocatori: ordine, ora });
   stato.giocatori = ordine.map((g) => giocatoreBase(g, opzioni.denaroIniziale));
+  stato.regole = { costruzione: opzioni.costruzione };
   stato.fase = 'daLanciare';
   stato.turno = { giocatoreId: ordine[0].id, numero: 1, doppiConsecutivi: 0 };
   stato.mazzi = {
@@ -164,7 +184,7 @@ function creaPartita(o) {
   const t = ora();
   const primo = stato.giocatori[0];
   stato.log.push(N.evento('partitaIniziata', null, `La partita inizia: tocca a ${primo.nome}`,
-    { ordine: stato.giocatori.map((g) => g.id), denaroIniziale: opzioni.denaroIniziale }, t));
+    { ordine: stato.giocatori.map((g) => g.id), denaroIniziale: opzioni.denaroIniziale, costruzione: opzioni.costruzione }, t));
   stato.log.push(N.evento('turno', primo.id, `Turno 1: tocca a ${primo.nome}`, { giocatoreId: primo.id, numero: 1 }, t));
   return stato;
 }
@@ -644,6 +664,10 @@ const GESTORI = {
     const nomeGruppo = TAB.GRUPPI[c.gruppo].nome;
     if (!N.possiedeGruppo(stato, g.id, c.gruppo)) {
       return errore('GRUPPO_INCOMPLETO', `Per costruire su ${c.nome} devi possedere tutto il gruppo ${nomeGruppo}`, { casella: i });
+    }
+    if (stato.regole && stato.regole.costruzione === 'sosta' && !fermoSulGruppo(stato, g, c.gruppo)) {
+      return errore('NON_SULLA_CASELLA',
+        `In questa partita costruisci sul gruppo ${nomeGruppo} solo nel turno in cui ti fermi su una sua casella`, { casella: i });
     }
     const ipotecata = gruppo.find((j) => voceDi(stato, j).ipotecata);
     if (ipotecata !== undefined) {

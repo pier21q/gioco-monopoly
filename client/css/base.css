@@ -4,7 +4,7 @@
  * Fondamenta visive comuni a tutta l'applicazione:
  *   1. variabili di design (palette, colori dei giocatori, spaziature,
  *      tipografia, raggi, ombre, durate)
- *   2. tema chiaro (predefinito) e scuro (prefers-color-scheme)
+ *   2. un solo tema, il tavolo da gioco (i ritocchi dei componenti sono in tema.css)
  *   3. reset leggero
  *   4. accessibilità: focus visibile, contenuto visivamente nascosto, link
  *      "salta al contenuto", movimento ridotto
@@ -37,41 +37,50 @@
   /* I colori dei gruppi del tabellone arrivano dai dati di gioco
      (GRUPPI[...].colore in /dati/tabellone.js): qui non vanno duplicati. */
 
-  /* Palette di marca. */
-  --colore-primario: #1e8e3e;
-  --colore-primario-forte: #156b2e;
-  --colore-primario-tenue: #e3f3e7;
-  --colore-su-primario: #ffffff;
-  --colore-accento: #c8102e;
+  /* Un solo tema: il tavolo da gioco. Feltro verde scuro, testo avorio,
+     ottone per le azioni principali, rosso ceralacca per gli accenti. Il
+     tabellone (tabellone.css) e i contratti restano di cartoncino chiaro. */
+  --feltro: #0d3a30;
+  --feltro-chiaro: #17594a;
+  --avorio: #f7f0dc;
+  --ottone: #ecbb4a;
+  --ottone-scuro: #a97a12;
+  --ceralacca: #c8102e;
+
+  --colore-primario: var(--ottone);
+  --colore-primario-forte: var(--ottone);
+  --colore-primario-tenue: #2a5a3a;
+  --colore-su-primario: #1c1503;
+  --colore-accento: #ff6b7d;
 
   /* Stati semantici (testo e sfondo tenue). */
-  --colore-successo: #1a7f37;
-  --colore-successo-tenue: #e6f4ea;
-  --colore-avviso: #8a5a00;
-  --colore-avviso-tenue: #fff4d6;
-  --colore-errore: #b42318;
-  --colore-errore-tenue: #fdecea;
-  --colore-info: #1d4ed8;
-  --colore-info-tenue: #e8efff;
+  --colore-successo: #8be0a6;
+  --colore-successo-tenue: #175240;
+  --colore-avviso: #ffd67a;
+  --colore-avviso-tenue: #4a4320;
+  --colore-errore: #ffa398;
+  --colore-errore-tenue: #5a2a2a;
+  --colore-info: #a9c9ff;
+  --colore-info-tenue: #1f416b;
 
-  /* Superfici e testo (tema chiaro). */
-  --colore-sfondo: #f3f1e7;          /* carta crema del tabellone */
-  --colore-superficie: #ffffff;
-  --colore-superficie-2: #faf9f4;
-  --colore-superficie-3: #ebe8da;
-  --colore-bordo: #cfcab5;
-  --colore-bordo-forte: #8f8a74;
-  --colore-testo: #1d1d1b;
-  --colore-testo-tenue: #55534a;
-  --colore-focus: #0b5fff;
-  --colore-ombra: 30 28 20;          /* rgb per le ombre */
+  /* Superfici e testo. */
+  --colore-sfondo: var(--feltro);
+  --colore-superficie: #124438;
+  --colore-superficie-2: #185244;
+  --colore-superficie-3: #206252;
+  --colore-bordo: #2f725f;
+  --colore-bordo-forte: #63a08c;
+  --colore-testo: var(--avorio);
+  --colore-testo-tenue: #b8cfc4;
+  --colore-focus: #fff3c4;
+  --colore-ombra: 0 12 8;            /* rgb per le ombre */
 
-  /* Tipografia: solo font di sistema, nessun download. */
-  --font-testo: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue",
-    "Noto Sans", "Liberation Sans", Arial, sans-serif, "Apple Color Emoji",
-    "Segoe UI Emoji";
-  --font-titoli: ui-rounded, "SF Pro Rounded", system-ui, -apple-system,
-    "Segoe UI", Roboto, sans-serif;
+  /* Tipografia: solo font di sistema, nessun download. Futura per titoli e
+     numeri (dove c'è), Avenir Next per il testo. */
+  --font-testo: "Avenir Next", Avenir, "Segoe UI", Roboto, "Helvetica Neue",
+    "Noto Sans", Arial, sans-serif, "Apple Color Emoji", "Segoe UI Emoji";
+  --font-titoli: Futura, "Century Gothic", "Trebuchet MS", "Avenir Next",
+    system-ui, sans-serif;
   --font-mono: ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas,
     "Liberation Mono", monospace;
 
@@ -80,7 +89,7 @@
   --testo-m: 1rem;
   --testo-l: 1.25rem;
   --testo-xl: clamp(1.5rem, 1.2rem + 1.2vw, 2rem);
-  --testo-xxl: clamp(2rem, 1.4rem + 2.6vw, 3.25rem);
+  --testo-xxl: clamp(2.25rem, 1.4rem + 3.6vw, 4rem);
   --interlinea: 1.5;
   --interlinea-stretta: 1.2;
 
@@ -95,56 +104,22 @@
 
   /* Forme, ombre, movimento. */
   --raggio-s: 6px;
-  --raggio-m: 10px;
-  --raggio-l: 16px;
+  --raggio-m: 12px;
+  --raggio-l: 20px;
   --raggio-pieno: 999px;
-  --ombra-1: 0 1px 2px rgb(var(--colore-ombra) / 0.12), 0 1px 3px rgb(var(--colore-ombra) / 0.08);
-  --ombra-2: 0 4px 12px rgb(var(--colore-ombra) / 0.14), 0 2px 4px rgb(var(--colore-ombra) / 0.08);
-  --ombra-3: 0 12px 32px rgb(var(--colore-ombra) / 0.2);
+  --ombra-1: 0 1px 0 rgb(255 255 255 / 0.06) inset, 0 2px 6px rgb(var(--colore-ombra) / 0.3);
+  --ombra-2: 0 1px 0 rgb(255 255 255 / 0.06) inset, 0 8px 20px rgb(var(--colore-ombra) / 0.4);
+  --ombra-3: 0 16px 40px rgb(var(--colore-ombra) / 0.55);
   --durata-breve: 120ms;
   --durata-media: 240ms;
   --curva: cubic-bezier(0.2, 0.7, 0.2, 1);
 
   /* Dimensioni di layout. */
   --altezza-barra: 3.5rem;
-  --larghezza-pannelli: 22rem;
+  --larghezza-pannelli: 23rem;
   --area-tocco: 44px;               /* dimensione minima dei bersagli (WCAG 2.5.5) */
 
-  color-scheme: light dark;
-}
-
-/* ------------------------------------------------------------------------ */
-/* 2. Tema scuro                                                            */
-/* ------------------------------------------------------------------------ */
-
-@media (prefers-color-scheme: dark) {
-  :root {
-    --colore-primario: #3fb866;
-    --colore-primario-forte: #6fd48d;
-    --colore-primario-tenue: #17321f;
-    --colore-su-primario: #08140c;
-    --colore-accento: #ff5a6e;
-
-    --colore-successo: #6fd48d;
-    --colore-successo-tenue: #143021;
-    --colore-avviso: #f5c451;
-    --colore-avviso-tenue: #3a2d0c;
-    --colore-errore: #ff8a80;
-    --colore-errore-tenue: #3d1614;
-    --colore-info: #8fb0ff;
-    --colore-info-tenue: #172447;
-
-    --colore-sfondo: #111613;
-    --colore-superficie: #1b211d;
-    --colore-superficie-2: #212924;
-    --colore-superficie-3: #2b352f;
-    --colore-bordo: #3c4840;
-    --colore-bordo-forte: #6d7b71;
-    --colore-testo: #ecefe9;
-    --colore-testo-tenue: #a9b3ab;
-    --colore-focus: #7fb2ff;
-    --colore-ombra: 0 0 0;
-  }
+  color-scheme: dark;
 }
 
 /* ------------------------------------------------------------------------ */
@@ -349,8 +324,7 @@ a {
   opacity: 0.55;
 }
 
-/* Sfondo "forte": il testo bianco sul verde base (#1e8e3e) arriva solo a
-   4,2:1, sotto il minimo AA di 4,5:1; sul verde forte (#156b2e) è 6,6:1. */
+/* Ottone con testo scuro: contrasto 10:1. */
 .pulsante--primario {
   background: var(--colore-primario-forte);
   border-color: var(--colore-primario-forte);

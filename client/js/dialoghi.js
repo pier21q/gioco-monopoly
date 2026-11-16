@@ -384,6 +384,14 @@ export function motivoCostruisci(p, id, indice) {
   if (!c || c.tipo !== 'proprieta') return 'Su questa casella non si costruisce';
   if (s.proprietario !== id) return 'Non è tua';
   if (!possiedeGruppo(p, c.gruppo, id)) return `Ti serve tutto il gruppo ${nomeGruppo(c.gruppo).toLowerCase()}`;
+  if (p.regole && p.regole.costruzione === 'sosta') {
+    // Regola scelta dall'host: si costruisce solo sul colore su cui ci si è fermati in questo turno.
+    const io = giocatoreDa(p, id);
+    const qui = io ? CASELLE[io.posizione] : null;
+    const fermo = Boolean(qui) && qui.tipo === 'proprieta' && qui.gruppo === c.gruppo
+      && (p.fase !== 'daLanciare' || (p.turno && p.turno.doppiConsecutivi > 0));
+    if (!fermo) return `Costruisci qui solo nel turno in cui ti fermi sul gruppo ${nomeGruppo(c.gruppo).toLowerCase()}`;
+  }
   const gruppo = indiciGruppo(c.gruppo).map((i) => statoProp(p, i));
   if (gruppo.some((x) => x.ipotecata)) return 'Nel gruppo c’è una proprietà ipotecata';
   if (s.caseCostruite >= 5) return 'C’è già un albergo';

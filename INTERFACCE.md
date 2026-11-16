@@ -458,7 +458,7 @@ Legenda "chi": **T** = solo giocatore di turno · **D** = solo debitore ·
 | `rifiutaAcquisto` | — | T | `daDecidereAcquisto` | Avvia l'asta (`asta` valorizzata, fase `asta`). Se è l'unico giocatore non fallito la casella resta alla banca. | |
 | `offertaAsta` | `importo` intero | P | `asta` | Offerta `>= offertaMassima + incrementoMinimo` e `<= denaro`. | `OFFERTA_BASSA`, `FONDI_INSUFFICIENTI`, `GIA_PASSATO` |
 | `passaAsta` | — | P | `asta` | Esce dall'asta. Il miglior offerente non può passare. Chiude l'asta quando resta uno solo. | `MIGLIOR_OFFERENTE`, `GIA_PASSATO` |
-| `costruisci` | `casella` | T | gestione | Costruisce una casa (o l'albergo se a 4 case) su `casella`. Richiede gruppo completo, nessuna ipoteca nel gruppo, costruzione uniforme (differenza max 1 nel gruppo), scorte in banca, denaro. | `GRUPPO_INCOMPLETO`, `COSTRUZIONE_NON_UNIFORME`, `CASE_ESAURITE`, `ALBERGHI_ESAURITI`, `IPOTECATA`, `FONDI_INSUFFICIENTI`, `NON_EDIFICABILE` |
+| `costruisci` | `casella` | T | gestione | Costruisce una casa (o l'albergo se a 4 case) su `casella`. Richiede gruppo completo, nessuna ipoteca nel gruppo, costruzione uniforme (differenza max 1 nel gruppo), scorte in banca, denaro. Con `stato.regole.costruzione === 'sosta'` serve anche che la pedina si sia fermata in questo turno su una casella del gruppo (fase diversa da `daLanciare`, oppure `doppiConsecutivi > 0`). | `GRUPPO_INCOMPLETO`, `NON_SULLA_CASELLA`, `COSTRUZIONE_NON_UNIFORME`, `CASE_ESAURITE`, `ALBERGHI_ESAURITI`, `IPOTECATA`, `FONDI_INSUFFICIENTI`, `NON_EDIFICABILE` |
 | `vendiCasa` | `casella` | T, D, P | gestione + `debito` + `asta` | Vende una casa alla banca a **metà** del `costoCasa`, rispettando l'uniformità. Un albergo torna a 4 case se la banca ne ha 4; altrimenti viene venduto **per intero** (`caseCostruite` → 0, ricavo `5 × costoCasa / 2`, nessuna casa restituita). | `NESSUNA_COSTRUZIONE`, `COSTRUZIONE_NON_UNIFORME` |
 | `ipoteca` | `casella` | T, D, P | gestione + `debito` + `asta` | Incassa `CASELLE[i].ipoteca`; richiede `caseCostruite === 0` su **tutto il gruppo**. | `HA_COSTRUZIONI`, `GIA_IPOTECATA` |
 | `disipoteca` | `casella` | T | gestione | Paga `ipoteca + ceil(10%)`, toglie l'ipoteca. | `NON_IPOTECATA`, `FONDI_INSUFFICIENTI` |
@@ -567,7 +567,7 @@ Usato dal motore; esportato per i test.
 |---|---|---|---|
 | `creaStanza` | — | `stanzaCreata` al mittente | Non entra nella stanza: va seguito da `entraStanza`. `TROPPE_STANZE` oltre 200 stanze aperte o 5 create dalla stessa connessione. |
 | `entraStanza` | `codice`, `nome`, `colore?` | `entrato` al mittente, poi `evento giocatoreEntrato` + `stato` a tutti | Solo in fase `lobby`, max 6 giocatori. |
-| `avviaPartita` | — | `evento partitaIniziata` + `stato` a tutti | Solo `hostId`, almeno 2 giocatori connessi. |
+| `avviaPartita` | `regole?` | `evento partitaIniziata` + `stato` a tutti | Solo `hostId`, almeno 2 giocatori connessi. `regole.costruzione` è `'libera'` (predefinita) o `'sosta'`: finisce in `stato.regole`. |
 | `azione` | `azione: { tipo, … }` (§2.4) | a tutti `evento`* + `stato`; al mittente `errore` se rifiutata | Il server ricava `giocatoreId` dal socket, mai dal messaggio. |
 | `riconnetti` | `codice`, `token` | `entrato` + `stato` (con il log **completo**) al mittente; poi `evento connessione` + `stato` a tutti | Riassocia il socket al giocatore. Funziona anche in lobby. L'eventuale socket precedente dello stesso giocatore viene chiuso con codice `4001`. |
 | `esciStanza` | — | `evento giocatoreUscito` + `stato` a tutti | Solo in `lobby`. In partita si esce con l'azione `abbandona` (§2.4); la semplice disconnessione lascia il giocatore in partita (`connesso: false`). |
@@ -1124,7 +1124,7 @@ Motore:
 `AZIONE_NON_VALIDA` · `PARAMETRI_NON_VALIDI` · `GIOCATORE_NON_VALIDO` ·
 `GIOCATORE_FALLITO` · `NON_IL_TUO_TURNO` · `FASE_ERRATA` ·
 `FONDI_INSUFFICIENTI` · `CASELLA_NON_VALIDA` · `PROPRIETA_NON_TUA` ·
-`NON_EDIFICABILE` · `GRUPPO_INCOMPLETO` · `COSTRUZIONE_NON_UNIFORME` ·
+`NON_EDIFICABILE` · `GRUPPO_INCOMPLETO` · `NON_SULLA_CASELLA` · `COSTRUZIONE_NON_UNIFORME` ·
 `CASE_ESAURITE` · `ALBERGHI_ESAURITI` · `NESSUNA_COSTRUZIONE` ·
 `HA_COSTRUZIONI` · `IPOTECATA` · `GIA_IPOTECATA` · `NON_IPOTECATA` ·
 `OFFERTA_BASSA` · `GIA_PASSATO` · `MIGLIOR_OFFERENTE` · `SCAMBIO_IN_CORSO` ·
