@@ -127,6 +127,10 @@ const ZOOM_VICINO = 1.75;               // il pulsante "Avvicina"
 const ZOOM_MIN = 1;                     // con due dita si va da qui…
 const ZOOM_MAX = 3.2;                   // …a qui
 const BORDO_DAVANTI = 0.3886;           // bordo vicino sotto il centro (più un margine), in lati, a zoom 1
+const PASSO_CONSEGNA = 160;              // ms fra un contratto e il successivo, alla consegna iniziale
+const VOLO_CONSEGNA = 560;               // ms di volo di un contratto dato all'inizio
+const VOLO_ACQUISTO = 820;               // ms di volo del contratto di un acquisto
+const CHIAVE_CONSEGNA = 'monopoly.consegna';
 const SCATTO_GIRO = 14;                 // gradi: lasciando vicino a un lato, il tabellone si raddrizza
 
 /** Istanza corrente (il client ha un solo tabellone). */
@@ -197,6 +201,7 @@ export function render(radice, stato, opzioni = {}) {
     camera: leggiCamera(),
     fineAnimazione: 0,            // istante (performance.now) in cui dadi e pedine si fermano
     festa: false,
+    inConsegna: new Set(),     // caselle il cui contratto iniziale è ancora in volo
     lato: 0,                      // lato del tabellone in px
     osservatore: null,
   };
@@ -685,7 +690,11 @@ function applica(ist, partita, { iniziale }) {
     ist.festa = true;
     if (!iniziale) festeggia(ist);
   }
+  // Proprietà iniziali: i contratti partono dal centro, uno per volta.
+  const consegna = consegnaDaMostrare(ist, ctx);
+  ist.inConsegna = new Set((consegna || []).map((v) => v.indice));
   aggiornaCaselle(ist, ctx);
+  if (consegna) mostraConsegna(ist, consegna, iniziale ? 1500 : 250);
   // Il testo al centro ("Decide se comprare…") non anticipa dove arriverà la pedina.
   const daAspettare = iniziale ? 0 : attesa();
   clearTimeout(ist.timerCentro);
@@ -736,6 +745,7 @@ function aggiornaCaselle(ist, { partita, perId, giocatori }) {
     if (badge) {
       const chiave = prop ? `${prop.id}|${prop.colore}|${prop.nome}` : '';
       if (badge.dataset.chiave !== chiave) {
+        const eraDi = badge.dataset.chiave || '';
         badge.dataset.chiave = chiave;
         badge.hidden = !prop;
         if (prop) {
@@ -748,11 +758,16 @@ function aggiornaCaselle(ist, { partita, perId, giocatori }) {
           b.style.removeProperty('--proprietario');
           delete b.dataset.proprietario;
         }
-        if (prop && ist.prec && animazioniAttive(ist)) {
-          b.classList.remove('appena-comprata');
-          void b.offsetWidth; // riavvia l'animazione
-          b.classList.add('appena-comprata');
-          setTimeout(() => b.classList.remove('appena-comprata'), 1400);
+        if (prop && ist.prec && animazioniAttive(ist) && !ist.inConsegna.has(i)) {
+          if (!eraDi && document.visibilityState === 'visible') {
+            // Comprata dalla banca: il contratto vola dal centro alla casella.
+            volaAtto(ist, i, prop, { acquisto: true, mia: prop.id === ist.mioId });
+          } else {
+            b.classList.remove('appena-comprata');
+            void b.offsetWidth; // riavvia l'animazione
+            b.classList.add('appena-comprata');
+            setTimeout(() => b.classList.remove('appena-comprata'), 1400);
+          }
         }
         b.classList.toggle('posseduta', Boolean(prop));
         b.classList.toggle('mia', Boolean(prop && prop.id === ist.mioId));
@@ -787,6 +802,107 @@ function aggiornaCaselle(ist, { partita, perId, giocatori }) {
 }
 
 /** Punto (in unità) lungo la fascia colore della casella: k-esimo edificio di n. */
+// --- contratti che volano ----------------------------------------------------
+
+/**
+ * Le proprietà iniziali (regola "proprietà iniziali") da consegnare con
+ * l'animazione: [{ g, indice }] a giro, una per giocatore, oppure null. Vale
+ * una volta per partita e solo se nessuno ha ancora lanciato i dadi.
+ */
+function consegnaDaMostrare(ist, { partita, perId }) {
+  const log = Array.isArray(partita.log) ? partita.log : [];
+  let avvio = null;
+  for (const e of log) if (e && e.tipo === 'partitaIniziata') avvio = e;
+  if (!avvio) return null;
+  const chiave = `${partita.codice || ''}|${avvio.t}`;
+  if (ist.chiaveConsegna === chiave) return null;
+  ist.chiaveConsegna = chiave;
+  if (!animazioniAttive(ist) || document.visibilityState !== 'visible') return null;
+  if (log.some((e) => e && (e.tipo === 'dadi' || e.tipo === 'lancioOrdine'))) return null;
+  try {
+    if (sessionStorage.getItem(CHIAVE_CONSEGNA) === chiave) return null; // già vista: pagina ricaricata
+    sessionStorage.setItem(CHIAVE_CONSEGNA, chiave);
+  } catch { /* senza archivio si rivede a ogni ricarica: pazienza */ }
+  const mani = [];
+  for (const e of log) {
+    const g = e && e.tipo === 'proprietaIniziali' ? perId.get(e.giocatoreId) : null;
+    if (g && e.dati && Array.isArray(e.dati.caselle)) mani.push(e.dati.caselle.map((indice) => ({ g, indice })));
+  }
+  const voci = [];
+  for (let giro = 0; mani.some((m) => m.length > giro); giro += 1) {
+    for (const m of mani) if (m[giro]) voci.push(m[giro]);
+  }
+  return voci.length ? voci : null;
+}
+
+function mostraConsegna(ist, voci, ritardo) {
+  const passo = PASSO_CONSEGNA * (veloci() ? 0.6 : 1);
+  voci.forEach(({ g, indice }, k) => {
+    volaAtto(ist, indice, g, { ritardo: ritardo + k * passo, mia: g.id === ist.mioId });
+  });
+  prolungaAttesa(ist, ritardo + (voci.length - 1) * passo + VOLO_CONSEGNA + 250);
+}
+
+/**
+ * Un contratto vola dal centro del tabellone (la banca) fino alla casella:
+ * finché è in volo la casella non mostra il proprietario, poi lampeggia e la
+ * linguetta sale. Per gli acquisti il volo è più alto e chiude con un'onda.
+ */
+function volaAtto(ist, indice, g, { ritardo = 0, mia = false, acquisto = false } = {}) {
+  const b = ist.pulsanti[indice];
+  if (!b) return;
+  b.classList.add('in-consegna');
+  const durata = (acquisto ? VOLO_ACQUISTO : VOLO_CONSEGNA) * (veloci() ? 0.7 : 1);
+  const posa = () => {
+    b.classList.remove('in-consegna', 'appena-comprata');
+    void b.offsetWidth; // riavvia l'animazione
+    b.classList.add('appena-comprata');
+    setTimeout(() => b.classList.remove('appena-comprata'), 1400);
+  };
+  const parti = () => {
+    if (corrente !== ist || b.dataset.proprietario !== g.id) {
+      b.classList.remove('in-consegna'); // tabellone smontato o proprietà già passata di mano
+      return;
+    }
+    const c = ist.caselle[indice];
+    const gruppo = c && c.gruppo && ist.gruppi[c.gruppo];
+    const atto = el('span', `tab-atto${mia ? ' tab-atto--mia' : ''}${acquisto ? ' tab-atto--acquisto' : ''}`);
+    atto.style.setProperty('--gruppo', (gruppo && gruppo.colore) || '#4a6168');
+    atto.style.setProperty('--colore-giocatore', g.colore);
+    atto.style.setProperty('--volo', `${Math.round(durata)}ms`);
+    atto.appendChild(el('span', 'tab-atto__carta'));
+    atto.style.left = '50%';
+    atto.style.top = '50%';
+    ist.el.strato.appendChild(atto);
+    void atto.offsetWidth;
+    const meta = centroCasella(indice);
+    atto.style.left = `${(meta.x / UNITA_TOTALI) * 100}%`;
+    atto.style.top = `${(meta.y / UNITA_TOTALI) * 100}%`;
+    atto.classList.add('in-volo');
+    suoni.carta();
+    setTimeout(() => {
+      if (corrente !== ist) {
+        atto.remove();
+        return;
+      }
+      posa();
+      if (acquisto || mia) {
+        const onda = el('span', 'tab-onda');
+        onda.style.left = atto.style.left;
+        onda.style.top = atto.style.top;
+        onda.style.setProperty('--colore', g.colore);
+        ist.el.strato.appendChild(onda);
+        setTimeout(() => onda.remove(), 1100);
+      }
+      if (acquisto) suoni.moneta();
+      atto.classList.add('posato');
+      setTimeout(() => atto.remove(), 320);
+    }, durata);
+  };
+  if (ritardo > 0) setTimeout(parti, ritardo);
+  else parti();
+}
+
 function puntoEdificio(indice, k, n) {
   const { lato } = coordinate(indice);
   const base = centroCasella(indice);

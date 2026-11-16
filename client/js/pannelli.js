@@ -69,6 +69,42 @@ export function lancia() {
   inviaUnaVolta({ tipo: 'lanciaDadi' });
 }
 
+// --- Contratti nuovi nella scheda del giocatore --------------------------------
+
+const proprietaViste = new Map(); // id giocatore -> Set degli indici già mostrati
+let chiaveAvvio = null;           // codice + istante d'inizio: una partita, una consegna
+let consegnaIniziale = false;     // partita appena avviata con le proprietà iniziali
+
+/** Nessuno ha ancora lanciato: le proprietà che si vedono sono quelle date all'inizio. */
+function appenaIniziata(p) {
+  const log = Array.isArray(p.log) ? p.log : [];
+  return log.some((e) => e && e.tipo === 'proprietaIniziali')
+    && !log.some((e) => e && (e.tipo === 'dadi' || e.tipo === 'lancioOrdine'));
+}
+
+/**
+ * I contratti che un giocatore non aveva entrano con un piccolo volo: alla
+ * consegna iniziale uno dopo l'altro, a tempo con quelli sul tabellone; per
+ * un acquisto, quando il contratto del tabellone si è posato.
+ */
+function segnaContrattiNuovi(li, p, g) {
+  const bottoni = [...li.querySelectorAll('.pn-prop')];
+  const indici = bottoni.map((b) => Number(String(b.dataset.chiave).slice(5)));
+  const viste = proprietaViste.get(g.id);
+  proprietaViste.set(g.id, new Set(indici));
+  if (movimentoRidotto() || document.visibilityState !== 'visible') return;
+  const quanti = p.giocatori.filter((x) => !x.fallito).length || 1;
+  const posto = Math.max(0, p.giocatori.findIndex((x) => x.id === g.id));
+  let k = 0;
+  bottoni.forEach((b, j) => {
+    if (viste ? viste.has(indici[j]) : !consegnaIniziale) return;
+    const ritardo = viste ? 700 + k * 120 : 1500 + (k * quanti + posto) * 160;
+    b.classList.add('pn-prop--nuova');
+    b.style.setProperty('--ritardo', `${ritardo}ms`);
+    k += 1;
+  });
+}
+
 // --- Denaro che scorre -------------------------------------------------------
 
 const DURATA_CONTEGGIO = 650;
@@ -692,12 +728,12 @@ function voceGiocatore(p, g, mio) {
     ? el('ul', { class: 'pn-gruppi', 'aria-label': `Proprietà di ${g.nome}` },
       [...perGruppo.entries()].map(([gruppo, caselle]) => {
         const totale = indiciGruppo(gruppo).length;
-        const completo = caselle.length === totale;
+        const completo = caselle.length === totale && totale > 1;
         const colore = (GRUPPI[gruppo] && GRUPPI[gruppo].colore) || '#4a6168';
         return el('li', { class: `pn-gruppo${completo ? ' pn-gruppo--completo' : ''}`, style: { '--colore': colore } },
           el('span', { class: 'pn-gruppo__nome' },
             nomeGruppo(gruppo),
-            el('span', { class: 'pn-gruppo__conteggio', text: `${caselle.length} di ${totale}` })),
+            el('span', { class: 'pn-gruppo__conteggio', text: completo ? 'gruppo completo' : `${caselle.length} di ${totale}` })),
           el('ul', { class: 'pn-gruppo__caselle' }, caselle.map((c) => {
             const s = statoProp(p, c.indice);
             const stato = [];
@@ -762,6 +798,7 @@ function disegnaGiocatori(p, mio) {
       li = nuovo;
       ui.firmeGiocatori.set(g.id, firma);
       if (!g.fallito) scorriImporto(li.querySelector('.pn-giocatore__denaro .importo'), g.id, g.denaro);
+      segnaContrattiNuovi(li, p, g);
       if (chiave) {
         const dest = li.querySelector(`[data-chiave="${CSS.escape(chiave)}"]`);
         if (dest) dest.focus({ preventScroll: true });
@@ -944,7 +981,7 @@ function apriAutomatici(p, mio) {
  * @param {object} stato        StatoClient dello store (accetta anche uno StatoPartita).
  * @param {(azione: object) => void} dispatch
  */
-export function render(radice, stato, dispatch) {
+export function render(radice, stato, dispatch, opzioni = {}) {
   if (!radice) return;
   if (typeof dispatch === 'function') dispatchCorrente = dispatch;
   dialoghi.aggiorna(stato, dispatchCorrente);
@@ -975,11 +1012,23 @@ export function render(radice, stato, dispatch) {
     ui.cronaca.setAttribute('aria-live', 'off');
   }
 
+  // Una partita nuova (anche nella stessa stanza): i contratti si rivedono arrivare.
+  const avvio = (p.log || []).find((e) => e && e.tipo === 'partitaIniziata');
+  const chiave = `${p.codice}|${avvio ? avvio.t : ''}`;
+  if (chiave !== chiaveAvvio) {
+    chiaveAvvio = chiave;
+    proprietaViste.clear();
+    consegnaIniziale = appenaIniziata(p);
+  } else if (consegnaIniziale && !appenaIniziata(p)) {
+    consegnaIniziale = false;
+  }
+
   disegnaTurno(p, mio);
   spostaFocusDaBloccato(radice);
   disegnaGiocatori(p, mio);
   disegnaCronaca(p);
-  apriAutomatici(p, mio);
+  // Mentre il tabellone consegna le proprietà iniziali le finestre aspettano.
+  if (opzioni.finestre !== false) apriAutomatici(p, mio);
 }
 
 /**

@@ -953,8 +953,10 @@ async function avvia() {
       mostraErroreCaricamento();
     } else {
       // Tabellone: costruito una volta per stanza, poi aggiornato.
+      let primoDisegno = false;
       if (tabellone && tabelloneDi !== partita.codice) {
         tabelloneDi = partita.codice;
+        primoDisegno = true;
         chiama(() => tabellone.render(el.tabellone, partita, {
           caselle: CASELLE,
           gruppi: GRUPPI,
@@ -976,6 +978,11 @@ async function avvia() {
         if (attesa > 40) {
           el.pannelli.classList.add('pn-attesa');
           segnaDadiPronti(null);
+          // Tabellone appena costruito (es. consegna delle proprietà iniziali):
+          // i pannelli si vedono subito, senza finestre e con i comandi fermi.
+          if (primoDisegno) {
+            chiama(() => pannelli.render(el.pannelli, stato, dispatch, { finestre: false }), 'pannelli.render');
+          }
           timerPannelli = setTimeout(() => {
             el.pannelli.classList.remove('pn-attesa');
             const ora = store.getState();

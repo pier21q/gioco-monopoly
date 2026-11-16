@@ -400,6 +400,23 @@ I pezzi si toccano:
 - **i dadi sopra il titolo**, all'ingresso: si lanciano con un clic, solo per
   gioco.
 
+I contratti volano:
+
+- **proprietà iniziali** (se la regola è accesa): all'avvio i contratti
+  partono dal centro del tabellone e si posano sulle caselle uno per volta, a
+  giro fra i giocatori; i tuoi hanno l'alone del tuo colore. La finestra "Chi
+  comincia?" aspetta la fine della consegna. Si vede una volta per partita;
+- **acquisti** (anche all'asta): il contratto vola dalla banca alla casella,
+  più alto e più grande, e quando si posa parte un'onda del colore di chi ha
+  comprato;
+- nel pannello il contratto nuovo entra nella scheda del giocatore con un
+  piccolo volo.
+
+Le **schede dei giocatori** hanno la testa della pedina (la stessa sfera
+laccata), una fascia del loro colore e le proprietà come piccoli contratti
+avorio con la fascia del gruppo; sotto ogni gruppo c'è quante ne ha ("1 di 3",
+o "gruppo completo" con il bordo d'ottone).
+
 Le pedine sono birilli laccati (base a disco, corpo a campana, collare, testa
 a sfera con l'iniziale del giocatore): un solo disegno SVG nel colore del
 giocatore, con luci e ombre sovrapposte.

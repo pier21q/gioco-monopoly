@@ -1150,8 +1150,14 @@
 #tabellone.tab--dadi-pronti .tab-dadi::before {
   content: "";
   position: absolute;
-  inset: calc(var(--u) * -0.4) calc(var(--u) * -0.7) calc(var(--u) * -0.75);
+  inset: calc(var(--u) * -1.1) calc(var(--u) * -0.7) calc(var(--u) * -0.75);
+  /* Appena sopra il piano: se è complanare al centro del tabellone, il
+     browser alterna i due sotto il cursore e il "sopra" lampeggia. */
+  transform: translateZ(calc(var(--u) * 0.02));
 }
+/* Il tocco lo prende l'area qui sopra, ferma sul piano: i cubi, che si
+   muovono, non lo intercettano. */
+#tabellone.tab--dadi-pronti .tab-dadi .dado { pointer-events: none; }
 #tabellone.tab--dadi-pronti .tab-dadi:not(.in-lancio) .dado {
   animation: dado-pronto 1.4s ease-in-out infinite alternate;
 }
@@ -1160,11 +1166,10 @@
   from { translate: 0 0 0; }
   to   { translate: 0 0 calc(var(--u) * 0.2); }
 }
+/* Col cursore sopra cambia solo il colore della scritta: spostare i cubi
+   qui li faceva rimbalzare a ogni cambio di "sopra/non sopra". */
 @media (hover: hover) {
-  #tabellone.tab--dadi-pronti .tab-dadi:not(.in-lancio):hover .dado {
-    animation: none;
-    translate: 0 0 calc(var(--u) * 0.42);
-  }
+  #tabellone.tab--dadi-pronti .tab-dadi:not(.in-lancio):hover::after { background: #ffdc82; }
 }
 #tabellone.tab--dadi-pronti .tab-dadi__totale { display: none; }
 #tabellone.tab--dadi-pronti .tab-dadi:not(.in-lancio)::after {
@@ -1173,7 +1178,7 @@
   left: 50%;
   top: 100%;
   margin-top: calc(var(--u) * 0.12);
-  transform: translateX(-50%);
+  transform: translateX(-50%) translateZ(calc(var(--u) * 0.03));
   padding: calc(var(--u) * 0.04) calc(var(--u) * 0.18);
   border-radius: 999px;
   background: #ecbb4a;
@@ -1211,3 +1216,90 @@
 /* Mentre si gira o si avvicina il tabellone con le dita, camera, pedine e
    scritte seguono subito, senza la transizione dei movimenti automatici. */
 #tabellone .tab.tab--in-presa { --camera-durata: 0ms; }
+
+/* --------------------------------------------------------------------------
+ * Contratti che volano: proprietà iniziali e acquisti
+ * ------------------------------------------------------------------------ */
+
+/* Finché il contratto è in volo la casella non mostra ancora il proprietario. */
+.casella.in-consegna .casella__proprietario { visibility: hidden; }
+.casella.in-consegna .casella__prezzo { visibility: visible; }
+
+/* Il punto si sposta sul piano (left/top), il cartoncino sopra fa l'arco. */
+.tab-atto {
+  position: absolute;
+  width: 0;
+  height: 0;
+  transform-style: preserve-3d;
+  transition: left var(--volo, 560ms) cubic-bezier(0.35, 0.1, 0.3, 1), top var(--volo, 560ms) cubic-bezier(0.35, 0.1, 0.3, 1);
+}
+.tab-atto__carta {
+  position: absolute;
+  left: calc(var(--u) * -0.34);
+  top: calc(var(--u) * -0.46);
+  width: calc(var(--u) * 0.68);
+  height: calc(var(--u) * 0.92);
+  border-radius: calc(var(--u) * 0.05);
+  background: linear-gradient(var(--gruppo, #4a6168) 0 30%, #f7f0dc 30%);
+  box-shadow:
+    inset 0 0 0 calc(var(--u) * 0.025) #14231e,
+    0 calc(var(--u) * 0.12) calc(var(--u) * 0.22) rgba(8, 30, 24, 0.5);
+  opacity: 0;
+  transition: opacity 260ms, scale 260ms;
+}
+/* Due righe d'inchiostro: da lontano si legge come un contratto. */
+.tab-atto__carta::after {
+  content: "";
+  position: absolute;
+  left: 18%;
+  right: 18%;
+  top: 46%;
+  height: 28%;
+  border-top: calc(var(--u) * 0.03) solid rgba(20, 35, 30, 0.55);
+  border-bottom: calc(var(--u) * 0.03) solid rgba(20, 35, 30, 0.3);
+}
+.tab-atto.in-volo .tab-atto__carta {
+  opacity: 1;
+  animation: atto-vola var(--volo, 560ms) cubic-bezier(0.3, 0, 0.4, 1) both;
+}
+.tab-atto--mia .tab-atto__carta,
+.tab-atto--acquisto .tab-atto__carta {
+  box-shadow:
+    inset 0 0 0 calc(var(--u) * 0.025) #14231e,
+    0 0 0 calc(var(--u) * 0.06) var(--colore-giocatore, #ecbb4a),
+    0 0 calc(var(--u) * 0.5) var(--colore-giocatore, #ecbb4a);
+}
+.tab-atto--acquisto { --quota: calc(var(--u) * 2.6); --grande: 1.7; }
+.tab-atto.posato .tab-atto__carta { opacity: 0; scale: 1.5; }
+@keyframes atto-vola {
+  0%   { translate: 0 0 calc(var(--u) * 0.3); rotate: z -50deg; scale: 0.5; opacity: 0; }
+  14%  { opacity: 1; }
+  52%  { translate: 0 0 var(--quota, calc(var(--u) * 1.5)); rotate: z 150deg; scale: var(--grande, 1.25); }
+  100% { translate: 0 0 calc(var(--u) * 0.06); rotate: z 360deg; scale: 1; opacity: 1; }
+}
+
+/* Un'onda del colore di chi ha comprato, quando il contratto si posa. */
+.tab-onda {
+  position: absolute;
+  width: 0;
+  height: 0;
+  transform-style: preserve-3d;
+}
+.tab-onda::before,
+.tab-onda::after {
+  content: "";
+  position: absolute;
+  left: calc(var(--u) * -0.6);
+  top: calc(var(--u) * -0.6);
+  width: calc(var(--u) * 1.2);
+  height: calc(var(--u) * 1.2);
+  border: calc(var(--u) * 0.09) solid var(--colore, #ecbb4a);
+  border-radius: 50%;
+  transform: translateZ(calc(var(--u) * 0.04));
+  animation: onda-compra 820ms cubic-bezier(0.2, 0.7, 0.3, 1) both;
+}
+.tab-onda::after { animation-delay: 160ms; }
+@keyframes onda-compra {
+  from { scale: 0.3; opacity: 1; }
+  to   { scale: 2.4; opacity: 0; }
+}
