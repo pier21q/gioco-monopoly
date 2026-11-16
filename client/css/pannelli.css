@@ -227,6 +227,37 @@
   transition-delay: 0s;
 }
 
+/* Con il mouse compare dopo un attimo: passando sopra un pulsante bloccato
+   per andare a premerne un altro non deve lampeggiare niente. Con la tastiera
+   (regola qui sopra, che vince se valgono tutte e due) compare subito. */
+.azione--bloccata:hover:not(:has(.btn:focus-visible)) .suggerimento {
+  transition-delay: 400ms;
+}
+
+/* Nel pannello largo il suggerimento esce SOTTO il suo pulsante: l'azione
+   principale sta sempre in cima al suo gruppo, e così non viene mai coperta
+   proprio mentre si va a premerla. (Nel cassetto dei telefoni resta sopra:
+   sotto finirebbe fuori dallo schermo.) */
+@media (min-width: 64rem) {
+  .pn-azioni .suggerimento {
+    top: calc(100% + 8px);
+    bottom: auto;
+    transform: translate(-50%, -4px);
+  }
+
+  .pn-azioni .azione--bloccata:hover .suggerimento,
+  .pn-azioni .azione--bloccata:has(.btn:focus-visible) .suggerimento {
+    transform: translate(-50%, 0);
+  }
+
+  .pn-azioni .suggerimento::after {
+    top: auto;
+    bottom: 100%;
+    border-top-color: transparent;
+    border-bottom-color: var(--pn-testo);
+  }
+}
+
 .pallino {
   display: inline-block;
   flex: none;
@@ -2117,6 +2148,15 @@
   justify-content: flex-end;
   gap: var(--spazio-2, 0.5rem);
   margin-left: auto;
+}
+
+/* Finestra admin: in fondo, staccato dal resto, "Esci da admin su questo browser". */
+.admin__browser {
+  display: grid;
+  justify-items: start;
+  gap: var(--spazio-2, 0.5rem);
+  padding-top: var(--spazio-3, 0.75rem);
+  border-top: 1px solid var(--pn-bordo);
 }
 
 /* Finestra admin: "Chiudi la stanza" lontano da "Fatto", a sinistra. */

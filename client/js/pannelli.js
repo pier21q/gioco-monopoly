@@ -379,6 +379,8 @@ function monta(radice) {
     radice, nodo, turno, titolo, guida, dadi, mioDenaro, avvisi, azioni, maniglia, pulsanti,
     schede, tab: { giocatori: tabG, cronaca: tabC }, sezioni: { giocatori: sezGiocatori, cronaca: sezCronaca },
     elencoGiocatori, cronaca, schedaAttiva: 'giocatori', firmaAvvisi: '', firmeGiocatori: new Map(),
+    // La cronaca segue la partita finché l'utente non la scorre all'indietro.
+    cronacaSegue: true,
     stretto: window.matchMedia ? window.matchMedia(QUERY_STRETTO) : { matches: false, addEventListener() {} },
   };
 
@@ -443,8 +445,21 @@ function monta(radice) {
   }
 
   cronaca.addEventListener('scroll', () => {
+    // Nascosta (scheda non attiva) non ha altezza: lì la posizione non dice niente.
+    if (cronaca.clientHeight > 0) ui.cronacaSegue = vicinoAlFondo(cronaca);
     if (vicinoAlFondo(cronaca)) segnaCronacaLetta();
   });
+}
+
+/**
+ * Porta la cronaca all'ultimo evento, subito: con lo scorrimento morbido del
+ * CSS un secondo evento arrivato durante l'animazione la trovava "non in
+ * fondo" e la cronaca smetteva di seguire la partita.
+ */
+function cronacaInFondo() {
+  const lista = ui.cronaca;
+  if (typeof lista.scrollTo === 'function') lista.scrollTo({ top: lista.scrollHeight, behavior: 'instant' });
+  else lista.scrollTop = lista.scrollHeight;
 }
 
 function impostaCassetto(aperto) {
@@ -478,6 +493,8 @@ function applicaLayout() {
       ui.sezioni[nome].hidden = false;
     }
     impostaCassetto(false);
+    // Riempita mentre era nascosta in una scheda, la cronaca era rimasta in cima.
+    if (ui.cronacaSegue) cronacaInFondo();
   }
 }
 
@@ -492,7 +509,8 @@ function attivaScheda(nome) {
     ui.sezioni[n].hidden = !attiva;
   }
   if (nome === 'cronaca') {
-    ui.cronaca.scrollTop = ui.cronaca.scrollHeight;
+    ui.cronacaSegue = true;
+    cronacaInFondo();
     segnaCronacaLetta();
   }
 }
@@ -663,11 +681,22 @@ function disegnaAvvisi(p, mio) {
   if (p.fase === 'ordine') {
     voci.push(['ordine', 'info', 'Si lanciano i dadi per decidere chi comincia', 'Vedi i lanci', () => dialoghi.apri('ordine', {}, dispatchCorrente)]);
   }
+  // Chi ha perso la connessione: se è di turno il gioco va avanti per lui dopo
+  // 45 secondi; in ogni caso dopo 5 minuti esce dalla partita
+  // (TOLLERANZA_DISCONNESSIONE_MS e ABBANDONO_DISCONNESSO_MS sul server).
   const diTurno = giocatoreDa(p, p.turno && p.turno.giocatoreId);
-  if (diTurno && !diTurno.connesso && p.fase !== 'finePartita' && diTurno.id !== mio) {
-    voci.push(['attesa', 'avviso', p.fase === 'ordine'
-      ? `${diTurno.nome} si è disconnesso: se non torna entro un minuto circa il gioco lancia i dadi al posto suo.`
-      : `${diTurno.nome} si è disconnesso: se non torna entro un minuto circa il turno passa al giocatore successivo.`, null, null]);
+  const turnoFermo = diTurno && !diTurno.connesso && !diTurno.fallito && p.fase !== 'finePartita' && diTurno.id !== mio;
+  if (turnoFermo) {
+    voci.push(['attesa', 'avviso', `${diTurno.nome} ha perso la connessione: se non torna entro un minuto circa ${p.fase === 'ordine'
+      ? 'il gioco lancia i dadi al posto suo' : 'il turno passa al giocatore successivo'}, e se non rientra entro 5 minuti esce dalla partita.`, null, null]);
+  }
+  const assenti = p.fase === 'finePartita' ? []
+    : p.giocatori.filter((g) => !g.connesso && !g.fallito && g.id !== mio && !(turnoFermo && g.id === diTurno.id));
+  if (assenti.length) {
+    const nomi = assenti.map((g) => g.nome).join(', ');
+    voci.push(['assenti', 'neutro', assenti.length === 1
+      ? `${nomi} ha perso la connessione: se non rientra entro 5 minuti esce dalla partita e i suoi beni tornano alla banca.`
+      : `${nomi} hanno perso la connessione: chi non rientra entro 5 minuti esce dalla partita e i suoi beni tornano alla banca.`, null, null]);
   }
   const io = giocatoreDa(p, mio);
   if (io && io.fallito && p.fase !== 'finePartita') {
@@ -712,7 +741,7 @@ function voceGiocatore(p, g, mio) {
   const distintivi = [];
   if (g.id === p.vincitoreId) distintivi.push(['ok', 'vincitore']);
   if (diTurno) distintivi.push(['turno', 'di turno']);
-  if (g.fallito) distintivi.push(['pericolo', (p.log || []).some((e) => e.tipo === 'abbandono' && e.giocatoreId === g.id) ? 'ha abbandonato' : 'in bancarotta']);
+  if (g.fallito) distintivi.push(['pericolo', dialoghi.haAbbandonato(p, g.id) ? 'ha abbandonato' : 'in bancarotta']);
   if (g.inPrigione && !g.fallito) distintivi.push(['avviso', `in prigione, tentativo ${Math.min(3, (g.turniInPrigione || 0) + 1)} di 3`]);
   if (!g.connesso && !g.fallito) distintivi.push(['neutro', 'disconnesso']);
   if (g.cartePrigione > 0) distintivi.push(['neutro', g.cartePrigione === 1 ? '1 carta esci gratis' : `${g.cartePrigione} carte esci gratis`]);
@@ -858,7 +887,12 @@ export function testoEvento(ev, p) {
     case 'disipoteca': return `${chi} riscatta ${nomeCasella(d.casella)} per ${euro(d.importo)}`;
     case 'scambioProposto': return `${chi} propone uno scambio ${dialoghi.aChi(nomeDi(p, d.scambio && d.scambio.aId))}`;
     case 'scambioAccettato': return `Scambio concluso tra ${nomeDi(p, d.scambio && d.scambio.daId)} e ${nomeDi(p, d.scambio && d.scambio.aId)}`;
-    case 'scambioRifiutato': return `Scambio annullato da ${nomeDi(p, d.daId)}`;
+    case 'scambioRifiutato': return d.motivo === 'scaduto' || !d.daId ? 'Proposta di scambio scaduta senza risposta' : `Scambio annullato da ${nomeDi(p, d.daId)}`;
+    case 'abbandono':
+      if (d.motivo === 'assente') return `${chi} non rientra da troppo tempo ed esce dalla partita`;
+      return d.motivo === 'debito' ? `${chi} non ha saldato il debito in tempo ed esce dalla partita` : `${chi} abbandona la partita`;
+    case 'host': return `${chi} è il nuovo host della stanza`;
+    case 'admin': return d.giocatoreId ? `${chi} è l’admin della stanza` : 'La stanza non ha più un admin';
     case 'debito': return `${chi} deve ${euro(d.importo)} ${dialoghi.aChi(nomeDi(p, d.creditoreId))}`;
     case 'debitoSaldato': return `${chi} salda il debito di ${euro(d.importo)}`;
     case 'bancarotta': return `${chi} dichiara bancarotta`;
@@ -905,13 +939,14 @@ function disegnaCronaca(p) {
   const nuovi = log.slice(da);
   if (!nuovi.length) return;
   const primoGiro = ultimaChiaveLog === null;
-  const inFondo = primoGiro || vicinoAlFondo(lista);
+  if (primoGiro) ui.cronacaSegue = true;
+  const inFondo = ui.cronacaSegue;
   const frammento = document.createDocumentFragment();
   for (const ev of nuovi) frammento.append(voceCronaca(ev, p));
   lista.append(frammento);
   while (lista.children.length > MAX_VOCI_CRONACA) lista.firstElementChild.remove();
   ultimaChiaveLog = chiavi[chiavi.length - 1];
-  if (inFondo) lista.scrollTop = lista.scrollHeight;
+  if (inFondo) cronacaInFondo();
 
   if (primoGiro) {
     // La cronaca iniziale (anche 200 eventi dopo una riconnessione) non va letta tutta:

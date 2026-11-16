@@ -40,8 +40,9 @@ Variabili d'ambiente lette dal server (nessuna è un segreto; non serve `.env`; 
 | `PUBLIC_URL` | l'host con cui il browser ha raggiunto il server | base del link condiviso (es. dietro un tunnel/proxy) |
 | `ORIGINE_LIBERA` | non impostata | con `1` disattiva il controllo dell'`Origin` sul WebSocket (§3.5), utile solo dietro proxy che riscrivono l'host |
 | `PROXY_FIDATO` | `1` su Render (variabile `RENDER`), altrimenti spenta | con `1` il server crede a `X-Forwarded-For`/`-Host`/`-Proto`; `0` la spegne anche su Render |
+| `PROXY_INTESTAZIONE_IP` | `cf-connecting-ip` su Render, altrimenti non impostata | intestazione in cui il proxy scrive l'indirizzo vero del client (`index.intestazioneIp`); se manca vale l'ultimo indirizzo di `X-Forwarded-For` |
 | `ADMIN_CHIAVE` | su Render generata (`generateValue`); in locale `.partite/chiave-admin`, creata al primo avvio | chiave del link da admin `/#admin=CHIAVE` (§3.7); è un segreto |
-| `SALVATAGGIO` | `.partite/partite.json` | file del salvataggio delle partite (`server/salvataggio.js`); `0` lo disattiva |
+| `SALVATAGGIO` | `.partite/partite.json` (`0` in `render.yaml`) | file del salvataggio delle partite (`server/salvataggio.js`); `0` lo disattiva. Un file illeggibile non viene sovrascritto: `salvataggio.caricaSenzaPerdere` lo rinomina in `<file>.illeggibile-<data>` |
 
 Se in futuro servissero segreti vanno in `.env` (già in `.gitignore`) e nel
 repository entra solo `.env.example` con valori finti.
@@ -498,7 +499,7 @@ Legenda "chi": **T** = solo giocatore di turno · **D** = solo debitore ·
 | `offertaAsta` | `importo` intero | P | `asta` | Offerta `>= offertaMassima + incrementoMinimo` e `<= denaro`. | `OFFERTA_BASSA`, `FONDI_INSUFFICIENTI`, `GIA_PASSATO` |
 | `passaAsta` | — | P | `asta` | Esce dall'asta. Il miglior offerente non può passare. Chiude l'asta quando resta uno solo. | `MIGLIOR_OFFERENTE`, `GIA_PASSATO` |
 | `costruisci` | `casella` | T | gestione | Costruisce una casa (o l'albergo se a 4 case) su `casella`. Richiede gruppo completo, nessuna ipoteca nel gruppo, costruzione uniforme (differenza max 1 nel gruppo), scorte in banca, denaro. Con `stato.regole.costruzione === 'sosta'` serve anche che la pedina si sia fermata in questo turno su una casella del gruppo: il gruppo è in `turno.soste`, oppure la pedina è sul gruppo e la fase è diversa da `daLanciare` (o `doppiConsecutivi > 0`). | `GRUPPO_INCOMPLETO`, `NON_SULLA_CASELLA`, `COSTRUZIONE_NON_UNIFORME`, `CASE_ESAURITE`, `ALBERGHI_ESAURITI`, `IPOTECATA`, `FONDI_INSUFFICIENTI`, `NON_EDIFICABILE` |
-| `vendiCasa` | `casella` | T, D, P | gestione + `debito` + `asta` | Vende una casa alla banca a **metà** del `costoCasa`, rispettando l'uniformità. Un albergo torna a 4 case se la banca ne ha 4; altrimenti viene venduto **per intero** (`caseCostruite` → 0, ricavo `5 × costoCasa / 2`, nessuna casa restituita). | `NESSUNA_COSTRUZIONE`, `COSTRUZIONE_NON_UNIFORME` |
+| `vendiCasa` | `casella` | T, D, P | gestione + `debito` + `asta` | Vende una casa alla banca a **metà** del `costoCasa`, rispettando l'uniformità. Un albergo torna a 4 case se la banca ne ha 4; altrimenti si vendono insieme **tutte le costruzioni del gruppo** (ogni terreno a `caseCostruite` 0, un evento `vendita` per terreno con `gruppoIntero: true`, ricavo metà del costo di ciò che c'era), così il gruppo resta uniforme. | `NESSUNA_COSTRUZIONE`, `COSTRUZIONE_NON_UNIFORME` |
 | `ipoteca` | `casella` | T, D, P | gestione + `debito` + `asta` | Incassa `CASELLE[i].ipoteca`; richiede `caseCostruite === 0` su **tutto il gruppo**. | `HA_COSTRUZIONI`, `GIA_IPOTECATA` |
 | `disipoteca` | `casella` | T | gestione | Paga `ipoteca + ceil(10%)`, toglie l'ipoteca. | `NON_IPOTECATA`, `FONDI_INSUFFICIENTI` |
 | `proponiScambio` | `aId`, `offre: {denaro, proprieta[], cartePrigione}`, `chiede: {…}` | X | tutte tranne `lobby`, `asta`, `finePartita` | Crea `stato.scambio`. Campi mancanti valgono 0 / `[]`. Il proponente deve possedere ciò che offre; il destinatario ciò che gli viene chiesto. | `SCAMBIO_IN_CORSO`, `PROPRIETA_NON_TUA`, `HA_COSTRUZIONI`, `SCAMBIO_VUOTO`, `GIOCATORE_NON_VALIDO` |
@@ -554,6 +555,7 @@ Esempi di oggetto `azione`:
 | `prossimoGiocatore(stato) → giocatoreId` | prossimo non fallito **e connesso** dopo il giocatore di turno (se nessun altro è connesso: il prossimo non fallito) |
 | `gestisciDisconnessione(stato, giocatoreId, {random, ora}) → { stato, eventi }` | chiamata da `stanze.js` quando un disconnesso blocca la partita, dopo la tolleranza di §3.4: annulla il suo scambio pendente, lo fa passare all'asta (se non è il miglior offerente), se è di turno in `daDecidereAcquisto` apre l'asta, in `daLanciare`/`mossa` passa il turno. Un debito resta in attesa. Se non c'è nulla da fare ritorna lo stesso `stato` ed `eventi: []` (versione invariata). |
 | `gestisciInattivita(stato, giocatoreId, {random, ora}) → { stato, eventi }` | come `gestisciDisconnessione`, per un giocatore collegato che non agisce in tempo (§3.4): **non** annulla gli scambi pendenti; in `daDecidereAcquisto` e `daLanciare`/`mossa` emette `turnoSaltato` con `motivo: 'inattivo'`. |
+| `scadeScambio(stato, scambioId, {ora, secondi}) → { stato, eventi }` | lo scambio in attesa `scambioId` decade senza risposta (§3.4): `stato.scambio` torna `null`, evento `scambioRifiutato` con `daId: null` e `motivo: 'scaduto'`. Se quello scambio non è più in attesa: stesso `stato`, `eventi: []`. |
 | `chiDeveAgire(stato) → string[]` | chi tiene ferma la partita adesso: il debitore, i partecipanti all'asta che non hanno passato (escluso il miglior offerente) o il giocatore di turno. |
 | `calcolaAffitto(stato, casella, opz?) → { importo, moltiplicatore? }` | affitto corrente di una casella posseduta (società: usa `stato.dadi`) |
 | `patrimonioLiquidabile(stato, giocatoreId)` | come in `bancarotta.js` |
@@ -665,10 +667,15 @@ Esempi:
    copia dell'ultima sessione sta in `localStorage` (chiave
    `monopoly.ripresa`) ma non viene mai usata in automatico: se la scheda è
    stata chiusa, riaprendo il link compare il pulsante «Riprendi la partita»,
-   che invia `riconnetti` solo su richiesta dell'utente.
+   che invia `riconnetti` solo su richiesta dell'utente. Prima di offrirlo la
+   pagina chiede alle altre schede dello stesso browser (`BroadcastChannel`
+   `monopoly.schede`, messaggi `chi-gioca` / `gioco-io`) se quel giocatore è
+   già collegato da lì: in quel caso il pulsante non compare.
 2. Alla chiusura del socket il server marca il giocatore `connesso: false` e
    manda `evento connessione` + `stato` agli altri. In **lobby** il giocatore
-   viene rimosso dopo 60 s senza riconnessione (timer per giocatore). In
+   viene rimosso dopo 60 s senza riconnessione (timer per giocatore), ma solo
+   se nella stanza c'è qualcun altro collegato (`stanze.rimuoviAssenteLobby`):
+   una sala con tutti scollegati resta com'è fino a `STANZA_VUOTA_MS`. In
    **partita** resta e può rientrare col token; se però tiene ferma la
    partita (`stanze.TEMPI`):
    * dopo **45 s** (`TOLLERANZA_DISCONNESSIONE_MS`) il server chiama
@@ -676,7 +683,14 @@ Esempi:
      suo scambio pendente è annullato;
    * se è il **debitore** in fase `debito`, dopo **3 minuti**
      (`BANCAROTTA_DISCONNESSO_MS`) il server esegue per lui `abbandona`
-     (bancarotta d'ufficio).
+     (bancarotta d'ufficio, evento `abbandono` con `motivo: 'debito'`);
+   * in ogni caso dopo **5 minuti** di fila (`ABBANDONO_DISCONNESSO_MS`) il
+     server esegue per lui `abbandona` (evento `abbandono` con
+     `motivo: 'assente'`): il conto parte solo se almeno un altro giocatore
+     in gara è collegato e riparte da capo quando rientra qualcuno;
+   * se è l'**host** e non è l'admin, dopo **45 s** il ruolo passa al primo
+     giocatore collegato, meglio se ancora in gara (`stanze.passaHostAssente`,
+     evento `host` con `dati: { giocatoreId, precedenteId }`).
 
    I timer partono quando il giocatore diventa "bloccante" (anche dopo la
    disconnessione: `stanze.sorvegliaDisconnessi` è richiamata a ogni cambio di
@@ -689,14 +703,22 @@ Esempi:
    (`INATTIVITA_TURNO_MS`), 60 s in asta (`INATTIVITA_ASTA_MS`), 5 minuti per
    un debito (`INATTIVITA_DEBITO_MS`). 30 s prima arriva a tutti un `evento`
    `avvisoInattivita` (`dati: { giocatori, secondi, debito }`, non entra nel
-   log). Allo scadere: debito → `abbandona` per il debitore; altrimenti
+   log). Allo scadere: debito → `abbandona` per il debitore (`motivo: 'debito'`); altrimenti
    `motore.gestisciInattivita` per ognuno. Il timer riparte solo quando la
    partita va avanti (`stanza.progresso`), non a connessioni e riconnessioni;
    si ferma se nessuno in gara è collegato o dopo due giri interi di turni
    saltati senza azioni (`stanza.saltiInattivita`).
-3. Una stanza viene eliminata quando nessuno ci è mai entrato da 2 minuti, è
-   vuota da 10 minuti o inattiva da 2 ore,
-   o quando la partita è in `finePartita` da 30 minuti. Ai socket ancora
+
+   **Scambio in attesa.** Una proposta senza risposta decade dopo **90 s**
+   (`SCAMBIO_MS`, `stanze.sorvegliaScambio` → `motore.scadeScambio`): finché
+   è in attesa nessun altro può proporne.
+3. Una stanza viene eliminata (`stanze.pulisci`) quando nessuno ci è mai
+   entrato da 2 minuti, ha tutti i giocatori scollegati da 10 minuti
+   (`STANZA_VUOTA_MS`), è una sala d'attesa con un solo giocatore ferma da 30
+   minuti (`LOBBY_SOLITARIA_MS`), è inattiva da 2 ore,
+   o quando la partita è in `finePartita` da 30 minuti. Le stanze ripristinate
+   dal salvataggio (`stanze.importa`) partono senza `vuotaDal`: aspettano le 2
+   ore, e i 10 minuti valgono solo dopo che qualcuno è rientrato e uscito. Ai socket ancora
    collegati arriva `errore STANZA_INESISTENTE` (senza `rif`) e poi la
    chiusura con codice `4002`; il client torna alla schermata iniziale.
 4. Un socket appartiene al massimo a una stanza. `creaStanza`/`entraStanza` da
@@ -719,8 +741,9 @@ Esempi:
 | `GET /dati/tabellone.js` | ES module **generato** dal CommonJS `server/gioco/tabellone.js`: una riga `export const NOME = <JSON>;` per ogni export JSON-serializzabile (funzioni escluse). Il client fa `import { CASELLE, GRUPPI } from '/dati/tabellone.js'`. |
 | `GET /dati/carte.js` | idem per `server/gioco/carte.js`: `import { PROBABILITA, IMPREVISTI } from '/dati/carte.js'`. |
 | `GET /dati/regole.js` | idem per `server/gioco/regole.js`: `import { REGOLE, PREDEFINITE } from '/dati/regole.js'` (finestra delle regole e riepilogo in sala d'attesa). |
-| `GET /salute` | `{ "ok": true, "stanze": 3, "versione": "0.1.0", "websocket": true }` |
-| `GET /ws` con Upgrade | WebSocket. L'handshake è accettato solo se manca `Origin` (client non browser) o se il suo host coincide con `Host`, `PUBLIC_URL` o, dietro un proxy fidato (`PROXY_FIDATO=1`, oppure su Render), `X-Forwarded-Host` (`index.origineAmmessa`). Oltre 20 connessioni contemporanee dallo stesso indirizzo (`index.ipDi`: `X-Forwarded-For` dietro un proxy fidato, altrimenti l'indirizzo del socket) l'handshake è rifiutato con 429; un'origine non ammessa con 403; `ORIGINE_LIBERA=1` disattiva il controllo. |
+| `GET /salute` | `{ "ok": true, "gioco": "monopoly", "avviatoIl": 1794859637877, "stanze": 3, "versione": "0.1.0", "websocket": true }`. `gioco` e `avviatoIl` (millisecondi, avvio del processo) servono al lanciatore `Avvia Monopoly.command` per riconoscere il gioco e accorgersi di un server più vecchio dei file. |
+| `GET` di un file statico | `ETag` debole e `Cache-Control: no-cache`: con `If-None-Match` uguale la risposta è `304` senza corpo; con `Accept-Encoding: gzip` i file di testo sopra 1 KB arrivano compressi (`Vary: Accept-Encoding`). I percorsi con un segmento che inizia con un punto (`.DS_Store`, `.git/…`) danno sempre `404`. |
+| `GET /ws` con Upgrade | WebSocket. L'handshake è accettato solo se manca `Origin` (client non browser) o se il suo host coincide con `Host`, `PUBLIC_URL` o, dietro un proxy fidato (`PROXY_FIDATO=1`, oppure su Render), `X-Forwarded-Host` (`index.origineAmmessa`). Oltre 20 connessioni contemporanee dallo stesso indirizzo (`index.ipDi`: dietro un proxy fidato l'intestazione di `PROXY_INTESTAZIONE_IP` oppure l'**ultimo** indirizzo di `X-Forwarded-For`, altrimenti l'indirizzo del socket) l'handshake è rifiutato con 429; oltre 600 connessioni in tutto (`MAX_CONNESSIONI`) con 503; un'origine non ammessa con 403; `ORIGINE_LIBERA=1` disattiva il controllo. |
 
 Ogni risposta HTTP porta `X-Content-Type-Options: nosniff`,
 `X-Frame-Options: DENY`, `Referrer-Policy: same-origin` e una
@@ -779,7 +802,7 @@ P.MESSAGGI_SERVER      // ['stanzaCreata','entrato','stato','evento','errore','p
 P.ERRORI               // { NON_IL_TUO_TURNO: 'Non è il tuo turno', ... } (§7)
 P.COLORI_GIOCATORE     // palette §0.5
 P.LIMITI               // { MAX_GIOCATORI: 6, MIN_GIOCATORI: 2, NOME_MAX: 16, MESSAGGIO_MAX_BYTE: 16384, FRAME_MAX_BYTE: 65536,
-                       //   LOG_MAX: 200, LOG_BREVE: 30, MAX_STANZE: 200, MAX_STANZE_PER_SOCKET: 5, MAX_STANZE_PER_IP: 10, MAX_CONNESSIONI_PER_IP: 20, MESSAGGI_AL_SECONDO_MAX: 30, … }
+                       //   LOG_MAX: 200, LOG_BREVE: 30, MAX_STANZE: 200, MAX_STANZE_PER_SOCKET: 5, MAX_STANZE_PER_IP: 10, MAX_CONNESSIONI_PER_IP: 20, MAX_CONNESSIONI: 600, MESSAGGI_AL_SECONDO_MAX: 30, … }
 P.CHIUSURE             // { SOSTITUITO: 4001, STANZA_CHIUSA: 4002 } (§3.4)
 P.chiaveNome(str) → 'anna'   // chiave di confronto dei nomi: minuscolo, senza diacritici
 P.REGEX_CODICE         // /^[A-Z0-9]{6}$/
@@ -1150,23 +1173,24 @@ Esempi:
 | `passaggioVia` | `{ importo, doppio }` (`doppio: true` con la variante `viaDoppio` fermandosi sul Via: 400 €) |
 | `acquisto` | `{ casella, prezzo, tramite: 'banca' \| 'asta' }` |
 | `affitto` | `{ daId, aId, casella, importo, moltiplicatore?, dadi? }`; su casella ipotecata l'affitto non è dovuto: `importo: 0` e `ipotecata: true`; con la variante `affittoInPrigione: false` e il proprietario in prigione: `importo: 0` e `inPrigione: true` |
-| `abbandono` | `{ creditoreId \| null }` (sempre seguito da `bancarotta`) |
+| `abbandono` | `{ creditoreId \| null, motivo? }` (sempre seguito da `bancarotta`). `motivo` c'è solo quando è il server ad agire: `'assente'` (scollegato da 5 minuti) o `'debito'` (debito non saldato in tempo) |
+| `host` | `{ giocatoreId, precedenteId }`: il ruolo di host è passato perché l'host di prima è scollegato (§3.4) |
 | `tassa` | `{ casella, importo }` |
 | `carta` | `{ mazzo: 'probabilita' \| 'imprevisti', carta: { id, testo, effetto } }` |
 | `pagamento` | `{ daId, aId \| null, importo, motivo }` (carte, cauzione, interessi, riparazioni) |
 | `prigione` | `{ motivo: 'casella' \| 'carta' \| 'treDoppi' }` |
 | `uscitaPrigione` | `{ modo: 'cauzione' \| 'carta' \| 'doppio' \| 'terzoTurno' }` |
-| `astaInizio` | `{ casella, partecipanti }` |
+| `astaInizio` | `{ casella, partecipanti, riparte? }` (`riparte: true` quando il miglior offerente ha abbandonato: offerta azzerata, `asta.iniziataIl` nuovo, chi aveva passato torna in gara tranne falliti e scollegati) |
 | `astaOfferta` | `{ casella, importo }` |
 | `astaPasso` | `{ casella }` |
 | `astaFine` | `{ casella, vincitoreId \| null, importo }` |
 | `costruzione` | `{ casella, caseCostruite, costo }` |
-| `vendita` | `{ casella, caseCostruite, ricavo }` |
+| `vendita` | `{ casella, caseCostruite, ricavo, gruppoIntero? }` |
 | `ipoteca` | `{ casella, importo }` |
 | `disipoteca` | `{ casella, importo }` |
 | `scambioProposto` | `{ scambio }` |
 | `scambioAccettato` | `{ scambio }` |
-| `scambioRifiutato` | `{ scambio, daId }` (`daId` = chi ha rifiutato o ritirato) |
+| `scambioRifiutato` | `{ scambio, daId, motivo? }` (`daId` = chi ha rifiutato o ritirato; `daId: null` e `motivo: 'scaduto'` se è decaduto dopo 90 s senza risposta) |
 | `debito` | `{ creditoreId \| null, importo, motivo }` |
 | `debitoSaldato` | `{ creditoreId \| null, importo }` |
 | `bancarotta` | `{ creditoreId \| null, proprieta: [indici], denaro }` |
@@ -1224,7 +1248,8 @@ Regolamento ufficiale, con queste scelte esplicite:
    (differenza max 1 casa tra le caselle del gruppo), limitate dalle scorte
    (32 case, 12 alberghi). Albergo = 4 case + `costoCasa`; costruirlo
    restituisce 4 case alla banca. Vendita a metà prezzo, sempre uniforme; se
-   la banca non ha 4 case da restituire l'albergo si vende per intero.
+   la banca non ha 4 case da restituire, vendere un albergo vende insieme
+   tutte le costruzioni del suo gruppo.
    **Semplificazione**: costruire, vendere, ipotecare e riscattare si può
    solo nel proprio turno (oltre che durante un proprio debito o un'asta a cui
    si partecipa), non "in qualunque momento" come nel regolamento ufficiale.
@@ -1272,12 +1297,15 @@ apre, prima di `riconnetti`.
 
 | Messaggio | Campi | Risposta | Note |
 |---|---|---|---|
-| `autenticaAdmin` | `chiave` | `{ tipo: 'admin', ok: true }` | Confronto a tempo costante con `ADMIN_CHIAVE`; errore `ADMIN_NON_VALIDO`, 5 tentativi sbagliati chiudono la connessione (1008). Il socket admin che entra o rientra in una stanza ne diventa `adminId` e `hostId` (`stanze.rendiAdmin`, evento `admin`), solo se la stanza non ha già un admin ancora dentro: resta il primo. Niente limiti di stanze per connessione o per indirizzo. |
+| `autenticaAdmin` | `chiave` | `{ tipo: 'admin', ok: true, indirizzo }` (`indirizzo` = quello di `index.ipDi`, per controllare i limiti dietro un proxy) | Confronto a tempo costante con `ADMIN_CHIAVE`; errore `ADMIN_NON_VALIDO`, 5 tentativi sbagliati chiudono la connessione (1008). Il socket admin che entra o rientra in una stanza ne diventa `adminId` e `hostId` (`stanze.rendiAdmin`, evento `admin`), solo se la stanza non ha già un admin ancora dentro: resta il primo. Niente limiti di stanze per connessione o per indirizzo. |
 | `chiudiStanza` | — | a tutti `errore STANZA_INESISTENTE` ("chiusa dall'admin" / "dall'host") e chiusura 4002 | Solo l'host o l'admin della stanza (`stanze.puoComandare`, altrimenti `NON_ADMIN`). |
 | `cacciaGiocatore` | `giocatoreId` | al giocatore `errore CACCIATO` e chiusura **4003**; agli altri `evento` + `stato` | Solo l'host o l'admin (`NON_ADMIN`); non se stessi (`GIOCATORE_NON_VALIDO`), mai l'admin (`NON_ADMIN`). In lobby: `esci`. In partita: `abbandona` per lui (bancarotta verso la banca), token cambiato, `connesso: false`. |
 | `cediAdmin` | `giocatoreId` | a tutti `evento admin` («X cede l'admin a Y») + `stato` con i nuovi `adminId`/`hostId` | Solo l'admin (`NON_ADMIN`); verso un altro giocatore della stanza, ancora in gara se la partita è iniziata (`GIOCATORE_NON_VALIDO`). Chi riceve diventa admin e host (`stanze.cediAdmin`). |
 
+| `lasciaAdmin` | — | al mittente `{ tipo: 'admin', ok: false }`; se era l'admin della stanza, a tutti `evento admin` (`dati: { giocatoreId: null, precedenteId }`) + `stato` con `adminId: null` | «Esci da admin su questo browser»: la connessione non è più admin e la stanza resta senza admin; chi esce resta host (`stanze.lasciaAdmin`). Il client cancella `localStorage['monopoly.admin']`. |
+
 In partita, se l'host (che non sia l'admin) fa bancarotta o viene tolto, il
 ruolo passa al primo giocatore ancora in gara (`stanze.aggiornaHost`, anche in
-`stato.hostId`).
+`stato.hostId`); se perde la connessione per più di 45 s passa al primo
+collegato (§3.4).
 

@@ -9,8 +9,9 @@
  *
  * Avvio: `npm start` (= node server/index.js). Variabili: PORT, HOST, PUBLIC_URL
  * (se PUBLIC_URL manca, il link della stanza usa l'host con cui il browser ha
- * raggiunto il server), PROXY_FIDATO (intestazioni X-Forwarded-*), SALVATAGGIO
- * (file delle partite, vedi salvataggio.js). Heartbeat: ping WebSocket ogni
+ * raggiunto il server), PROXY_FIDATO (intestazioni X-Forwarded-*),
+ * PROXY_INTESTAZIONE_IP (intestazione con l'indirizzo vero del client),
+ * SALVATAGGIO (file delle partite, vedi salvataggio.js). Heartbeat: ping WebSocket ogni
  * 30 s, chi non risponde viene chiuso e segnato `connesso: false`.
  * Esporta `avvia()` e `crea()` per i test; parte da solo se eseguito come main.
  */
@@ -20,6 +21,7 @@ const http = require('node:http');
 const os = require('node:os');
 const fs = require('node:fs');
 const path = require('node:path');
+const zlib = require('node:zlib');
 
 const P = require('./protocollo');
 const stanze = require('./stanze');
@@ -37,6 +39,9 @@ try {
 
 const RADICE_CLIENT = path.resolve(__dirname, '..', 'client');
 const CARTELLA_DATI = path.resolve(__dirname, 'gioco');
+
+/** Quando è partito questo processo: /salute lo dice al lanciatore. */
+const AVVIATO_IL = Date.now();
 
 const MIME = Object.freeze({
   '.html': 'text/html; charset=utf-8',
@@ -94,40 +99,145 @@ function rispondiJson(res, codice, oggetto) {
   rispondi(res, codice, JSON.stringify(oggetto), 'application/json; charset=utf-8');
 }
 
-/** Serve un file sotto RADICE_CLIENT impedendo di uscire dalla cartella. */
-function serviStatico(percorsoUrl, res) {
+// ---------------------------------------------------------------------------
+// HTTP: file statici con ETag (risposta 304) e gzip
+// ---------------------------------------------------------------------------
+
+/** Tipi di testo: gli unici per cui la compressione vale la pena. */
+const COMPRIMIBILI = new Set(['.html', '.css', '.js', '.mjs', '.json', '.svg', '.txt', '.webmanifest']);
+/** Sotto questa dimensione il gzip non fa risparmiare niente. */
+const GZIP_MINIMO_BYTE = 1024;
+
+/** Contenuti già letti: chiave → { firma, corpo, etag, gzip }. Solo file esistenti di client/ e i moduli dati. */
+const cacheContenuti = new Map();
+
+/** ETag debole: lo stesso contenuto vale sia compresso sia no. */
+function etagDi(corpo) {
+  return `W/"${crypto.createHash('sha1').update(corpo).digest('base64url')}"`;
+}
+
+/** Il client accetta gzip? (`Accept-Encoding: gzip`, non `gzip;q=0`) */
+function accettaGzip(req) {
+  const valore = String((req && req.headers && req.headers['accept-encoding']) || '').toLowerCase();
+  return valore.split(',').some((parte) => {
+    const [nome, ...parametri] = parte.trim().split(';').map((x) => x.trim());
+    if (nome !== 'gzip' && nome !== '*') return false;
+    const q = parametri.find((x) => x.startsWith('q='));
+    return !q || Number(q.slice(2)) > 0;
+  });
+}
+
+/** `If-None-Match` contiene l'ETag della risposta? (confronto debole) */
+function etagCoincide(req, etag) {
+  const valore = String((req && req.headers && req.headers['if-none-match']) || '').trim();
+  if (!valore) return false;
+  if (valore === '*') return true;
+  const nudo = (x) => x.trim().replace(/^W\//, '');
+  return valore.split(',').some((x) => nudo(x) === nudo(etag));
+}
+
+/** Mette in cache `corpo` per `chiave` (con la `firma` che dice se è ancora buono) e ritorna la voce. */
+function mettiInCache(chiave, firma, corpo) {
+  const dati = Buffer.from(corpo);
+  const voce = { firma, corpo: dati, etag: etagDi(dati), gzip: undefined };
+  cacheContenuti.set(chiave, voce);
+  return voce;
+}
+
+/**
+ * Invia un contenuto con ETag: 304 senza corpo se il browser l'ha già, gzip
+ * se lo accetta e il tipo è testo. `Cache-Control: no-cache` resta: il browser
+ * richiede ogni volta, ma riscarica solo quello che è cambiato.
+ */
+function inviaContenuto(req, res, voce, tipo, estensione) {
+  const comprimibile = COMPRIMIBILI.has(estensione) && voce.corpo.length >= GZIP_MINIMO_BYTE;
+  const intestazioni = { ETag: voce.etag };
+  if (comprimibile) intestazioni.Vary = 'Accept-Encoding';
+  if (etagCoincide(req, voce.etag)) return rispondi(res, 304, undefined, tipo, intestazioni);
+  if (comprimibile && accettaGzip(req)) {
+    if (voce.gzip === undefined) {
+      const compresso = zlib.gzipSync(voce.corpo);
+      voce.gzip = compresso.length < voce.corpo.length ? compresso : null;
+    }
+    if (voce.gzip) return rispondi(res, 200, voce.gzip, tipo, { ...intestazioni, 'Content-Encoding': 'gzip' });
+  }
+  return rispondi(res, 200, voce.corpo, tipo, intestazioni);
+}
+
+/**
+ * Serve un file sotto `radice` (di norma RADICE_CLIENT) impedendo di uscire
+ * dalla cartella. I nomi che iniziano con un punto (.DS_Store, .git…) non si
+ * servono mai.
+ */
+function serviStatico(req, percorsoUrl, res, radice = RADICE_CLIENT) {
   let decodificato;
   try {
     decodificato = decodeURIComponent(percorsoUrl);
   } catch {
     return rispondi(res, 400, 'Percorso non valido');
   }
-  if (decodificato.includes('\0') || decodificato.split(/[\\/]/).includes('..')) {
+  const segmenti = decodificato.split(/[\\/]/);
+  if (decodificato.includes('\0') || segmenti.includes('..')) {
     return rispondi(res, 403, 'Accesso negato');
   }
+  if (segmenti.some((segmento) => segmento.startsWith('.'))) {
+    return rispondi(res, 404, 'Non trovato');
+  }
   let relativo = decodificato === '/' ? '/index.html' : decodificato;
-  let assoluto = path.normalize(path.join(RADICE_CLIENT, relativo));
-  if (!assoluto.startsWith(RADICE_CLIENT + path.sep) && assoluto !== RADICE_CLIENT) {
+  let assoluto = path.normalize(path.join(radice, relativo));
+  if (!assoluto.startsWith(radice + path.sep) && assoluto !== radice) {
     return rispondi(res, 403, 'Accesso negato');
   }
 
-  fs.stat(assoluto, (err, info) => {
-    if (!err && info.isDirectory()) {
-      assoluto = path.join(assoluto, 'index.html');
-      relativo = path.join(relativo, 'index.html');
+  const nonTrovato = () => {
+    if (relativo === '/index.html' || relativo === path.join('/', 'index.html')) {
+      return rispondi(res, 404, 'Il client non è ancora disponibile: manca client/index.html.');
     }
-    fs.readFile(assoluto, (errLettura, contenuto) => {
-      if (errLettura) {
-        if (relativo === '/index.html' || relativo === path.join('/', 'index.html')) {
-          return rispondi(res, 404, 'Il client non è ancora disponibile: manca client/index.html.');
-        }
-        return rispondi(res, 404, 'Non trovato');
+    return rispondi(res, 404, 'Non trovato');
+  };
+  // Il file si rilegge solo se è cambiato (data o dimensione), e sempre senza
+  // fermare il server: su un disco lento una lettura può durare secondi.
+  const servi = (info) => {
+    const estensione = path.extname(assoluto).toLowerCase();
+    const tipo = MIME[estensione] || 'application/octet-stream';
+    const firma = `${info.mtimeMs}|${info.size}`;
+    const nota = cacheContenuti.get(assoluto);
+    if (nota && nota.firma === firma) return inviaContenuto(req, res, nota, tipo, estensione);
+    return fs.readFile(assoluto, (errLettura, contenuto) => {
+      try {
+        if (errLettura) return nonTrovato();
+        return inviaContenuto(req, res, mettiInCache(assoluto, firma, contenuto), tipo, estensione);
+      } catch (e) {
+        return erroreInterno(req, res, e);
       }
-      const tipo = MIME[path.extname(assoluto).toLowerCase()] || 'application/octet-stream';
-      return rispondi(res, 200, contenuto, tipo);
     });
+  };
+
+  fs.stat(assoluto, (err, info) => {
+    try {
+      if (!err && info.isDirectory()) {
+        assoluto = path.join(assoluto, 'index.html');
+        relativo = path.join(relativo, 'index.html');
+        return fs.stat(assoluto, (errIndice, infoIndice) => {
+          try {
+            return errIndice || !infoIndice.isFile() ? nonTrovato() : servi(infoIndice);
+          } catch (e) {
+            return erroreInterno(req, res, e);
+          }
+        });
+      }
+      return err || !info.isFile() ? nonTrovato() : servi(info);
+    } catch (e) {
+      return erroreInterno(req, res, e);
+    }
   });
   return undefined;
+}
+
+function erroreInterno(req, res, e) {
+  console.error('[http] errore', req.method, req.url, e && e.message);
+  if (!res.headersSent) return rispondi(res, 500, 'Errore interno del server');
+  return res.end();
 }
 
 /**
@@ -155,17 +265,15 @@ const DATI_ESPOSTI = Object.freeze({
   '/dati/regole.js': 'regole.js',
 });
 
-function gestoreHttp(req, res) {
+function gestoreHttp(req, res, radice = RADICE_CLIENT) {
   try {
-    return smistaHttp(req, res);
+    return smistaHttp(req, res, radice);
   } catch (e) {
-    console.error('[http] errore', req.method, req.url, e && e.message);
-    if (!res.headersSent) return rispondi(res, 500, 'Errore interno del server');
-    return res.end();
+    return erroreInterno(req, res, e);
   }
 }
 
-function smistaHttp(req, res) {
+function smistaHttp(req, res, radice) {
   let url;
   try {
     url = new URL(req.url, 'http://localhost');
@@ -181,6 +289,10 @@ function smistaHttp(req, res) {
   if (percorso === '/salute') {
     return rispondiJson(res, 200, {
       ok: true,
+      // Il lanciatore riconosce da qui che sulla porta c'è davvero questo
+      // gioco, e da `avviatoIl` se il server è più vecchio dei file.
+      gioco: 'monopoly',
+      avviatoIl: AVVIATO_IL,
       stanze: stanze.tutte().length,
       versione: pacchetto.version,
       websocket: Boolean(WebSocketServer),
@@ -188,17 +300,22 @@ function smistaHttp(req, res) {
   }
 
   if (DATI_ESPOSTI[percorso]) {
-    let sorgente;
-    try {
-      sorgente = moduloDatiComeEsm(DATI_ESPOSTI[percorso]);
-    } catch (e) {
-      return rispondi(res, 500, `Errore nel modulo dati: ${e.message}`);
+    // I dati non cambiano finché il processo è acceso: si generano una volta.
+    let voce = cacheContenuti.get(`dati:${percorso}`);
+    if (!voce) {
+      let sorgente;
+      try {
+        sorgente = moduloDatiComeEsm(DATI_ESPOSTI[percorso]);
+      } catch (e) {
+        return rispondi(res, 500, `Errore nel modulo dati: ${e.message}`);
+      }
+      if (sorgente === null) return rispondi(res, 404, 'Modulo dati non ancora disponibile');
+      voce = mettiInCache(`dati:${percorso}`, 'fisso', sorgente);
     }
-    if (sorgente === null) return rispondi(res, 404, 'Modulo dati non ancora disponibile');
-    return rispondi(res, 200, sorgente, MIME['.js']);
+    return inviaContenuto(req, res, voce, MIME['.js'], '.js');
   }
 
-  return serviStatico(percorso, res);
+  return serviStatico(req, percorso, res, radice);
 }
 
 // ---------------------------------------------------------------------------
@@ -224,16 +341,31 @@ function proxyFidato() {
 }
 
 /**
- * Indirizzo del client, per i limiti per indirizzo. Dietro un proxy fidato è
- * il primo di X-Forwarded-For: il proxy lo aggiunge in coda a quelli inviati
- * dal client, quindi un client può inventarne altri davanti. È un limite di
- * buona volontà, non una protezione assoluta (vedi README, "Limiti").
+ * Intestazione in cui il proxy scrive da sé l'indirizzo vero del client,
+ * cancellando quella eventualmente inviata dal client. Si sceglie con
+ * PROXY_INTESTAZIONE_IP; su Render (che sta dietro Cloudflare) è
+ * `CF-Connecting-IP`. Vale solo dietro un proxy fidato.
  */
-function ipDi(req, fidato = proxyFidato()) {
+function intestazioneIp() {
+  const scelta = String(process.env.PROXY_INTESTAZIONE_IP || '').trim().toLowerCase();
+  if (scelta) return /^[a-z0-9-]{1,64}$/.test(scelta) ? scelta : null;
+  return process.env.RENDER ? 'cf-connecting-ip' : null;
+}
+
+/**
+ * Indirizzo del client, per i limiti per indirizzo. Dietro un proxy fidato è
+ * quello dell'intestazione dedicata (vedi intestazioneIp) oppure l'ULTIMO di
+ * X-Forwarded-For: il proxy accoda l'indirizzo che vede davvero a quelli
+ * ricevuti dal client, quindi i primi della lista li può inventare chiunque e
+ * solo l'ultimo è scritto dal proxy.
+ */
+function ipDi(req, fidato = proxyFidato(), intestazione = intestazioneIp()) {
   const intestazioni = (req && req.headers) || {};
   if (fidato) {
-    const primo = String(intestazioni['x-forwarded-for'] || '').split(',')[0].trim();
-    if (primo) return primo.toLowerCase();
+    const dedicata = intestazione ? String(intestazioni[intestazione] || '').trim() : '';
+    if (dedicata && !dedicata.includes(',')) return dedicata.toLowerCase();
+    const inoltrati = String(intestazioni['x-forwarded-for'] || '').split(',').map((x) => x.trim()).filter(Boolean);
+    if (inoltrati.length) return inoltrati[inoltrati.length - 1].toLowerCase();
   }
   const diretto = req && req.socket && req.socket.remoteAddress;
   return diretto ? String(diretto).replace(/^::ffff:/, '').toLowerCase() : 'sconosciuto';
@@ -511,9 +643,22 @@ function collegaSocket(socket, { publicUrl, random, ora, ip = null, chiaveAdmin 
         return undefined;
       }
       ctx.admin = true;
-      invia(socket, { tipo: 'admin', ok: true, rif: m.rif });
+      // `indirizzo` è quello con cui il server conta i limiti: all'admin serve
+      // per controllare, dietro un proxy, che sia il suo e non quello del proxy.
+      invia(socket, { tipo: 'admin', ok: true, rif: m.rif, indirizzo: ip });
       if (inStanza()) {
         const eventi = stanze.rendiAdmin(ctx.stanza, ctx.giocatoreId, { ora });
+        if (eventi.length) stanze.diffondiAggiornamento(ctx.stanza, eventi);
+      }
+      return undefined;
+    },
+
+    lasciaAdmin(m) {
+      // Questa connessione torna quella di un giocatore qualunque.
+      ctx.admin = false;
+      invia(socket, { tipo: 'admin', ok: false, rif: m.rif });
+      if (inStanza()) {
+        const eventi = stanze.lasciaAdmin(ctx.stanza, ctx.giocatoreId, { ora });
         if (eventi.length) stanze.diffondiAggiornamento(ctx.stanza, eventi);
       }
       return undefined;
@@ -650,7 +795,9 @@ function avviaHeartbeat(wss, intervallo = P.LIMITI.HEARTBEAT_MS) {
 
 /**
  * Crea il server HTTP (+ WebSocket se disponibile) senza metterlo in ascolto.
- * @param {{publicUrl?: string, random?: Function, ora?: Function, heartbeatMs?: number}} [opzioni]
+ * @param {{publicUrl?: string, random?: Function, ora?: Function, heartbeatMs?: number,
+ *   proxyFidato?: boolean, chiaveAdmin?: string|null, maxConnessioniPerIp?: number, maxConnessioni?: number,
+ *   radiceClient?: string}} [opzioni]  `radiceClient` (per i test) è la cartella dei file statici.
  */
 function crea(opzioni = {}) {
   const random = opzioni.random || stanze.casualeSicuro;
@@ -659,7 +806,9 @@ function crea(opzioni = {}) {
   const fidato = opzioni.proxyFidato ?? proxyFidato();
   const chiaveAdmin = opzioni.chiaveAdmin !== undefined ? opzioni.chiaveAdmin : (process.env.ADMIN_CHIAVE || null);
   const maxPerIp = opzioni.maxConnessioniPerIp ?? P.LIMITI.MAX_CONNESSIONI_PER_IP;
-  const server = http.createServer(gestoreHttp);
+  const maxConnessioni = opzioni.maxConnessioni ?? P.LIMITI.MAX_CONNESSIONI;
+  const radiceClient = opzioni.radiceClient ? path.resolve(opzioni.radiceClient) : RADICE_CLIENT;
+  const server = http.createServer((req, res) => gestoreHttp(req, res, radiceClient));
   let wss = null;
   let heartbeat = null;
   /** Connessioni WebSocket aperte per indirizzo. */
@@ -672,6 +821,9 @@ function crea(opzioni = {}) {
       maxPayload: P.LIMITI.FRAME_MAX_BYTE,
       verifyClient: (info, rispondiVerifica) => {
         if (!origineAmmessa(info.req, configurato, fidato)) return rispondiVerifica(false, 403, 'Origine non ammessa');
+        // Tetto globale: il limite per indirizzo da solo non basta contro chi
+        // di indirizzi ne ha tanti.
+        if (wss.clients.size >= maxConnessioni) return rispondiVerifica(false, 503, 'Server pieno: riprova tra poco');
         if ((connessioni.get(ipDi(info.req, fidato)) || 0) >= maxPerIp) {
           return rispondiVerifica(false, 429, 'Troppe connessioni da questo indirizzo');
         }
@@ -718,9 +870,9 @@ function crea(opzioni = {}) {
 /**
  * Avvia il server in ascolto. Ritorna una Promise con { server, wss, porta, url }.
  */
-function avvia({ port = Number(process.env.PORT) || 3000, host = process.env.HOST || '0.0.0.0', publicUrl, chiaveAdmin } = {}) {
+function avvia({ port = Number(process.env.PORT) || 3000, host = process.env.HOST || '0.0.0.0', publicUrl, chiaveAdmin, radiceClient } = {}) {
   return new Promise((risolvi, rifiuta) => {
-    const { server, wss } = crea({ publicUrl, chiaveAdmin });
+    const { server, wss } = crea({ publicUrl, chiaveAdmin, radiceClient });
     server.once('error', rifiuta);
     server.listen(port, host, () => {
       const porta = server.address().port;
@@ -754,22 +906,28 @@ if (require.main === module) {
 
   // Partite salvate su file: sopravvivono a un riavvio del server su questo
   // computer (non su Render gratuito, dove il disco si azzera).
-  const fileSalvataggio = salvataggio.percorsoDaAmbiente(process.env.SALVATAGGIO, path.resolve(__dirname, '..'));
+  let fileSalvataggio = salvataggio.percorsoDaAmbiente(process.env.SALVATAGGIO, path.resolve(__dirname, '..'));
+  const cartellaSalvataggio = fileSalvataggio ? path.dirname(fileSalvataggio) : null;
   let salvataggioAttivo = null;
   if (fileSalvataggio) {
-    try {
-      const ripristinate = salvataggio.carica(fileSalvataggio, stanze);
-      if (ripristinate > 0) console.log(`Partite ripristinate dal salvataggio: ${ripristinate}`);
-    } catch (e) {
-      console.error(`Salvataggio illeggibile (${fileSalvataggio}): si riparte senza partite.`, e.message);
+    const esito = salvataggio.caricaSenzaPerdere(fileSalvataggio, stanze);
+    if (esito.ripristinate > 0) console.log(`Partite ripristinate dal salvataggio: ${esito.ripristinate}`);
+    if (esito.errore) {
+      console.error(`Salvataggio illeggibile (${fileSalvataggio}): si riparte senza partite.`, esito.errore.message);
+      if (esito.messoDaParte) console.error(`Il file non è stato toccato: lo trovi in ${esito.messoDaParte}`);
     }
-    salvataggioAttivo = salvataggio.avvia(fileSalvataggio, stanze);
+    if (esito.sicuro) {
+      salvataggioAttivo = salvataggio.avvia(fileSalvataggio, stanze);
+    } else {
+      console.error('Non riesco a mettere da parte il file illeggibile: per non sovrascriverlo, in questa sessione le partite NON vengono salvate.');
+      fileSalvataggio = null;
+    }
   }
 
   // Chiave admin: su Render arriva da ADMIN_CHIAVE (generata da Render); in
   // locale, se manca, se ne genera una accanto al salvataggio.
   const chiaveAdmin = process.env.ADMIN_CHIAVE
-    || chiaveAdminLocale(fileSalvataggio ? path.dirname(fileSalvataggio) : null);
+    || chiaveAdminLocale(cartellaSalvataggio);
   if (chiaveAdmin && !P.REGEX_CHIAVE_ADMIN.test(chiaveAdmin)) {
     console.warn('ATTENZIONE: ADMIN_CHIAVE deve avere da 16 a 128 caratteri (lettere, cifre, + / = _ -): admin disattivato.');
   }
@@ -829,6 +987,7 @@ module.exports = {
   linkStanza,
   origineAmmessa,
   proxyFidato,
+  intestazioneIp,
   ipDi,
   chiaveAdminValida,
   chiaveAdminLocale,

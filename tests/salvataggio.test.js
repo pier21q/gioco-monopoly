@@ -78,6 +78,63 @@ test('salvataggio: file assente = nessuna partita; file rovinato = errore; voci 
   }
 });
 
+test('salvataggio illeggibile: viene messo da parte, mai sovrascritto dal salvataggio periodico', () => {
+  const cartella = cartellaTemporanea();
+  const file = path.join(cartella, 'partite.json');
+  stanze.azzera();
+  try {
+    // Un salvataggio scritto da una versione più nuova del gioco.
+    const originale = JSON.stringify({ formato: 2, stanze: [{ codice: 'ABCDEF', qualcosa: 'di prezioso' }] });
+    fs.writeFileSync(file, originale, { mode: 0o600 });
+    const ora = () => new Date(2026, 10, 16, 19, 30, 5).getTime();
+
+    const esito = salvataggio.caricaSenzaPerdere(file, stanze, { ora });
+    assert.equal(esito.ripristinate, 0);
+    assert.match(esito.errore.message, /formato/);
+    assert.equal(esito.sicuro, true);
+    assert.equal(esito.messoDaParte, `${file}.illeggibile-20261116-193005`);
+    assert.equal(fs.existsSync(file), false, 'l\'originale è stato spostato');
+    assert.equal(fs.readFileSync(esito.messoDaParte, 'utf8'), originale, 'il contenuto è intatto');
+
+    // Il salvataggio periodico parte e scrive: il file messo da parte resta.
+    stanze.crea({ ora });
+    const attivo = salvataggio.avvia(file, stanze, { intervallo: 60000 });
+    assert.equal(attivo.salvaOra(), true);
+    attivo.ferma();
+    assert.equal(JSON.parse(fs.readFileSync(file, 'utf8')).formato, salvataggio.VERSIONE_FORMATO);
+    assert.equal(fs.readFileSync(esito.messoDaParte, 'utf8'), originale);
+
+    // Due file illeggibili nello stesso secondo non si calpestano.
+    fs.writeFileSync(file, 'non è JSON');
+    const secondo = salvataggio.caricaSenzaPerdere(file, stanze, { ora });
+    assert.equal(secondo.messoDaParte, `${file}.illeggibile-20261116-193005-1`);
+    assert.equal(fs.readFileSync(esito.messoDaParte, 'utf8'), originale);
+
+    // File leggibile o assente: nessuno spostamento.
+    const pulito = salvataggio.caricaSenzaPerdere(path.join(cartella, 'non-esiste.json'), stanze, { ora });
+    assert.deepEqual(pulito, { ripristinate: 0, errore: null, messoDaParte: null, sicuro: true });
+  } finally {
+    stanze.azzera();
+    fs.rmSync(cartella, { recursive: true, force: true });
+  }
+});
+
+test('salvataggio illeggibile che non si riesce a spostare: il salvataggio periodico non deve partire', { skip: process.platform === 'win32' || (process.getuid && process.getuid() === 0) }, () => {
+  const cartella = cartellaTemporanea();
+  const file = path.join(cartella, 'partite.json');
+  try {
+    fs.writeFileSync(file, '{"formato": 2}');
+    fs.chmodSync(cartella, 0o500); // cartella in sola lettura: la rinomina fallisce
+    const esito = salvataggio.caricaSenzaPerdere(file, stanze);
+    assert.equal(esito.sicuro, false);
+    assert.equal(esito.messoDaParte, null);
+    assert.equal(fs.readFileSync(file, 'utf8'), '{"formato": 2}');
+  } finally {
+    fs.chmodSync(cartella, 0o700);
+    fs.rmSync(cartella, { recursive: true, force: true });
+  }
+});
+
 test('salvataggio: la variabile SALVATAGGIO sceglie il file o lo disattiva', () => {
   const radice = path.join(os.tmpdir(), 'progetto');
   assert.equal(salvataggio.percorsoDaAmbiente(undefined, radice), path.join(radice, '.partite', 'partite.json'));

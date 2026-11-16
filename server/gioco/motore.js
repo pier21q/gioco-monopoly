@@ -626,7 +626,6 @@ function applicaEffetto(stato, g, ctx, carta) {
 // Validazione dei parametri
 // ---------------------------------------------------------------------------
 
-/** Legge `azione.casella` e verifica che sia una casella acquistabile. */
 /** Chi rinuncia all'acquisto apre l'asta; con la variante `aste: false` la casella resta alla banca. */
 function rinunciaAllAcquisto(stato, g, ctx, motivo = null) {
   if (REG.valore(stato, 'aste') === false) {
@@ -639,6 +638,7 @@ function rinunciaAllAcquisto(stato, g, ctx, motivo = null) {
   N.avviaAsta(stato, ctx, g.posizione, N.faseDopoMossa(stato));
 }
 
+/** Legge `azione.casella` e verifica che sia una casella acquistabile. */
 function leggiCasella(azione) {
   const i = azione.casella;
   if (!Number.isInteger(i) || i < 0 || i >= NUMERO_CASELLE) {
@@ -837,7 +837,10 @@ const GESTORI = {
     return undefined;
   },
 
-  /** Vende alla banca una casa (o l'albergo, che torna a 4 case) a metà prezzo. */
+  /**
+   * Vende alla banca una casa (o l'albergo, che torna a 4 case) a metà prezzo.
+   * Albergo senza 4 case in banca: si vendono tutte le costruzioni del gruppo.
+   */
   vendiCasa(stato, g, azione, ctx) {
     const l = leggiCasella(azione);
     if (l.errore) return l;
@@ -856,14 +859,30 @@ const GESTORI = {
         'Vendi in modo uniforme: prima vendi dalle proprietà del gruppo con più costruzioni', { casella: i });
     }
     const albergo = voce.caseCostruite === 5;
-    // Regolamento: se la banca non ha 4 case da restituire, l'albergo si vende
-    // per intero (albergo + le 4 case che rappresenta) e il terreno resta vuoto.
-    const tutto = albergo && stato.caseDisponibili < 4;
-    const ricavo = tutto ? N.valoreVenditaCostruzioni(i, 5) : c.costoCasa / 2;
-    if (tutto) {
-      stato.alberghiDisponibili += 1;
-      voce.caseCostruite = 0;
-    } else if (albergo) {
+    // Se la banca non ha 4 case da dare in cambio, l'albergo non può tornare a
+    // 4 case. Venderne uno solo per intero lascerebbe il gruppo sbilanciato
+    // (albergo, albergo, terreno vuoto): si vendono insieme tutte le
+    // costruzioni del gruppo, a metà prezzo, e i terreni restano vuoti.
+    if (albergo && stato.caseDisponibili < 4) {
+      const nomeGruppo = TAB.GRUPPI[c.gruppo].nome;
+      for (const j of gruppo) {
+        const v = voceDi(stato, j);
+        if (v.caseCostruite === 0) continue;
+        const ricavoLotto = N.valoreVenditaCostruzioni(j, v.caseCostruite);
+        const cosaLotto = v.caseCostruite === 5 ? 'l\'albergo' : `${v.caseCostruite} ${v.caseCostruite === 1 ? 'casa' : 'case'}`;
+        if (v.caseCostruite === 5) stato.alberghiDisponibili += 1;
+        else stato.caseDisponibili += v.caseCostruite;
+        v.caseCostruite = 0;
+        g.denaro += ricavoLotto;
+        emetti(ctx, 'vendita', g.id,
+          `${g.nome} vende ${cosaLotto} su ${casella(j).nome} e incassa ${euro(ricavoLotto)} `
+          + `(tutto il gruppo ${nomeGruppo} insieme: la banca non ha 4 case da dare in cambio di un albergo)`,
+          { casella: j, caseCostruite: 0, ricavo: ricavoLotto, gruppoIntero: true });
+      }
+      return undefined;
+    }
+    const ricavo = c.costoCasa / 2;
+    if (albergo) {
       stato.alberghiDisponibili += 1;
       stato.caseDisponibili -= 4;
       voce.caseCostruite = 4;
@@ -872,11 +891,8 @@ const GESTORI = {
       voce.caseCostruite -= 1;
     }
     g.denaro += ricavo;
-    let cosa = 'una casa';
-    if (tutto) cosa = 'l\'albergo per intero (la banca non ha 4 case da restituire)';
-    else if (albergo) cosa = 'l\'albergo';
     emetti(ctx, 'vendita', g.id,
-      `${g.nome} vende ${cosa} su ${c.nome} e incassa ${euro(ricavo)}`,
+      `${g.nome} vende ${albergo ? 'l\'albergo' : 'una casa'} su ${c.nome} e incassa ${euro(ricavo)}`,
       { casella: i, caseCostruite: voce.caseCostruite, ricavo });
     return undefined;
   },
@@ -992,20 +1008,45 @@ const GESTORI = {
   /**
    * Abbandono volontario: bancarotta verso il creditore del proprio debito
    * aperto (se c'è) altrimenti verso la banca. Se partecipa a un'asta ne esce;
-   * se era il miglior offerente l'asta riparte da zero fra gli altri.
+   * se era il miglior offerente l'asta riparte da zero fra gli altri: chi
+   * aveva passato davanti alla sua offerta torna a poter offrire (restano
+   * fuori i falliti e i disconnessi).
    */
   abbandona(stato, g, azione, ctx) {
     const creditoreId = stato.debito && stato.debito.giocatoreId === g.id ? stato.debito.creditoreId : null;
     const a = stato.asta;
+    let astaRipartita = false;
     if (a && a.partecipanti.includes(g.id)) {
-      if (!a.passati.includes(g.id)) a.passati.push(g.id);
       if (a.migliorOfferenteId === g.id) {
         a.migliorOfferenteId = null;
         a.offertaMassima = 0;
+        const prima = a.passati.length;
+        a.passati = a.passati.filter((id) => {
+          const x = trova(stato, id);
+          return !x || x.fallito || x.connesso === false;
+        });
+        astaRipartita = a.passati.length < prima;
+        // Per i client è un'asta nuova: la finestra si riapre a chi aveva passato.
+        if (astaRipartita) a.iniziataIl = ctx.t;
       }
+      if (!a.passati.includes(g.id)) a.passati.push(g.id);
     }
-    emetti(ctx, 'abbandono', g.id, `${g.nome} abbandona la partita`, { creditoreId: creditoreId ?? null });
+    // `ctx.motivo` lo imposta solo il server quando agisce al posto del
+    // giocatore: 'assente' (non rientra da troppo tempo) o 'debito' (non ha
+    // saldato in tempo). Senza motivo è un abbandono voluto.
+    const dUfficio = {
+      assente: `${g.nome} non rientra da troppo tempo ed esce dalla partita`,
+      debito: `${g.nome} non ha saldato il debito in tempo ed esce dalla partita`,
+    };
+    const motivo = Object.hasOwn(dUfficio, ctx.motivo) ? ctx.motivo : null;
+    emetti(ctx, 'abbandono', g.id, motivo ? dUfficio[motivo] : `${g.nome} abbandona la partita`,
+      { creditoreId: creditoreId ?? null, ...(motivo ? { motivo } : {}) });
     bancarotta.liquidaInterno(stato, g.id, creditoreId ?? null, ctx, { abbandono: true });
+    if (stato.asta === a && astaRipartita) {
+      emetti(ctx, 'astaInizio', null,
+        `L'asta per ${casella(a.casella).nome} riparte da zero: ${g.nome} aveva l'offerta più alta`,
+        { casella: a.casella, partecipanti: a.partecipanti.slice(), riparte: true });
+    }
     if (stato.asta) N.verificaChiusuraAsta(stato, ctx);
     return undefined;
   },
@@ -1051,6 +1092,7 @@ function applicaAzione(stato, giocatoreId, azione, contesto = {}) {
   const nuovo = N.normalizzaStato(structuredClone(stato));
   const g = trova(nuovo, giocatoreId);
   const ctx = N.creaContesto(contesto);
+  if (typeof contesto.motivo === 'string') ctx.motivo = contesto.motivo;
 
   const esito = GESTORI[azione.tipo](nuovo, g, azione, ctx);
   if (esito && esito.errore) return esito;
@@ -1128,6 +1170,24 @@ function gestisciInattivita(stato, giocatoreId, contesto = {}) {
 }
 
 /**
+ * Lo scambio in attesa `scambioId` non ha avuto risposta in tempo: decade,
+ * così gli altri possono proporne di nuovi. Ritorna sempre { stato, eventi }
+ * (eventi vuoto se quello scambio non è più in attesa).
+ */
+function scadeScambio(stato, scambioId, contesto = {}) {
+  const sc = stato && stato.scambio;
+  if (!sc || sc.id !== scambioId) return { stato, eventi: [] };
+  const nuovo = N.normalizzaStato(structuredClone(stato));
+  const ctx = N.creaContesto(contesto);
+  nuovo.scambio = null;
+  const dopo = Number.isFinite(contesto.secondi) ? ` in ${contesto.secondi} secondi` : '';
+  emetti(ctx, 'scambioRifiutato', null,
+    `La proposta di scambio di ${nomeDi(nuovo, sc.daId)} ${N.aChi(nomeDi(nuovo, sc.aId))} è scaduta: nessuna risposta${dopo}`,
+    { scambio: structuredClone(sc), daId: null, motivo: 'scaduto' });
+  return concludi(stato, nuovo, ctx);
+}
+
+/**
  * Chi deve agire perché la partita vada avanti: il debitore, i partecipanti
  * all'asta che non hanno passato (escluso il miglior offerente) oppure il
  * giocatore di turno (anche nel lancio iniziale). Lista vuota in lobby e a
@@ -1156,6 +1216,7 @@ module.exports = {
   azioniDisponibili,
   gestisciDisconnessione,
   gestisciInattivita,
+  scadeScambio,
   chiDeveAgire,
   statoPubblico,
   prossimoGiocatore,

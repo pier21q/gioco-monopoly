@@ -5,11 +5,13 @@
  *
  * Costanti, tipi di messaggio, codici di errore e validazione dei messaggi
  * WebSocket. Nessuna logica di gioco: il contratto completo è in
- * INTERFACCE.md §0, §3 e §7. Modulo puro: l'unica dipendenza è il catalogo
- * delle regole (dati puri, server/gioco/regole.js).
+ * INTERFACCE.md §0, §3 e §7. Modulo puro: dipende solo dal catalogo delle
+ * regole (server/gioco/regole.js) e dai codici d'errore del motore
+ * (server/gioco/errori.js), tutti e due dati puri.
  */
 
 const REGOLE = require('./gioco/regole');
+const { ERRORI: ERRORI_MOTORE } = require('./gioco/errori');
 
 // ---------------------------------------------------------------------------
 // Limiti e costanti
@@ -40,6 +42,9 @@ const LIMITI = Object.freeze({
   MAX_STANZE_PER_IP: 10,
   // Connessioni WebSocket contemporanee dallo stesso indirizzo IP.
   MAX_CONNESSIONI_PER_IP: 20,
+  // Connessioni WebSocket contemporanee in tutto (200 stanze × 6 giocatori
+  // sarebbero 1200: 600 bastano e avanzano, e fermano chi ha molti indirizzi).
+  MAX_CONNESSIONI: 600,
   // Eventi di log inclusi in ogni `stato` di aggiornamento; il log completo
   // (fino a LOG_MAX) arriva solo con `entrato`/`riconnetti`.
   LOG_BREVE: 30,
@@ -91,6 +96,7 @@ const MESSAGGI_CLIENT = Object.freeze([
   'chiudiStanza',
   'cacciaGiocatore',
   'cediAdmin',
+  'lasciaAdmin',
   'impostaRegole',
 ]);
 
@@ -133,39 +139,8 @@ const ERRORI = Object.freeze({
   CACCIATO: 'Sei stato tolto dalla stanza',
   REGOLE_DA_IMPOSTARE: 'Prima di avviare compila la finestra delle regole della partita',
 
-  // Motore
-  AZIONE_NON_VALIDA: 'Azione sconosciuta',
-  PARAMETRI_NON_VALIDI: 'Parametri dell\'azione non validi',
-  GIOCATORE_NON_VALIDO: 'Giocatore inesistente',
-  GIOCATORE_FALLITO: 'Il giocatore è fallito',
-  NON_IL_TUO_TURNO: 'Non è il tuo turno',
-  FASE_ERRATA: 'Azione non ammessa in questa fase',
-  FONDI_INSUFFICIENTI: 'Denaro insufficiente',
-  CASELLA_NON_VALIDA: 'Casella non valida',
-  PROPRIETA_NON_TUA: 'Non possiedi questa proprietà',
-  NON_EDIFICABILE: 'Su questa casella non si può costruire',
-  GRUPPO_INCOMPLETO: 'Devi possedere tutto il gruppo di colore',
-  NON_SULLA_CASELLA: 'In questa partita costruisci solo sul colore su cui ti sei fermato in questo turno',
-  COSTRUZIONE_NON_UNIFORME: 'Le costruzioni devono essere distribuite in modo uniforme',
-  CASE_ESAURITE: 'La banca non ha più case disponibili',
-  ALBERGHI_ESAURITI: 'La banca non ha più alberghi disponibili',
-  NESSUNA_COSTRUZIONE: 'Non ci sono costruzioni da vendere',
-  HA_COSTRUZIONI: 'Prima vendi le costruzioni',
-  IPOTECATA: 'La proprietà (o una del gruppo) è ipotecata',
-  GIA_IPOTECATA: 'La proprietà è già ipotecata',
-  NON_IPOTECATA: 'La proprietà non è ipotecata',
-  OFFERTA_BASSA: 'L\'offerta deve superare quella attuale',
-  GIA_PASSATO: 'Hai già passato in questa asta',
-  MIGLIOR_OFFERENTE: 'Il miglior offerente non può passare',
-  SCAMBIO_IN_CORSO: 'C\'è già uno scambio in attesa di risposta',
-  SCAMBIO_NON_TROVATO: 'Scambio non trovato',
-  SCAMBIO_VUOTO: 'Lo scambio deve includere almeno qualcosa',
-  NON_DESTINATARIO: 'Solo il destinatario può rispondere allo scambio',
-  NON_COINVOLTO: 'Non fai parte di questo scambio',
-  NON_IN_PRIGIONE: 'Non sei in prigione',
-  NESSUNA_CARTA_PRIGIONE: 'Non hai carte "Uscite gratis di prigione"',
-  NON_DEBITORE: 'Non hai debiti da saldare',
-  NON_IMPLEMENTATO: 'Funzione non ancora disponibile in questa versione',
+  // Motore: i codici stanno in server/gioco/errori.js, un posto solo.
+  ...ERRORI_MOTORE,
 });
 
 // ---------------------------------------------------------------------------
@@ -370,6 +345,10 @@ const VALIDATORI = {
       return rifiuta('MESSAGGIO_NON_VALIDO', 'Indica quale giocatore togliere (giocatoreId)', { campo: 'giocatoreId' });
     }
     return { ok: true, messaggio: { tipo: 'cacciaGiocatore', giocatoreId: m.giocatoreId } };
+  },
+
+  lasciaAdmin() {
+    return { ok: true, messaggio: { tipo: 'lasciaAdmin' } };
   },
 
   cediAdmin(m) {

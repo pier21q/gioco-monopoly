@@ -135,6 +135,9 @@ test('inattività: il debitore che non salda né dichiara viene dichiarato in ba
     scadi(stanza, ora);
     assert.equal(giocatore(stanza.stato, debitore).fallito, true);
     assert.equal(stanza.stato.vincitoreId, altro);
+    const uscita = stanza.stato.log.find((e) => e.tipo === 'abbandono');
+    assert.equal(uscita.dati.motivo, 'debito', 'la cronaca dice che è per il debito, non un abbandono voluto');
+    assert.match(uscita.testo, /non ha saldato il debito in tempo/);
     assert.equal(stanza.inattivita, null, 'a partita finita non c\'è più nessun timer');
   } finally {
     stanze.azzera();

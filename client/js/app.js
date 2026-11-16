@@ -33,7 +33,7 @@ export const AZIONI_GIOCO = Object.freeze([
 /** Messaggi di protocollo inviati così come sono (§3.2). */
 export const MESSAGGI_PROTOCOLLO = Object.freeze([
   'creaStanza', 'entraStanza', 'avviaPartita', 'riconnetti', 'esciStanza',
-  'chiudiStanza', 'cacciaGiocatore', 'cediAdmin', 'impostaRegole',
+  'chiudiStanza', 'cacciaGiocatore', 'cediAdmin', 'lasciaAdmin', 'impostaRegole',
 ]);
 
 /** Dove il browser ricorda la chiave del link da admin. */
@@ -230,10 +230,12 @@ export function creaStore(iniziale = {}, gestori = {}) {
 // ---------------------------------------------------------------------------
 
 /**
- * La sessione `{ codice, giocatoreId, token }` sta SOLO in sessionStorage:
+ * La sessione `{ codice, giocatoreId, token }` sta in sessionStorage:
  * sopravvive al refresh della scheda ma non è condivisa con le altre schede,
  * così ogni scheda dello stesso browser è un giocatore distinto (e due schede
- * non si rubano il posto a vicenda). Chiudendo la scheda la sessione si perde.
+ * non si rubano il posto a vicenda). Chiudendo la scheda questa sessione si
+ * perde; resta la copia di ripresa in localStorage (vedi CHIAVE_RIPRESA), che
+ * si usa solo premendo «Riprendi la partita».
  */
 export function leggiSessione() {
   for (const archivio of archivi()) {
@@ -336,6 +338,24 @@ function salvaRipresa(io) {
   } catch {
     /* ignora */
   }
+}
+
+/**
+ * Canale fra le schede dello stesso browser. Serve a una cosa sola: prima di
+ * offrire «Riprendi la partita» si chiede se quel giocatore è già collegato in
+ * un'altra scheda, perché riprenderlo qui butterebbe fuori quella.
+ */
+export const CANALE_SCHEDE = 'monopoly.schede';
+
+/**
+ * Questa scheda sta giocando, collegata, con il giocatore della `domanda`
+ * (`{ codice, giocatoreId }`)? `fermata` è lo stato della connessione fermata
+ * dal server (scheda sostituita o chiusa): in quel caso qui non si gioca più.
+ */
+export function giocaQui(stato, fermata, domanda) {
+  const io = stato && stato.io;
+  return Boolean(io && domanda && io.codice === domanda.codice && io.giocatoreId === domanda.giocatoreId
+    && !fermata && stato.connessione === 'connesso');
 }
 
 /** Cancella la copia di ripresa, ma solo se è quella del token indicato. */
@@ -463,6 +483,15 @@ export function toastPerEvento(evento, partita, mioId) {
       return suDiMe && d.motivo === 'inattivo' ? { testo, livello: 'avviso', durata: 6000 } : null;
     case 'admin':
       return suDiMe ? { testo: 'Sei l\'admin di questa stanza', livello: 'successo' } : null;
+    case 'host':
+      // L'host di prima è scollegato da 45 secondi: il ruolo è passato.
+      return suDiMe
+        ? { testo: 'Ora sei tu l\'host della stanza: puoi togliere un giocatore o chiuderla da «Gestisci la stanza».', livello: 'successo', durata: 7000 }
+        : null;
+    case 'abbandono':
+      // L'abbandono voluto lo dice già il messaggio sui beni; quello d'ufficio
+      // (assente da troppo, debito non saldato in tempo) va spiegato.
+      return d.motivo === 'assente' || d.motivo === 'debito' ? { testo, livello: 'avviso', durata: 6000 } : null;
     case 'scambioProposto':
       return d.scambio?.aId === mioId
         ? { testo: `${nome(d.scambio.daId)} ti propone uno scambio`, livello: 'avviso', durata: 6000 }
@@ -530,6 +559,11 @@ async function avvia() {
   // ----- Parametri iniziali: ?stanza= e sessione salvata ------------------
   const parametri = new URLSearchParams(location.search);
   let chiaveAdmin = leggiChiaveAdmin();
+  // Il link da admin aperto in una scheda che è già sul gioco cambia solo il
+  // frammento, senza ricaricare la pagina: lo si fa qui, così la chiave vale.
+  globalThis.addEventListener?.('hashchange', () => {
+    if (chiaveAdminDaFrammento(location.hash)) location.reload();
+  });
 
   // La barra va su due righe quando ha più pulsanti (Admin, Regole…): i
   // messaggi a comparsa partono sotto la sua altezza vera, non sopra i pulsanti.
@@ -548,6 +582,13 @@ async function avvia() {
   // il pulsante nella barra (mai in automatico).
   const copiaRipresa = salvata ? null : leggiRipresa();
   let ripresaPossibile = copiaRipresa && (!codiceUrl || codiceUrl === copiaRipresa.codice) ? copiaRipresa : null;
+  // Prima di offrirla si chiede alle altre schede se quel giocatore è già
+  // collegato da lì (vedi in fondo): nel frattempo il pulsante non compare.
+  let canaleSchede = null;
+  try {
+    if (typeof BroadcastChannel === 'function') canaleSchede = new BroadcastChannel(CANALE_SCHEDE);
+  } catch { /* canale non disponibile: si offre la ripresa come prima */ }
+  let ripresaInVerifica = Boolean(ripresaPossibile) && Boolean(canaleSchede);
 
   /** @type {ReturnType<typeof rete.connetti>|null} */
   let conn = null;
@@ -729,6 +770,15 @@ async function avvia() {
           tornaAllInizio();
           return true;
         }
+        if (azione.tipo === 'ui:esciAdmin') {
+          // Il browser dimentica la chiave e il server toglie il ruolo a questa connessione.
+          chiaveAdmin = null;
+          dimenticaChiaveAdmin();
+          store.setState({ admin: false, indirizzoVisto: null });
+          invia({ tipo: 'lasciaAdmin', rif: 'lascia-admin' });
+          mostraToast('Questo browser non è più admin. Per tornarlo riapri il tuo link da admin.', { livello: 'info', durata: 7000 });
+          return true;
+        }
         return false;
       },
     },
@@ -808,7 +858,11 @@ async function avvia() {
       }
 
       case 'admin':
-        if (msg.ok) store.setState({ admin: true });
+        // `ok: false` è la conferma di lasciaAdmin; se nel frattempo non è stata
+        // tolta la chiave (es. altra scheda) questa connessione resta comunque non admin.
+        store.setState(msg.ok && chiaveAdmin
+          ? { admin: true, indirizzoVisto: typeof msg.indirizzo === 'string' ? msg.indirizzo : null }
+          : { admin: false, indirizzoVisto: null });
         return;
 
       case 'errore':
@@ -1061,7 +1115,7 @@ async function avvia() {
 
     // Pulsanti della barra: prima la connessione fermata dal server, poi la
     // "Nuova partita" a fine gioco.
-    const offriRipresa = Boolean(ripresaPossibile) && !stato.io && !stato.lobby.ripresa;
+    const offriRipresa = Boolean(ripresaPossibile) && !ripresaInVerifica && !stato.io && !stato.lobby.ripresa;
     // Host e admin comandano la stanza: togliere giocatori e chiuderla.
     const mioId = stato.io?.giocatoreId;
     const comando = Boolean(mioId && partita && (partita.hostId === mioId || partita.adminId === mioId));
@@ -1213,9 +1267,44 @@ async function avvia() {
 
   // Primo disegno (la lobby o la schermata di ripresa).
   disegna();
-  if (ripresaPossibile) {
+
+  // Le altre schede di questo browser: rispondono se stanno giocando con il
+  // giocatore che questa vorrebbe riprendere, e in quel caso qui non lo si offre.
+  let timerVerifica = null;
+  const offriRipresa = () => {
+    clearTimeout(timerVerifica);
+    ripresaInVerifica = false;
+    if (!ripresaPossibile) return;
+    pianificaRender();
     mostraToast(`Avevi una partita in corso nella stanza ${ripresaPossibile.codice}: per rientrare al tuo posto premi «Riprendi la partita» in alto.`,
       { livello: 'info', durata: 10000 });
+  };
+  if (canaleSchede) {
+    canaleSchede.onmessage = (e) => {
+      const m = e && e.data;
+      if (!m || typeof m !== 'object') return;
+      if (m.tipo === 'chi-gioca') {
+        if (giocaQui(store.getState(), fermata, m)) {
+          canaleSchede.postMessage({ tipo: 'gioco-io', codice: m.codice, giocatoreId: m.giocatoreId });
+        }
+      } else if (m.tipo === 'gioco-io' && ripresaPossibile
+        && m.codice === ripresaPossibile.codice && m.giocatoreId === ripresaPossibile.giocatoreId) {
+        const { codice } = ripresaPossibile;
+        clearTimeout(timerVerifica);
+        ripresaPossibile = null;
+        ripresaInVerifica = false;
+        pianificaRender();
+        mostraToast(`La partita della stanza ${codice} è già aperta in un'altra scheda di questo browser: continua da lì.`,
+          { livello: 'info', durata: 8000 });
+      }
+    };
+  }
+  if (ripresaPossibile && canaleSchede) {
+    canaleSchede.postMessage({ tipo: 'chi-gioca', codice: ripresaPossibile.codice, giocatoreId: ripresaPossibile.giocatoreId });
+    // Una scheda aperta risponde in pochi millisecondi: oltre, non c'è nessuno.
+    timerVerifica = setTimeout(offriRipresa, 400);
+  } else if (ripresaPossibile) {
+    offriRipresa();
   }
 
   // Accesso dalla console per il debug: solo in locale o con ?debug nell'URL.

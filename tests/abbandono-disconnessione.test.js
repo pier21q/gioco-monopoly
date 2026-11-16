@@ -59,6 +59,37 @@ test('abbandona con un debito aperto: i beni vanno al creditore, come nella banc
   assert.equal(r.stato.debito, null);
 });
 
+test('asta: se il miglior offerente abbandona si riparte da zero, e chi aveva passato torna a offrire', () => {
+  const D = H.ID.D;
+  const asta = H.modifica(H.nuovaPartita(4), (s) => {
+    s.fase = 'asta';
+    s.asta = {
+      casella: 1, offertaMassima: 80, migliorOfferenteId: A, partecipanti: [A, B, C, D], passati: [B, D],
+      incrementoMinimo: 1, iniziataIl: H.ORA_FISSA(), faseDopo: 'mossa',
+    };
+    giocatore(s, D).connesso = false; // D aveva "passato" perché scollegato
+  });
+  const r = H.esegui(asta, A, { tipo: 'abbandona' }, undefined, 'Abbandono del miglior offerente');
+  assert.equal(r.stato.fase, 'asta', 'l\'asta continua fra gli altri');
+  assert.equal(r.stato.asta.migliorOfferenteId, null);
+  assert.equal(r.stato.asta.offertaMassima, 0);
+  assert.deepEqual(r.stato.asta.passati, [D, A], 'B rientra in gara; restano fuori lo scollegato e chi ha abbandonato');
+  assert.deepEqual(motore.chiDeveAgire(r.stato), [B, C]);
+  const riparte = r.eventi.find((e) => e.tipo === 'astaInizio');
+  assert.equal(riparte.dati.riparte, true);
+  assert.match(riparte.testo, /riparte da zero/);
+  // B, che aveva passato davanti agli 80 € di A, ora può prendersela per 1 €.
+  const offerta = H.esegui(r.stato, B, { tipo: 'offertaAsta', importo: 1 });
+  const chiusa = H.esegui(offerta.stato, C, { tipo: 'passaAsta' });
+  assert.equal(chiusa.stato.proprieta['1'].proprietario, B);
+  assert.equal(giocatore(chiusa.stato, B).denaro, 1499);
+
+  // Se abbandona uno che non aveva l'offerta più alta, chi ha passato resta fuori.
+  const altro = H.esegui(asta, C, { tipo: 'abbandona' });
+  assert.equal(altro.stato.proprieta['1'].proprietario, A, 'restava solo A: l\'asta si chiude a 80 €');
+  assert.equal(altro.eventi.some((e) => e.tipo === 'astaInizio'), false);
+});
+
 /** Stanza con due giocatori (senza socket) e partita avviata. */
 function stanzaAvviata() {
   stanze.azzera();

@@ -19,3 +19,7 @@ services:
       # Environment. Il link è https://gioco-monopoly.onrender.com/#admin=CHIAVE
       - key: ADMIN_CHIAVE
         generateValue: true
+      # Sul piano gratuito il disco si azzera a ogni riavvio: salvare le
+      # partite su file non serve, e si evita di scrivere i token su disco.
+      - key: SALVATAGGIO
+        value: "0"

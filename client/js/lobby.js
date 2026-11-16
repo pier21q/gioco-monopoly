@@ -148,12 +148,16 @@ export function render(radice, stato, dispatch) {
   else vista = 'ingresso';
 
   if (radice.dataset.vista !== vista) {
+    // Al primo disegno della pagina il focus resta dov'è: così il primo Tab
+    // porta a "Salta al contenuto principale". Nei cambi di vista successivi
+    // va sul titolo nuovo, che gli screen reader annunciano.
+    const primoDisegno = !radice.dataset.vista;
     radice.dataset.vista = vista;
     radice.replaceChildren();
     if (vista === 'ripresa') costruisciRipresa(radice, dispatch);
     else if (vista === 'ingresso') costruisciIngresso(radice, stato, dispatch);
     else costruisciSala(radice, dispatch);
-    focusSeLibero(radice, radice.querySelector('[data-titolo-vista]'));
+    if (!primoDisegno) focusSeLibero(radice, radice.querySelector('[data-titolo-vista]'));
   }
 
   if (vista === 'ingresso') aggiornaIngresso(radice, stato);

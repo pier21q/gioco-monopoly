@@ -801,7 +801,6 @@ function aggiornaCaselle(ist, { partita, perId, giocatori }) {
   if (ist.inLuce) disegnaLuce(ist);
 }
 
-/** Punto (in unità) lungo la fascia colore della casella: k-esimo edificio di n. */
 // --- contratti che volano ----------------------------------------------------
 
 /**
@@ -903,6 +902,7 @@ function volaAtto(ist, indice, g, { ritardo = 0, mia = false, acquisto = false }
   else parti();
 }
 
+/** Punto (in unità) lungo la fascia colore della casella: k-esimo edificio di n. */
 function puntoEdificio(indice, k, n) {
   const { lato } = coordinate(indice);
   const base = centroCasella(indice);
@@ -1151,24 +1151,65 @@ function aggiornaPedine(ist, { partita, giocatori, perId }, iniziale_, ritardo) 
       }
       return;
     }
-    const percorso = calcolaPercorso(da, a, gPrec, g);
+    const percorso = calcolaPercorso(da, a, gPrec, g, partita.log);
     if (g.inPrigione && !gPrec.inPrigione) arresta(ist, pedina, ritardo);
     avviaPercorso(ist, g.id, pedina, percorso, finale, ritardo);
   });
 }
 
-function calcolaPercorso(da, a, gPrec, g) {
+/**
+ * Gli ultimi movimenti di `id` scritti nella cronaca che, messi in fila,
+ * portano da `da` ad `a` (per esempio il lancio e poi la carta "Andate fino al
+ * Via"): [{ da, a, passi }], oppure null se la cronaca non li racconta.
+ */
+function movimentiDalLog(log, id, da, a) {
+  if (!Array.isArray(log)) return null;
+  const mosse = [];
+  let atteso = a;
+  for (let k = log.length - 1; k >= 0 && mosse.length < 6; k -= 1) {
+    const e = log[k];
+    if (!e || e.tipo !== 'movimento' || e.giocatoreId !== id) continue;
+    const d = e.dati || {};
+    if (d.a !== atteso || !Number.isInteger(d.da) || !Number.isInteger(d.passi) || d.passi === 0) return null;
+    mosse.unshift(d);
+    if (d.da === da) return mosse;
+    atteso = d.da;
+  }
+  return null;
+}
+
+/**
+ * Le caselle su cui la pedina passa per andare da `da` ad `a` (l'ultima tappa,
+ * la posizione a riposo, la aggiunge chi chiama). La strada è quella vera,
+ * presa dai movimenti della cronaca: prima il lancio e poi l'eventuale carta,
+ * in avanti anche per un giro quasi completo ("Andate fino al Via") e
+ * all'indietro solo per "tre passi indietro". Senza cronaca si va per la via
+ * più corta in avanti, o indietro se la casella è appena alle spalle.
+ */
+export function calcolaPercorso(da, a, gPrec, g, log) {
   if (g.inPrigione && !gPrec.inPrigione) return []; // "In prigione!": salto diretto
-  const avanti = (a - da + NUMERO_CASELLE) % NUMERO_CASELLE;
   const passi = [];
+  const mosse = movimentiDalLog(log, g.id, da, a);
+  if (mosse) {
+    mosse.forEach((m, k) => {
+      const verso = m.passi > 0 ? 1 : -1;
+      const quanti = Math.min(NUMERO_CASELLE, Math.abs(m.passi));
+      for (let n = 1; n <= quanti; n += 1) {
+        passi.push((((m.da + verso * n) % NUMERO_CASELLE) + NUMERO_CASELLE) % NUMERO_CASELLE);
+      }
+      // L'arrivo dell'ultimo movimento è la posizione a riposo: non è una tappa intermedia.
+      if (k === mosse.length - 1) passi.pop();
+    });
+    return passi;
+  }
+  const avanti = (a - da + NUMERO_CASELLE) % NUMERO_CASELLE;
   if (avanti > 28) {
-    // Indietro (carta "tre passi indietro").
     const indietro = NUMERO_CASELLE - avanti;
     for (let k = 1; k < indietro; k += 1) passi.push((da - k + NUMERO_CASELLE) % NUMERO_CASELLE);
   } else {
     for (let k = 1; k < avanti; k += 1) passi.push((da + k) % NUMERO_CASELLE);
   }
-  return passi; // caselle intermedie; l'ultima tappa è la posizione a riposo
+  return passi;
 }
 
 function attendi(ms) {

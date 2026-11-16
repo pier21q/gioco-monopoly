@@ -413,12 +413,14 @@ test('alberghi e vendita a metà prezzo, uniforme', () => {
   ko(r.stato, A, { tipo: 'ipoteca', casella: 1 }, 'HA_COSTRUZIONI');
   const pocheCase = structuredClone(r.stato);
   pocheCase.caseDisponibili = 3;
-  // Senza 4 case in banca l'albergo si vende per intero: 5 × 50 / 2 = 125 €.
+  // Senza 4 case in banca si vendono tutte le costruzioni del gruppo:
+  // l'albergo (5 × 50 / 2 = 125 €) e le 4 case dell'altro terreno (100 €).
   const intero = ok(pocheCase, A, { tipo: 'vendiCasa', casella: 1 });
   assert.equal(intero.stato.proprieta['1'].caseCostruite, 0);
+  assert.equal(intero.stato.proprieta['3'].caseCostruite, 0);
   assert.equal(intero.stato.alberghiDisponibili, 12);
-  assert.equal(intero.stato.caseDisponibili, 3);
-  assert.equal(gioc(intero.stato, A).denaro, gioc(pocheCase, A).denaro + 125);
+  assert.equal(intero.stato.caseDisponibili, 7);
+  assert.equal(gioc(intero.stato, A).denaro, gioc(pocheCase, A).denaro + 225);
 
   const denaro = gioc(r.stato, A).denaro;
   r = ok(r.stato, A, { tipo: 'vendiCasa', casella: 1 });

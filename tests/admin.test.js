@@ -320,3 +320,47 @@ test('admin: chi viene tolto in partita non "perde la connessione": la cronaca d
     stanze.azzera();
   }
 });
+
+test('admin: "Esci da admin" toglie il ruolo alla connessione e alla stanza; chi esce resta host', { skip: SALTA, timeout: 20000 }, async () => {
+  const srv = await avviaServer();
+  try {
+    const anna = await srv.cliente();
+    anna.invia({ tipo: 'autenticaAdmin', chiave: CHIAVE });
+    const conferma = await anna.attendi((m) => m.tipo === 'admin', 'conferma admin');
+    assert.equal(conferma.ok, true);
+    assert.equal(typeof conferma.indirizzo, 'string', 'all\'admin il server dice da che indirizzo lo vede arrivare');
+    anna.invia({ tipo: 'creaStanza' });
+    const creata = await anna.attendi((m) => m.tipo === 'stanzaCreata', 'stanza creata');
+    anna.invia({ tipo: 'entraStanza', codice: creata.codice, nome: 'Anna' });
+    const io = await anna.attendi((m) => m.tipo === 'entrato', 'ingresso');
+    const stanza = stanze.trova(creata.codice);
+    assert.equal(stanza.adminId, io.giocatoreId);
+
+    const da = anna.messaggi.length;
+    anna.invia({ tipo: 'lasciaAdmin', rif: 'x1' });
+    const uscita = await anna.attendi((m) => m.tipo === 'admin', 'conferma di uscita', da);
+    assert.deepEqual(uscita, { tipo: 'admin', ok: false, rif: 'x1' });
+    const stato = await anna.attendi((m) => m.tipo === 'stato' && m.stato.adminId === null, 'stato senza admin', da);
+    assert.equal(stato.stato.hostId, io.giocatoreId, 'resta host, come chi crea una stanza normale');
+    assert.equal(stanza.adminId, null);
+    const evento = stanza.stato.log.at(-1);
+    assert.equal(evento.tipo, 'admin');
+    assert.deepEqual(evento.dati, { giocatoreId: null, precedenteId: io.giocatoreId });
+
+    // La connessione non è più admin: in un'altra stanza entra come giocatore qualunque.
+    anna.invia({ tipo: 'esciStanza' });
+    const altra = stanze.crea({});
+    stanze.entra(altra, { nome: 'Bruno' });
+    const prima = anna.messaggi.length;
+    anna.invia({ tipo: 'entraStanza', codice: altra.codice, nome: 'Anna' });
+    await anna.attendi((m) => m.tipo === 'entrato', 'ingresso nella seconda stanza', prima);
+    assert.equal(altra.adminId, null);
+    assert.notEqual(altra.hostId, null);
+
+    // Chi non è admin e manda lasciaAdmin non cambia niente.
+    assert.deepEqual(stanze.lasciaAdmin(altra, altra.hostId), []);
+    assert.equal(P.analizza(JSON.stringify({ tipo: 'lasciaAdmin' })).ok, true);
+  } finally {
+    await srv.chiudi();
+  }
+});

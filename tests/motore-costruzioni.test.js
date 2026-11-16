@@ -105,14 +105,32 @@ test('vendita dell\'albergo: torna a 4 case se la banca ne ha 4, a metà prezzo'
   assert.equal(r.stato.alberghiDisponibili, 12);
   assert.equal(r.stato.caseDisponibili, s.caseDisponibili - 4, 'le 4 case vengono prese dalla scorta della banca');
   assert.equal(giocatore(r.stato, A).denaro, 1525);
-  // INTERFACCE.md §2.4 e §8.4: se la banca non ha 4 case da restituire,
-  // l'albergo si vende per intero (5 × 50 € / 2 = 125 €) e il terreno resta vuoto.
-  const povera = H.modifica(s, (x) => { x.caseDisponibili = 3; });
-  const t = H.esegui(povera, A, { tipo: 'vendiCasa', casella: 1 }, undefined, 'Senza 4 case in banca l\'albergo si vende per intero');
-  assert.equal(voce(t.stato, 1).caseCostruite, 0, 'Regola: senza 4 case in banca l\'albergo viene demolito del tutto');
+});
+
+test('vendita dell\'albergo senza 4 case in banca: si vendono insieme tutte le costruzioni del gruppo', () => {
+  // Venderne uno solo per intero lascerebbe il gruppo sbilanciato (albergo e
+  // terreno vuoto): il gruppo resta uniforme perché si svuota tutto insieme.
+  const s = H.modifica(H.costruito(s0(), { 1: 5, 3: 4 }), (x) => { x.caseDisponibili = 3; });
+  const t = H.esegui(s, A, { tipo: 'vendiCasa', casella: 1 }, undefined, 'Senza 4 case in banca si vende tutto il gruppo');
+  assert.equal(voce(t.stato, 1).caseCostruite, 0, 'l\'albergo non può tornare a 4 case: il terreno resta vuoto');
+  assert.equal(voce(t.stato, 3).caseCostruite, 0, 'anche le 4 case dell\'altro terreno del gruppo sono vendute');
   assert.equal(t.stato.alberghiDisponibili, 12);
-  assert.equal(t.stato.caseDisponibili, 3, 'la banca non restituisce case');
-  assert.equal(giocatore(t.stato, A).denaro, 1625, 'si incassa metà del valore di albergo e 4 case');
+  assert.equal(t.stato.caseDisponibili, 7, 'le 4 case dell\'altro terreno tornano alla banca');
+  assert.equal(giocatore(t.stato, A).denaro, 1500 + 125 + 100, 'metà prezzo: 125 € per l\'albergo, 100 € per le 4 case');
+  const vendite = t.eventi.filter((e) => e.tipo === 'vendita');
+  assert.deepEqual(vendite.map((e) => [e.dati.casella, e.dati.ricavo, e.dati.gruppoIntero]), [[1, 125, true], [3, 100, true]]);
+
+  // Tre alberghi sul gruppo azzurro (6, 8, 9; una casa costa 50 €).
+  const azzurro = H.modifica(H.costruito(H.assegna(H.nuovaPartita(), A, 6, 8, 9), { 6: 5, 8: 5, 9: 5 }), (x) => { x.caseDisponibili = 0; });
+  const u = H.esegui(azzurro, A, { tipo: 'vendiCasa', casella: 8 });
+  assert.deepEqual([6, 8, 9].map((i) => voce(u.stato, i).caseCostruite), [0, 0, 0], 'il gruppo resta uniforme');
+  assert.equal(u.stato.alberghiDisponibili, 12);
+  assert.equal(u.stato.caseDisponibili, 0);
+  assert.equal(giocatore(u.stato, A).denaro, 1500 + 3 * 125);
+  // Con 4 case in banca vale la regola normale: un solo albergo torna a 4 case.
+  const ricca = H.modifica(azzurro, (x) => { x.caseDisponibili = 4; });
+  const v = H.esegui(ricca, A, { tipo: 'vendiCasa', casella: 8 });
+  assert.deepEqual([6, 8, 9].map((i) => voce(v.stato, i).caseCostruite), [5, 4, 5]);
 });
 
 test('ipoteca: incassa metà prezzo; vietata con costruzioni nel gruppo o se già ipotecata', () => {

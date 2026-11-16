@@ -95,7 +95,6 @@ function trova(stato, id) {
   return (stato.giocatori || []).find((g) => g.id === id) || null;
 }
 
-/** Nome del giocatore, oppure "la banca" per null/sconosciuto. */
 /** "a" davanti a un nome: "ad Anna", "alla banca", "a Bruno". */
 function aChi(nome) {
   const n = String(nome ?? '');
@@ -103,6 +102,7 @@ function aChi(nome) {
   return /^[aAàÀ]/.test(n) ? `ad ${n}` : `a ${n}`;
 }
 
+/** Nome del giocatore, oppure "la banca" per null/sconosciuto. */
 function nomeDi(stato, id) {
   const g = id ? trova(stato, id) : null;
   return g ? g.nome : 'la banca';

@@ -1,0 +1,25 @@
+# Lancia tutti i test (npm test) a ogni push e a ogni pull request, con le due
+# versioni di Node dichiarate nel README. Compresa la prova nel browser: sulle
+# macchine di GitHub Chrome è già installato.
+name: Test
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        node: [20, 22]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+      - run: npm ci
+      - run: npm test

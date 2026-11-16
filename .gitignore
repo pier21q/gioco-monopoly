@@ -23,3 +23,9 @@ coverage/
 
 # Partite salvate dal server (contengono i token di sessione)
 .partite/
+
+# File locali di Claude Code (configurazione di anteprima, appunti di revisione)
+.claude/
+
+# Ritagli di testo trascinati dal Finder
+*.textClipping

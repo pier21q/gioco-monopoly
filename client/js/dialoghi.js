@@ -378,8 +378,26 @@ export function motivoVendi(p, id, indice) {
   if (s.caseCostruite <= 0) return 'Non ci sono case da vendere';
   const massimo = Math.max(...indiciGruppo(c.gruppo).map((i) => statoProp(p, i).caseCostruite));
   if (s.caseCostruite < massimo) return 'Vendi prima dalle proprietà del gruppo con più case';
-  // Albergo senza 4 case in banca: il server lo vende per intero (ammesso).
+  // Albergo senza 4 case in banca: il server vende tutto il gruppo (ammesso, vedi venditaInBlocco).
   return null;
+}
+
+/**
+ * Vendere l'albergo di `indice` quando la banca non ha 4 case da dare in
+ * cambio vende insieme tutte le costruzioni del gruppo (stessa regola di
+ * `vendiCasa` in server/gioco/motore.js). Ritorna `{ caselle, ricavo }` in
+ * quel caso, altrimenti null (vendita normale: una casa, o l'albergo che
+ * torna a 4 case). `sim` e `caseInBanca` servono a pianoLiquidazione.
+ */
+export function venditaInBlocco(p, indice, sim = null, caseInBanca = null) {
+  const c = CASELLE[indice];
+  if (!c || c.tipo !== 'proprieta') return null;
+  const quante = (i) => (sim ? (sim[i] ? sim[i].caseCostruite : 0) : statoProp(p, i).caseCostruite);
+  const banca = caseInBanca ?? (p && p.caseDisponibili) ?? 32;
+  if (quante(indice) !== 5 || banca >= 4) return null;
+  const caselle = indiciGruppo(c.gruppo).filter((i) => quante(i) > 0);
+  const ricavo = caselle.reduce((tot, i) => tot + (quante(i) * CASELLE[i].costoCasa) / 2, 0);
+  return { caselle, ricavo };
 }
 
 export function motivoIpoteca(p, id, indice) {
@@ -419,6 +437,7 @@ export function pianoLiquidazione(p, id, mancante) {
   for (const c of proprietaDi(p, id)) sim[c.indice] = { ...statoProp(p, c.indice) };
   const passi = [];
   let raccolto = 0;
+  let caseInBanca = (p && p.caseDisponibili) ?? 32;
   for (let giro = 0; giro < 200 && raccolto < mancante; giro += 1) {
     const ipotecabili = Object.keys(sim).map(Number).filter((i) => {
       const c = CASELLE[i];
@@ -448,11 +467,33 @@ export function pianoLiquidazione(p, id, mancante) {
     if (!vendibili.length) break;
     vendibili.sort((a, b) => CASELLE[b].costoCasa - CASELLE[a].costoCasa);
     const i = vendibili[0];
+    const blocco = venditaInBlocco(p, i, sim, caseInBanca);
+    if (blocco) {
+      // Albergo senza 4 case in banca: il server vende tutto il gruppo insieme.
+      for (const j of blocco.caselle) {
+        if (sim[j].caseCostruite < 5) caseInBanca += sim[j].caseCostruite;
+        sim[j].caseCostruite = 0;
+      }
+      raccolto += blocco.ricavo;
+      passi.push({ tipo: 'vendiCasa', casella: i, ricavo: blocco.ricavo, gruppo: true });
+      continue;
+    }
+    if (sim[i].caseCostruite === 5) caseInBanca -= 4; // l'albergo torna a 4 case
+    else caseInBanca += 1;
     sim[i].caseCostruite -= 1;
     raccolto += CASELLE[i].costoCasa / 2;
     passi.push({ tipo: 'vendiCasa', casella: i, ricavo: CASELLE[i].costoCasa / 2 });
   }
   return { passi, raccolto, copre: raccolto >= mancante };
+}
+
+/**
+ * Il giocatore è uscito abbandonando (di sua volontà, tolto dalla stanza o
+ * perché non rientrava) e non per una bancarotta? Chi non ha saldato un debito
+ * in tempo esce con la stessa azione, ma quella è una bancarotta.
+ */
+export function haAbbandonato(p, id) {
+  return ((p && p.log) || []).some((e) => e.tipo === 'abbandono' && e.giocatoreId === id && !(e.dati && e.dati.motivo === 'debito'));
 }
 
 /** Classifica finale: chi è ancora in gioco per patrimonio, poi i falliti dall'ultimo al primo. */
@@ -939,9 +980,10 @@ TIPI.dettaglioCasella = {
           motivo: motivoCostruisci(p, mio, indice),
           onclick: () => ctx.invia({ tipo: 'costruisci', casella: indice }),
         }));
+        const blocco = venditaInBlocco(p, indice);
         out.push(pulsante({
-          testo: s.caseCostruite === 5 ? 'Vendi l’albergo' : 'Vendi una casa',
-          dettaglio: `+${euro(c.costoCasa / 2)}`,
+          testo: blocco ? 'Vendi tutto il gruppo' : (s.caseCostruite === 5 ? 'Vendi l’albergo' : 'Vendi una casa'),
+          dettaglio: `+${euro(blocco ? blocco.ricavo : c.costoCasa / 2)}`,
           chiave: 'dc-vendi',
           motivo: motivoVendi(p, mio, indice),
           onclick: () => ctx.invia({ tipo: 'vendiCasa', casella: indice }),
@@ -1158,6 +1200,9 @@ TIPI.asta = {
 
 // --- Scambio ---------------------------------------------------------------
 
+/** Dopo quanto il server fa decadere una proposta senza risposta (TEMPI.SCAMBIO_MS in server/stanze.js). */
+const SECONDI_SCAMBIO = 90;
+
 function vuotoLato() {
   return { denaro: 0, proprieta: [], cartePrigione: 0 };
 }
@@ -1325,8 +1370,9 @@ TIPI.scambio = {
     if (s.aId === ctx.mio) {
       const interessi = interessiRicevuti(p, s.offre.proprieta);
       if (interessi) parti.push(avviso(`Accettando paghi subito ${euro(interessi)} di interessi alla banca per le proprietà ipotecate.`, 'avviso'));
+      parti.push(el('p', { class: 'testo-secondario', text: `Hai ${SECONDI_SCAMBIO} secondi per rispondere: poi la proposta decade da sola.` }));
     }
-    if (s.daId === ctx.mio) parti.push(el('p', { class: 'testo-secondario', text: `In attesa della risposta di ${nomeDi(p, s.aId)}. Puoi ritirare la proposta finché non risponde.` }));
+    if (s.daId === ctx.mio) parti.push(el('p', { class: 'testo-secondario', text: `In attesa della risposta di ${nomeDi(p, s.aId)}. Puoi ritirare la proposta finché non risponde; senza risposta decade da sola dopo ${SECONDI_SCAMBIO} secondi.` }));
     return parti;
   },
   piede(ctx) {
@@ -1396,8 +1442,9 @@ function voceGestione(ctx, c, modalita) {
     motivo = motivoCostruisci(p, mio, c.indice);
     azione = 'costruisci';
   } else if (modalita === 'vendi') {
-    testo = s.caseCostruite === 5 ? 'Vendi albergo' : 'Vendi casa';
-    dettaglio = `+${euro(c.costoCasa / 2)}`;
+    const blocco = venditaInBlocco(p, c.indice);
+    testo = blocco ? 'Vendi tutto il gruppo' : (s.caseCostruite === 5 ? 'Vendi albergo' : 'Vendi casa');
+    dettaglio = `+${euro(blocco ? blocco.ricavo : c.costoCasa / 2)}`;
     motivo = motivoVendi(p, mio, c.indice);
     azione = 'vendiCasa';
   } else if (modalita === 'ipoteca') {
@@ -1492,7 +1539,12 @@ TIPI.gestione = {
       el('ul', null, caselle.map((c) => voceGestione(ctx, c, ctx.modalita))))))
       : el('p', { class: 'vuoto', text: vuoti[ctx.modalita] });
 
-    return [scelta, info, generale ? avviso(generale, 'avviso') : null, elenco];
+    // Con meno di 4 case in banca un albergo non può tornare a 4 case.
+    const pocheCase = ctx.modalita === 'vendi' && (p.caseDisponibili ?? 32) < 4
+      && mie.some((c) => statoProp(p, c.indice).caseCostruite === 5);
+    return [scelta, info, generale ? avviso(generale, 'avviso') : null,
+      pocheCase ? avviso('La banca ha meno di 4 case: un albergo non può tornare a 4 case, quindi vendendolo si vendono insieme tutte le costruzioni del suo gruppo, a metà prezzo.', 'info') : null,
+      elenco];
   },
   piede: (ctx) => [chiudiPulsante(ctx, 'Fatto', { primario: true })],
   focusIniziale: (ctx) => ctx.dialog.querySelector('input[name="modalita"]:checked'),
@@ -1631,7 +1683,8 @@ const MOTIVI_DEBITO = {
 
 function descriviPasso(passo) {
   const c = CASELLE[passo.casella];
-  return passo.tipo === 'ipoteca' ? `Ipoteca ${c.nome}` : `Vendi una casa su ${c.nome}`;
+  if (passo.tipo === 'ipoteca') return `Ipoteca ${c.nome}`;
+  return passo.gruppo ? `Vendi tutte le costruzioni del gruppo ${nomeGruppo(c.gruppo).toLowerCase()}` : `Vendi una casa su ${c.nome}`;
 }
 
 TIPI.debito = {
@@ -1678,7 +1731,7 @@ TIPI.debito = {
         azione._btn.setAttribute('aria-label', `${descriviPasso(passo)}, ricavi ${euro(passo.ricavo)}`);
         return el('li', { class: 'piano__passo' },
           etichettaCasella(passo.casella, p),
-          el('span', { class: 'piano__descrizione', text: passo.tipo === 'ipoteca' ? 'ipoteca' : 'vendi una casa' }),
+          el('span', { class: 'piano__descrizione', text: passo.tipo === 'ipoteca' ? 'ipoteca' : (passo.gruppo ? 'vendi tutto il gruppo' : 'vendi una casa') }),
           azione);
       })));
     } else {
@@ -1719,11 +1772,14 @@ TIPI.bancarotta = {
   titolo: () => 'Dichiarare bancarotta?',
   corpo(ctx) {
     const d = ctx.p.debito;
-    const aChi = d.creditoreId
-      ? `Il tuo denaro, le tue proprietà (anche quelle ipotecate) e le carte prigione passano ${aChi(nomeDi(ctx.p, d.creditoreId))}. Le case vengono vendute alla banca a metà prezzo e il ricavato va ${aChi(nomeDi(ctx.p, d.creditoreId))}.`
+    // Non chiamare questa variabile `aChi`: nasconderebbe la funzione aChi()
+    // usata qui sotto e la finestra andrebbe in errore prima di aprirsi.
+    const destinatario = d.creditoreId ? aChi(nomeDi(ctx.p, d.creditoreId)) : null;
+    const cosaSuccede = destinatario
+      ? `Il tuo denaro, le tue proprietà (anche quelle ipotecate) e le carte prigione passano ${destinatario}. Le case vengono vendute alla banca a metà prezzo e il ricavato va ${destinatario}.`
       : 'Le tue proprietà tornano alla banca libere da ipoteche e le case vengono vendute.';
     return [
-      el('p', { class: 'testo-guida', text: aChi }),
+      el('p', { class: 'testo-guida', text: cosaSuccede }),
       avviso('Uscirai dalla partita e non potrai rientrare. L’operazione non si può annullare.', 'pericolo'),
     ];
   },
@@ -1779,6 +1835,15 @@ TIPI.admin = {
       conferma: 'Cedi admin',
       azione: { tipo: 'cediAdmin', giocatoreId: g.id },
     }, ctx.invia);
+    // Questo browser ha il link da admin: può dimenticarlo (es. computer di un amico).
+    const browserAdmin = Boolean(ctx.stato && ctx.stato.admin);
+    const esci = () => apri('conferma', {
+      titolo: 'Uscire da admin su questo browser?',
+      testo: `Questo browser dimentica il link da admin${sonoAdmin ? ' e in questa stanza non sei più admin: resti l’host, come chi crea una stanza normale' : ''}. Per tornare admin dovrai riaprire il tuo link.`,
+      conferma: 'Esci da admin',
+      azione: { tipo: 'ui:esciAdmin' },
+    }, ctx.invia);
+    const indirizzo = browserAdmin && ctx.stato.indirizzoVisto;
     return [
       el('p', { class: 'testo-guida', text: p.adminId === mio
         ? 'Questi comandi li vedi solo tu.'
@@ -1797,6 +1862,14 @@ TIPI.admin = {
               text: 'Togli dalla stanza', onclick: () => togli(g),
             })))))
         : el('p', { class: 'vuoto', text: 'Non c’è nessun altro giocatore.' }),
+      browserAdmin ? el('div', { class: 'admin__browser' },
+        el('p', { class: 'testo-secondario', text: indirizzo
+          ? `Questo browser è admin. Il server ti vede arrivare dall’indirizzo ${indirizzo}: è quello su cui conta i limiti di connessioni e stanze.`
+          : 'Questo browser è admin.' }),
+        el('button', {
+          type: 'button', class: 'btn btn--quieto btn--piccolo', 'data-chiave': 'admin-esci',
+          text: 'Esci da admin su questo browser', onclick: esci,
+        })) : null,
     ];
   },
   // "Chiudi" accanto a "Chiudi la stanza" si confondeva: il pulsante sicuro si
@@ -1969,7 +2042,7 @@ TIPI.finePartita = {
     const vincitore = giocatoreDa(p, p.vincitoreId || (ctx.dati.vincitore && ctx.dati.vincitore.id));
     const ordine = classifica(p);
     // Chi ha abbandonato (o è stato tolto) non ha fatto bancarotta.
-    const ritirati = new Set((p.log || []).filter((e) => e.tipo === 'abbandono').map((e) => e.giocatoreId));
+    const ritirati = new Set(p.giocatori.filter((g) => haAbbandonato(p, g.id)).map((g) => g.id));
     return [
       vincitore ? el('div', { class: 'vincitore', style: { '--colore': vincitore.colore } },
         el('span', { class: 'vincitore__corona', 'aria-hidden': 'true' }),

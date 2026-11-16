@@ -5,9 +5,10 @@
  *
  * Codici di errore del motore con il messaggio italiano predefinito
  * (INTERFACCE.md §7). Il motore non dipende da server/protocollo.js: così
- * resta un modulo puro e testabile da solo. I codici coincidono con quelli
- * di `protocollo.ERRORI`; i gestori spesso sostituiscono il messaggio
- * predefinito con uno più preciso ("Ti servono 200 €, ne hai 150 €").
+ * resta un modulo puro e testabile da solo. È `protocollo.ERRORI` a includere
+ * questi codici (non il contrario): si scrivono solo qui. I gestori spesso
+ * sostituiscono il messaggio predefinito con uno più preciso ("Ti servono
+ * 200 €, ne hai 150 €").
  */
 
 const ERRORI = Object.freeze({

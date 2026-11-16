@@ -274,3 +274,112 @@ test('testi: "ad Anna", "alla banca"; niente messaggi doppi per carte e aste', {
   const banca = { tipo: 'acquisto', giocatoreId: 'a1', testo: 'Anna compra X', dati: { tramite: 'banca' } };
   assert.equal(app.toastPerEvento(banca, null, 'a1').testo, 'Anna compra X');
 });
+
+test('app.giocaQui: una scheda risponde "sto giocando io" solo se è collegata con quel giocatore', { skip: SALTA }, async () => {
+  const app = await C.carica('app.js');
+  const stato = { io: { codice: 'K7PQ2M', giocatoreId: 'aaaaaaa1', token: 'x' }, connessione: 'connesso' };
+  const domanda = { tipo: 'chi-gioca', codice: 'K7PQ2M', giocatoreId: 'aaaaaaa1' };
+  assert.equal(app.giocaQui(stato, null, domanda), true);
+  assert.equal(app.giocaQui(stato, 'sostituita', domanda), false, 'una scheda già sostituita non gioca più');
+  assert.equal(app.giocaQui({ ...stato, connessione: 'riconnessione' }, null, domanda), false, 'scollegata: la ripresa altrove serve');
+  assert.equal(app.giocaQui(stato, null, { ...domanda, giocatoreId: 'bbbbbbb2' }), false, 'un altro giocatore della stessa stanza');
+  assert.equal(app.giocaQui(stato, null, { ...domanda, codice: 'ZZZZZZ' }), false);
+  assert.equal(app.giocaQui({ io: null, connessione: 'connesso' }, null, domanda), false);
+  assert.equal(app.giocaQui(stato, null, null), false);
+  assert.equal(app.MESSAGGI_PROTOCOLLO.includes('lasciaAdmin'), true);
+  for (const tipo of app.MESSAGGI_PROTOCOLLO) assert.ok(P.MESSAGGI_CLIENT.includes(tipo), `${tipo} esiste anche nel protocollo del server`);
+});
+
+test('app.toastPerEvento: nuovo host, abbandono d\'ufficio e scambio scaduto', { skip: SALTA }, async () => {
+  const app = await C.carica('app.js');
+  const host = { tipo: 'host', giocatoreId: 'b2', testo: 'Bruno è il nuovo host della stanza: Anna ha perso la connessione', dati: { giocatoreId: 'b2', precedenteId: 'a1' } };
+  assert.match(app.toastPerEvento(host, null, 'b2').testo, /Ora sei tu l'host/);
+  assert.equal(app.toastPerEvento(host, null, 'c3'), null, 'gli altri lo leggono nella cronaca');
+  const assente = { tipo: 'abbandono', giocatoreId: 'a1', testo: 'Anna non rientra da troppo tempo ed esce dalla partita', dati: { motivo: 'assente' } };
+  assert.equal(app.toastPerEvento(assente, null, 'b2').livello, 'avviso');
+  assert.ok(app.toastPerEvento({ ...assente, dati: { motivo: 'debito' } }, null, 'b2'), 'anche il debito non saldato in tempo va spiegato');
+  assert.equal(app.toastPerEvento({ tipo: 'abbandono', giocatoreId: 'a1', testo: 'Anna abbandona la partita', dati: {} }, null, 'b2'), null);
+  const scaduto = { tipo: 'scambioRifiutato', giocatoreId: null, testo: 'La proposta di scambio di Anna a Bruno è scaduta', dati: { scambio: { daId: 'a1', aId: 'b2' }, daId: null, motivo: 'scaduto' } };
+  assert.match(app.toastPerEvento(scaduto, null, 'a1').testo, /scaduta/);
+  assert.equal(app.toastPerEvento(scaduto, null, 'c3'), null, 'solo ai due dello scambio');
+  const esce = { tipo: 'admin', giocatoreId: null, testo: 'Anna non è più l\'admin della stanza', dati: { giocatoreId: null, precedenteId: 'a1' } };
+  assert.equal(app.toastPerEvento(esce, null, 'a1'), null);
+});
+
+test('dialoghi: albergo senza 4 case in banca = si vende tutto il gruppo, come fa il motore', { skip: SALTA }, async () => {
+  const d = await C.carica('dialoghi.js');
+  const { A } = H.ID;
+  // Gruppo azzurro (6, 8, 9): due alberghi e 4 case; in banca restano 2 case.
+  const base = H.costruito(H.assegna(H.nuovaPartita(2), A, 6, 8, 9), { 6: 5, 8: 5, 9: 4 });
+  const povera = motore.statoPubblico(H.modifica(base, (s) => { s.caseDisponibili = 2; }));
+  const ricca = motore.statoPubblico(H.modifica(base, (s) => { s.caseDisponibili = 4; }));
+
+  assert.equal(d.venditaInBlocco(ricca, 6), null, 'con 4 case in banca l\'albergo torna a 4 case');
+  assert.equal(d.venditaInBlocco(povera, 9), null, 'vendere una casa resta una vendita normale');
+  assert.deepEqual(d.venditaInBlocco(povera, 6), { caselle: [6, 8, 9], ricavo: 125 + 125 + 100 });
+
+  // Quello che il client annuncia è quello che il motore fa davvero.
+  const prima = H.modifica(base, (s) => { s.caseDisponibili = 2; });
+  const dopo = H.esegui(prima, A, { tipo: 'vendiCasa', casella: 6 });
+  assert.equal(H.giocatore(dopo.stato, A).denaro - H.giocatore(prima, A).denaro, d.venditaInBlocco(povera, 6).ricavo);
+  assert.deepEqual([6, 8, 9].map((i) => dopo.stato.proprieta[String(i)].caseCostruite), [0, 0, 0]);
+
+  // Il piano per saldare un debito lo sa: un passo solo, con il ricavo vero.
+  const ipotecato = motore.statoPubblico(H.modifica(prima, (s) => { for (const i of [6, 8, 9]) s.proprieta[String(i)].ipotecata = false; }));
+  const piano = d.pianoLiquidazione(ipotecato, A, 300);
+  assert.deepEqual(piano.passi[0], { tipo: 'vendiCasa', casella: piano.passi[0].casella, ricavo: 350, gruppo: true });
+  assert.equal(piano.copre, true);
+  // Eseguendo i passi sul motore si incassa esattamente quanto promesso.
+  let stato = prima;
+  let incassato = 0;
+  for (const passo of piano.passi) {
+    const r = H.esegui(stato, A, { tipo: passo.tipo, casella: passo.casella });
+    incassato += H.giocatore(r.stato, A).denaro - H.giocatore(stato, A).denaro;
+    stato = r.stato;
+  }
+  assert.equal(incassato, piano.raccolto);
+});
+
+test('pannelli.testoEvento: gli eventi nuovi hanno un testo anche senza quello del server', { skip: SALTA }, async () => {
+  const pn = await C.carica('pannelli.js');
+  const p = { giocatori: [{ id: 'a1', nome: 'Anna' }] };
+  assert.match(pn.testoEvento({ tipo: 'scambioRifiutato', giocatoreId: null, dati: { daId: null, motivo: 'scaduto' } }, p), /scaduta/);
+  assert.match(pn.testoEvento({ tipo: 'abbandono', giocatoreId: 'a1', dati: { motivo: 'assente' } }, p), /non rientra/);
+  assert.match(pn.testoEvento({ tipo: 'abbandono', giocatoreId: 'a1', dati: { motivo: 'debito' } }, p), /debito/);
+  // "ha abbandonato" o "bancarotta": dipende da come è uscito.
+  const d = await C.carica('dialoghi.js');
+  const esce = (motivo) => ({ log: [{ tipo: 'abbandono', giocatoreId: 'a1', dati: motivo ? { motivo } : {} }] });
+  assert.equal(d.haAbbandonato(esce(null), 'a1'), true);
+  assert.equal(d.haAbbandonato(esce('assente'), 'a1'), true);
+  assert.equal(d.haAbbandonato(esce('debito'), 'a1'), false, 'chi non salda un debito in tempo fa bancarotta');
+  assert.equal(d.haAbbandonato(esce(null), 'b2'), false);
+  assert.match(pn.testoEvento({ tipo: 'host', giocatoreId: 'a1', dati: {} }, p), /nuovo host/);
+});
+
+test('tabellone.calcolaPercorso: la pedina fa la strada vera, lancio e poi carta, mai all\'indietro per sbaglio', { skip: SALTA }, async () => {
+  const t = await C.carica('tabellone.js');
+  const { A } = H.ID;
+  const libero = { inPrigione: false };
+  const g = { id: A, inPrigione: false };
+  const mov = (da, a, passi) => ({ tipo: 'movimento', giocatoreId: A, dati: { da, a, passi } });
+
+  // Un lancio normale: 3 → 8.
+  assert.deepEqual(t.calcolaPercorso(3, 8, libero, g, [mov(3, 8, 5)]), [4, 5, 6, 7]);
+  // Lancio su Imprevisti (casella 7) e carta "Andate fino al Via": si passa
+  // dalla casella della carta e poi si fa tutto il giro IN AVANTI, non 2 passi indietro.
+  const viaDopoCarta = t.calcolaPercorso(2, 0, libero, g, [mov(2, 7, 5), mov(7, 0, 33)]);
+  assert.deepEqual(viaDopoCarta.slice(0, 6), [3, 4, 5, 6, 7, 8]);
+  assert.equal(viaDopoCarta.at(-1), 39);
+  assert.equal(viaDopoCarta.length, 5 + 32);
+  // "Fate tre passi indietro" dalla casella 7: 7 → 6 → 5 → (4).
+  assert.deepEqual(t.calcolaPercorso(5, 4, libero, g, [mov(5, 7, 2), mov(7, 4, -3)]), [6, 7, 6, 5]);
+  // I movimenti veri del motore: stessa forma, stesso risultato.
+  const s = H.arrivaSu(H.nuovaPartita(2), A, 9, 3, 2);
+  assert.deepEqual(t.calcolaPercorso(4, 9, libero, g, s.stato.log), [5, 6, 7, 8]);
+  // Senza cronaca (o con una cronaca che non torna) vale la via più corta.
+  assert.deepEqual(t.calcolaPercorso(3, 6, libero, g, []), [4, 5]);
+  assert.deepEqual(t.calcolaPercorso(3, 6, libero, g, [mov(10, 6, 5)]), [4, 5]);
+  assert.deepEqual(t.calcolaPercorso(7, 4, libero, g, undefined), [6, 5]);
+  // In prigione si va con un salto.
+  assert.deepEqual(t.calcolaPercorso(30, 10, libero, { id: A, inPrigione: true }, []), []);
+});

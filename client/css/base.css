@@ -211,7 +211,7 @@ a {
 /* 4. Accessibilità                                                         */
 /* ------------------------------------------------------------------------ */
 
-/* Focus visibile solo da tastiera, ben contrastato su entrambi i temi. */
+/* Focus visibile solo da tastiera, ben contrastato sul feltro. */
 :focus-visible {
   outline: 3px solid var(--colore-focus);
   outline-offset: 2px;
@@ -486,6 +486,9 @@ a {
 
 .barra__azioni {
   display: flex;
+  /* Su un telefono tre pulsanti in fila uscivano dallo schermo: vanno a capo. */
+  flex-wrap: wrap;
+  justify-content: flex-end;
   gap: var(--spazio-2);
   margin-left: auto;
 }

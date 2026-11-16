@@ -8,6 +8,8 @@
  * cambiato, le stanze aperte (stanze.esporta) vengono scritte in JSON con una
  * scrittura atomica (file temporaneo + rinomina); all'avvio vengono ricaricate
  * (stanze.importa) e i giocatori rientrano con il token del proprio browser.
+ * Un file che non si riesce a leggere non viene mai sovrascritto: resta accanto
+ * all'originale come `partite.json.illeggibile-<data>` (caricaSenzaPerdere).
  *
  * Il file contiene i token di sessione: viene creato con permessi 600 in una
  * cartella 700 ed è escluso da git (.gitignore). Su Render gratuito il disco si
@@ -65,6 +67,43 @@ function carica(percorso, stanze, { ora = Date.now } = {}) {
   return stanze.importa(dati.stanze, { ora });
 }
 
+/** `20261116-193005`: data e ora locali per il nome del file messo da parte. */
+function timbro(data) {
+  const due = (n) => String(n).padStart(2, '0');
+  return `${data.getFullYear()}${due(data.getMonth() + 1)}${due(data.getDate())}`
+    + `-${due(data.getHours())}${due(data.getMinutes())}${due(data.getSeconds())}`;
+}
+
+/**
+ * Carica il salvataggio senza mai perderlo: se il file c'è ma non si riesce a
+ * leggerlo (JSON rovinato, formato di un'altra versione) viene rinominato in
+ * `<file>.illeggibile-<data>` prima che il salvataggio periodico lo riscriva.
+ *
+ * @returns {{ripristinate: number, errore: Error|null, messoDaParte: string|null, sicuro: boolean}}
+ *   `sicuro` dice se si può avviare il salvataggio periodico su `percorso`: è
+ *   false solo se il file è illeggibile e non si è riusciti a spostarlo.
+ */
+function caricaSenzaPerdere(percorso, stanze, { ora = Date.now } = {}) {
+  try {
+    return { ripristinate: carica(percorso, stanze, { ora }), errore: null, messoDaParte: null, sicuro: true };
+  } catch (errore) {
+    const base = `${percorso}.illeggibile-${timbro(new Date(ora()))}`;
+    for (let i = 0; i < 100; i += 1) {
+      const destinazione = i === 0 ? base : `${base}-${i}`;
+      if (fs.existsSync(destinazione)) continue;
+      try {
+        fs.renameSync(percorso, destinazione);
+        return { ripristinate: 0, errore, messoDaParte: destinazione, sicuro: true };
+      } catch (e) {
+        // Il file è sparito nel frattempo: non c'è più niente da proteggere.
+        if (e.code === 'ENOENT') return { ripristinate: 0, errore, messoDaParte: null, sicuro: true };
+        break;
+      }
+    }
+    return { ripristinate: 0, errore, messoDaParte: null, sicuro: false };
+  }
+}
+
 /**
  * Avvia il salvataggio periodico. Ritorna { salvaOra, ferma }: `salvaOra` è
  * sincrona, da chiamare anche alla chiusura del server.
@@ -91,4 +130,4 @@ function avvia(percorso, stanze, { intervallo = INTERVALLO_MS } = {}) {
   return { salvaOra, ferma: () => clearInterval(timer) };
 }
 
-module.exports = { percorsoDaAmbiente, serializza, scriviAtomico, carica, avvia, VERSIONE_FORMATO };
+module.exports = { percorsoDaAmbiente, serializza, scriviAtomico, carica, caricaSenzaPerdere, avvia, VERSIONE_FORMATO };

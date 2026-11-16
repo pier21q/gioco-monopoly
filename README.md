@@ -8,8 +8,13 @@ Il server tiene lo stato della partita e applica le regole; i browser mostrano
 il tabellone e inviano le mosse. Le partite vivono in memoria e vengono
 salvate ogni pochi secondi in `.partite/partite.json`: se riavvii il server sul
 tuo computer, le partite ripartono da dove erano e ognuno rientra ricaricando
-la pagina. Su Render gratuito il disco si azzera, quindi lì il salvataggio non
-aiuta (vedi "Metterlo online").
+la pagina. Una partita ripristinata aspetta 2 ore che rientri qualcuno, poi
+viene chiusa; da quando rientra il primo valgono i tempi normali (vedi «Quando
+una stanza si chiude da sola»). Se il file non si riesce a leggere, per esempio
+perché l'ha scritto una versione più nuova del gioco, il server non lo
+sovrascrive: lo rinomina in `partite.json.illeggibile-<data>` e riparte senza
+partite. Su Render gratuito il disco si azzera, quindi lì il salvataggio è
+spento (vedi "Metterlo online").
 
 ## Requisiti
 
@@ -31,6 +36,13 @@ Su Mac basta un doppio clic su **Avvia Monopoly.command** nella cartella del
 progetto: accende il gioco e apre il browser. Finché la finestra del Terminale
 resta aperta il gioco è acceso; chiudila per spegnerlo. La prima volta macOS
 può chiedere conferma: tasto destro sul file, poi **Apri**.
+
+Se il gioco è già acceso, il doppio clic apre solo il browser. Prima però
+controlla che sulla porta ci sia davvero questo gioco: se risponde un altro
+programma, o un Monopoly di una versione vecchia rimasto acceso, lo dice e non
+apre niente. Se il server è acceso da prima dell'ultima modifica ai file,
+avvisa che sta ancora girando la versione vecchia: per aggiornarlo va chiusa
+quella finestra del Terminale e rifatto il doppio clic.
 
 Da terminale:
 
@@ -88,7 +100,9 @@ Ogni scheda del browser è un giocatore distinto: per provare da solo puoi
 aprire il link in più schede. Se ricarichi la pagina rientri al tuo posto da
 solo. Se chiudi la scheda per sbaglio, riapri il link dallo stesso browser:
 in alto compare il pulsante **Riprendi la partita**, che ti riporta al tuo
-posto (vale per l'ultima partita a cui sei entrato da quel browser).
+posto (vale per l'ultima partita a cui sei entrato da quel browser). Il
+pulsante non compare se quella partita è ancora aperta e collegata in un'altra
+scheda dello stesso browser: riprenderla butterebbe fuori quella scheda.
 
 ## Host e admin
 
@@ -103,7 +117,10 @@ pulsante **Gestisci la stanza** in alto, può:
 - **Chiudi la stanza**: escono tutti e la partita finisce.
 
 Se l'host lascia la sala d'attesa, o in partita fa bancarotta, il ruolo passa
-al giocatore successivo.
+al giocatore successivo. In partita passa anche se l'host perde la connessione
+e non rientra entro 45 secondi: va al primo giocatore collegato, così c'è
+sempre qualcuno che può togliere un assente o chiudere la stanza. Quando
+l'host di prima rientra non lo riprende.
 
 In più c'è un **admin**, tu, con un link personale. Con quel link:
 
@@ -116,8 +133,14 @@ In più c'è un **admin**, tu, con un link personale. Con quel link:
 - nella finestra **Admin** il pulsante **Cedi admin** passa il ruolo (admin e
   host) a un altro giocatore; da quel momento il tuo link non te lo ridà
   finché lui resta nella stanza;
-- nessuno ti può togliere dalla stanza;
-- non hai i limiti di stanze per connessione e per indirizzo.
+- nessuno ti può togliere dalla stanza, e resti host anche se perdi la
+  connessione (la regola dei 45 secondi vale solo per gli host normali);
+- non hai i limiti di stanze per connessione e per indirizzo;
+- in fondo alla finestra **Admin** c'è **Esci da admin su questo browser**: il
+  browser dimentica il link e nella stanza torni un host qualunque. Serve se
+  hai aperto il link sul computer di qualcun altro. La stessa finestra mostra
+  l'indirizzo da cui il server ti vede arrivare, che è quello su cui conta i
+  limiti (vedi «Limiti contro gli abusi»).
 
 Dove trovare il link:
 
@@ -207,10 +230,16 @@ Cosa sapere del piano gratuito:
   `/salute` al server); una scheda in background o un telefono con lo schermo
   spento no.
 - Quando il servizio si addormenta o viene ripubblicato, le partite in corso
-  si perdono: il disco di Render gratuito si azzera, quindi il salvataggio su
-  file lì non serve.
-- Render passa le richieste attraverso un suo proxy: il server lo riconosce
-  (variabile `RENDER`) e legge l'indirizzo del giocatore da `X-Forwarded-For`.
+  si perdono: il disco di Render gratuito si azzera, quindi lì il salvataggio
+  su file è spento (`SALVATAGGIO: "0"` in `render.yaml`).
+- Render passa le richieste attraverso Cloudflare e un suo proxy: il server lo
+  riconosce (variabile `RENDER`) e legge l'indirizzo del giocatore
+  dall'intestazione `CF-Connecting-IP`. Dopo ogni pubblicazione conviene
+  controllarlo: entra con il link da admin, apri la finestra **Admin** e guarda
+  l'indirizzo che il server ti attribuisce. Deve essere il tuo indirizzo
+  pubblico; se è uguale per tutti è quello del proxy, e i limiti per indirizzo
+  scatterebbero per tutti insieme (in quel caso imposta
+  `PROXY_INTESTAZIONE_IP` con l'intestazione giusta).
 
 ## Variabili d'ambiente
 
@@ -223,8 +252,9 @@ Nessuna è obbligatoria. L'unica segreta è `ADMIN_CHIAVE`.
 | `PUBLIC_URL` | l'indirizzo con cui il browser ha raggiunto il server | Base dei link d'invito, da impostare quando usi un tunnel o un dominio. |
 | `ORIGINE_LIBERA` | non impostata | Con `1` disattiva il controllo dell'origine sulle connessioni WebSocket. Serve solo se un proxy riscrive l'host e i giocatori non riescono a collegarsi. |
 | `PROXY_FIDATO` | `1` su Render, altrimenti non impostata | Con `1` il server crede alle intestazioni `X-Forwarded-For`/`-Host`/`-Proto` (indirizzo del giocatore, host pubblico). Impostala quando il server sta dietro un tunnel o un proxy; senza proxy lasciala spenta, perché quelle intestazioni le potrebbe scrivere chiunque. `0` la spegne anche su Render. |
+| `PROXY_INTESTAZIONE_IP` | `CF-Connecting-IP` su Render, altrimenti non impostata | Intestazione in cui il proxy scrive l'indirizzo vero del giocatore. Vale solo con il proxy fidato. Se manca si usa l'ultimo indirizzo di `X-Forwarded-For`, che va bene quando davanti al server c'è un solo proxy. |
 | `ADMIN_CHIAVE` | generata da Render; in locale `.partite/chiave-admin` | Chiave del link da admin (16–128 caratteri). **Questa è un segreto**: non metterla su GitHub. |
-| `SALVATAGGIO` | `.partite/partite.json` | File in cui salvare le partite. `0` disattiva il salvataggio. Il file contiene i token di sessione dei giocatori: viene creato leggibile solo da te ed è escluso da git. |
+| `SALVATAGGIO` | `.partite/partite.json`; `0` su Render | File in cui salvare le partite. `0` disattiva il salvataggio. Il file contiene i token di sessione dei giocatori: viene creato leggibile solo da te ed è escluso da git. |
 
 Esempio:
 
@@ -251,11 +281,22 @@ integrazione hanno bisogno di `npm install`.
 `tests/client.test.js` carica in Node i moduli del browser e ne prova le
 funzioni pure; fra l'altro confronta, su migliaia di stati di partite giocate a
 caso, le spiegazioni dei pulsanti del client con le risposte del motore. Serve
-Node 22.15 o successivo: con un Node più vecchio quei test vengono saltati. La
-grafica (tabellone 3D, animazioni, finestre) non ha test automatici e va
-provata nel browser.
+Node 22.15 o successivo: con un Node più vecchio quei test vengono saltati.
+
+`tests/browser.test.js` prova la grafica in un browser vero: apre Chrome senza
+finestra con due giocatori, uno a 1280 pixel e uno a 375 (la larghezza di un
+telefono), e gioca una decina di turni con clic veri, compreso un
+ricaricamento a metà partita. Fallisce se compare un errore JavaScript, se un
+pulsante è coperto o fuori dallo schermo, se la pagina scorre di lato o se le
+due schede non arrivano allo stesso punto. Dura circa mezzo minuto e viene
+saltato se Chrome non è installato. Non guarda però se il tabellone è bello:
+colori, animazioni, suoni e i gesti con le dita su un telefono vero vanno
+ancora provati a mano. Per saltarlo: `npm run test:veloce`.
 
 Per un solo file: `node --test tests/motore-affitti.test.js`.
+
+Su GitHub gli stessi test partono da soli a ogni push, con Node 20 e 22
+(`.github/workflows/test.yml`).
 
 ## Regole implementate
 
@@ -306,13 +347,26 @@ Cose che funzionano in modo diverso dal gioco da tavolo:
   spente se non le si sceglie (vedi «Regole della partita»).
 - Si costruisce, si vende, si ipoteca e si riscatta solo nel proprio turno,
   oltre che per saldare un proprio debito o durante un'asta a cui si partecipa.
-- Se la banca non ha 4 case da restituire, un albergo si vende per intero.
+- Se la banca ha meno di 4 case, un albergo non può tornare a 4 case. In quel
+  caso venderlo vende insieme tutte le costruzioni del suo gruppo, a metà
+  prezzo: venderne uno solo lascerebbe il gruppo sbilanciato (due alberghi e
+  un terreno vuoto), cosa che le regole di costruzione non ammettono. Il
+  pulsante lo dice prima: diventa «Vendi tutto il gruppo» con l'incasso totale.
 - **Abbandona la partita** equivale a una bancarotta volontaria: le proprietà
   tornano alla banca e vanno all'asta.
 - Chi perde la connessione resta in partita e può rientrare ricaricando la
   pagina. Se è il suo turno e non torna entro 45 secondi, il turno passa (lo
   stesso vale per un'asta in corso). Se ha un debito aperto e resta assente per
-  3 minuti viene dichiarato in bancarotta, così gli altri non restano bloccati.
+  3 minuti viene dichiarato in bancarotta. In ogni caso chi resta scollegato
+  per 5 minuti di fila esce dalla partita come se avesse abbandonato: i suoi
+  beni tornano alla banca (o al creditore) e gli altri continuano, oppure
+  vince chi è rimasto solo. Il conto parte solo se c'è almeno un altro
+  giocatore collegato che aspetta, e si azzera appena l'assente rientra: se
+  cade la rete a tutti, nessuno perde niente.
+- Una proposta di scambio a cui non arriva risposta decade dopo 90 secondi,
+  perché finché è in attesa nessun altro può proporne.
+- Se chi ha l'offerta più alta in un'asta abbandona, l'asta riparte da zero e
+  chi aveva passato davanti a quell'offerta torna a poter offrire.
 - Anche chi resta collegato ma non gioca ha un tempo massimo: 3 minuti per il
   proprio turno (poi rinuncia all'acquisto o salta il turno), 60 secondi per
   rispondere in un'asta (poi passa), 5 minuti per saldare un debito (poi
@@ -329,24 +383,46 @@ Il gioco non ha account: per tenerlo utilizzabile anche con un link pubblico il
 server limita quello che una persona sola può fare.
 
 - Al massimo 20 connessioni contemporanee e 10 stanze aperte per indirizzo IP,
-  5 stanze per connessione, 200 stanze in tutto.
-- Una stanza in cui non entra nessuno si chiude dopo 2 minuti. Se le 200 stanze
-  sono tutte occupate, chi ne crea una nuova fa chiudere la stanza vuota più
-  vecchia: si viene rifiutati solo se tutte e 200 hanno giocatori dentro.
+  5 stanze per connessione, 200 stanze e 600 connessioni in tutto.
+- Se le 200 stanze sono tutte occupate, chi ne crea una nuova fa chiudere la
+  stanza vuota più vecchia: si viene rifiutati solo se tutte e 200 hanno
+  giocatori dentro.
 - Nomi senza caratteri invisibili (spazi a larghezza zero, inversione del
   verso del testo): non si può entrare con un nome che sembra quello di un
   altro.
 
-Dietro un proxy (Render, tunnel) l'indirizzo del giocatore arriva
-dall'intestazione `X-Forwarded-For`, che un client malintenzionato può
-riempire a piacere: lì i limiti per indirizzo sono di buona volontà. Restano
-comunque il tetto alle stanze e la regola delle stanze vuote, che impediscono
-di bloccare il gioco a chi arriva.
+Dietro un proxy (Render, tunnel) l'indirizzo del giocatore è quello che scrive
+il proxy: l'intestazione `CF-Connecting-IP` su Render, altrimenti l'ultimo
+indirizzo di `X-Forwarded-For`. Gli indirizzi che un client aggiunge di suo in
+quell'intestazione finiscono davanti e non contano.
+
+Questi limiti rendono caro bloccare il gioco, non impossibile. Chi dispone di
+molti indirizzi veri (una rete di computer, o gli indirizzi IPv6 di una sola
+linea) può ancora occupare le 600 connessioni o riempire le 200 stanze con un
+giocatore ciascuna; quelle stanze si liberano dopo 30 minuti. Per un gioco fra
+amici con un link che non gira in pubblico basta; per un sito aperto a tutti
+servirebbero account o un servizio di protezione davanti.
+
+### Quando una stanza si chiude da sola
+
+| Situazione | Dopo quanto |
+|---|---|
+| Stanza creata in cui non è mai entrato nessuno | 2 minuti |
+| Tutti i giocatori scollegati (sala d'attesa o partita) | 10 minuti |
+| Sala d'attesa con un solo giocatore, senza che succeda niente | 30 minuti |
+| Partita finita | 30 minuti |
+| Nessun cambiamento, in qualunque stato | 2 ore |
+| Partita ripristinata dal salvataggio in cui non rientra nessuno | 2 ore |
+
+In sala d'attesa chi perde la connessione viene tolto dopo un minuto, ma solo
+se c'è qualcun altro collegato a cui liberare il posto. Chi è da solo, per
+esempio l'host che ricarica la pagina o resta senza rete, ritrova la stanza
+com'era per 10 minuti.
 
 ## Accessibilità
 
 Tutto il gioco si usa da tastiera. Il primo Tab porta a "Salta al contenuto
-principale"; il tabellone è un unico punto di sosta e ci si muove con le
+principale" (all'apertura della pagina il focus non viene spostato); il tabellone è un unico punto di sosta e ci si muove con le
 frecce (Home, Fine, Pagina su/giù per saltare), Invio o Spazio aprono il
 contratto della casella. Le finestre di dialogo trattengono il focus, si
 chiudono con Esc e lo restituiscono al pulsante da cui sono partite. I pulsanti
@@ -433,7 +509,7 @@ package.json          script npm e dipendenza ws
 Avvia Monopoly.command  doppio clic per avviare il gioco su Mac
 render.yaml           configurazione per pubblicarlo su Render
 INTERFACCE.md         contratti fra motore, server e client (stato, azioni, protocollo)
-REVISIONE.md          revisione storica (fase 3 dello sviluppo): superata, non descrive il codice attuale
+.github/workflows/    i test lanciati da GitHub a ogni push (Node 20 e 22)
 server/
   index.js            server HTTP (file statici, /dati/*.js, /salute) e WebSocket su /ws
   stanze.js           stanze, giocatori, token di sessione, disconnessioni
@@ -460,7 +536,7 @@ client/               pagine servite al browser, senza build
     suoni.js          suoni sintetizzati (Web Audio), senza file audio
     pannelli.js       giocatori, azioni del turno, cronaca
     dialoghi.js       finestre di dialogo (acquisto, asta, scambio, debito…) e notifiche
-tests/                tutti i test: motore, server, stanze, sicurezza, salvataggio, client
+tests/                tutti i test: motore, server, stanze, sicurezza, salvataggio, client, browser
 ```
 
 I dati di `tabellone.js` e `carte.js` sono scritti una sola volta sul server,

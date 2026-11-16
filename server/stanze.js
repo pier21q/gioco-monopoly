@@ -6,15 +6,18 @@
  * Registro in memoria delle stanze di gioco: creazione con codice a 6
  * caratteri, ingresso/uscita dei giocatori in lobby, token di riconnessione,
  * avvio della partita e applicazione delle azioni tramite il motore.
- * Contratto in INTERFACCE.md §3.6. Nessuna persistenza (fase 1).
+ * Contratto in INTERFACCE.md §3.6. Il registro vive in memoria; a scriverlo su
+ * file ci pensa server/salvataggio.js, tramite `esporta`/`importa`.
  *
  * I token e i socket vivono solo qui, mai nello StatoPartita.
  *
- * Oltre ai timer per i disconnessi c'è un timer d'inattività per stanza: se
- * chi deve agire (giocatore di turno, partecipanti all'asta, debitore) non lo
- * fa entro TEMPI.INATTIVITA_*, il server fa avanzare la partita per lui, con
- * un preavviso 30 secondi prima. `esporta`/`importa` servono al salvataggio
- * su file (server/salvataggio.js).
+ * Timer per i giocatori scollegati in partita: dopo 45 secondi chi blocca il
+ * gioco viene fatto avanzare e l'host (se non è l'admin) cede il ruolo a un
+ * collegato; dopo 5 minuti di assenza abbandona d'ufficio. In più c'è un timer
+ * d'inattività per stanza: se chi deve agire (giocatore di turno, partecipanti
+ * all'asta, debitore) non lo fa entro TEMPI.INATTIVITA_*, il server fa avanzare
+ * la partita per lui, con un preavviso 30 secondi prima. Uno scambio senza
+ * risposta scade dopo TEMPI.SCAMBIO_MS.
  */
 
 const crypto = require('node:crypto');
@@ -32,6 +35,13 @@ const TEMPI = Object.freeze({
   TOLLERANZA_DISCONNESSIONE_MS: 45 * 1000,
   // Un debitore disconnesso da così a lungo viene dichiarato in bancarotta d'ufficio.
   BANCAROTTA_DISCONNESSO_MS: 3 * 60 * 1000,
+  // Chi resta scollegato così a lungo mentre qualcun altro è collegato e
+  // aspetta abbandona d'ufficio (azione `abbandona`): la partita non resta appesa.
+  ABBANDONO_DISCONNESSO_MS: 5 * 60 * 1000,
+  // Una proposta di scambio a cui nessuno risponde scade da sola.
+  SCAMBIO_MS: 90 * 1000,
+  // Sala d'attesa con un solo giocatore in cui non succede nulla.
+  LOBBY_SOLITARIA_MS: 30 * 60 * 1000,
   STANZA_VUOTA_MS: 10 * 60 * 1000,
   // Stanza creata ma in cui non è mai entrato nessuno.
   STANZA_MAI_USATA_MS: 2 * 60 * 1000,
@@ -48,6 +58,8 @@ const TEMPI = Object.freeze({
 
 /** Chiave dei timer che riguardano la stanza intera (gli id giocatore sono [a-z0-9]{8}). */
 const ID_STANZA = '_stanza';
+/** Chiave del timer di scadenza dello scambio in attesa. */
+const ID_SCAMBIO = '_scambio';
 
 /** Numero casuale in [0, 1) da crypto: codici stanza, dadi e mazzi non prevedibili. */
 function casualeSicuro() {
@@ -295,8 +307,16 @@ function riconnetti(codice, token, socket, { ora = Date.now } = {}) {
   stanza.vuotaDal = null;
 
   const eventi = [evento('connessione', giocatore.id, `${giocatore.nome} è di nuovo online`, { giocatoreId: giocatore.id, connesso: true }, t)];
-  if (stanza.stato.fase === 'lobby') sincronizzaLobby(stanza, eventi, t);
-  else {
+  if (stanza.stato.fase === 'lobby') {
+    // Sala ripristinata dal salvataggio: gli altri non hanno ancora un'ora di
+    // disconnessione (vedi importa). Il loro minuto parte adesso che c'è
+    // qualcuno a cui liberare il posto, altrimenti un host che non torna
+    // terrebbe ferma la sala per sempre.
+    for (const altro of stanza.giocatori.values()) {
+      if (!altro.connesso && !altro.disconnessoIl) altro.disconnessoIl = t;
+    }
+    sincronizzaLobby(stanza, eventi, t);
+  } else {
     sincronizzaConnessione(stanza, giocatore.id, true, eventi, t);
     // Chi torna può trovare altri assenti che tengono ferma la partita.
     sorvegliaDisconnessi(stanza, { ora });
@@ -330,11 +350,28 @@ function esci(stanza, giocatoreId, { ora = Date.now } = {}) {
 }
 
 /**
+ * Toglie dalla sala d'attesa un giocatore scollegato, ma solo se c'è qualcun
+ * altro collegato a cui liberare il posto. Una sala in cui sono tutti
+ * scollegati (l'host da solo che ricarica la pagina, la rete che cade) resta
+ * com'è: chi torna rientra con il suo token, e se non torna nessuno la pulizia
+ * la chiude dopo STANZA_VUOTA_MS. Ritorna l'esito di `esci` oppure null.
+ */
+function rimuoviAssenteLobby(stanza, giocatoreId, { ora = Date.now } = {}) {
+  const reg = stanza.giocatori.get(giocatoreId);
+  if (!reg || reg.connesso || stanza.chiusa || stanza.stato.fase !== 'lobby') return null;
+  if (![...stanza.giocatori.values()].some((g) => g.connesso)) return null;
+  const esito = esci(stanza, giocatoreId, { ora });
+  return esito.errore ? null : esito;
+}
+
+/**
  * Il socket si è chiuso: il giocatore resta, marcato come disconnesso.
- * In lobby viene rimosso dopo RIMOZIONE_LOBBY_DISCONNESSO_MS; in partita,
- * dopo TOLLERANZA_DISCONNESSIONE_MS, il motore fa avanzare il gioco se lo
- * stava bloccando e, se è un debitore, dopo BANCAROTTA_DISCONNESSO_MS viene
- * dichiarato in bancarotta d'ufficio (azione `abbandona` eseguita per lui).
+ * In lobby viene rimosso dopo RIMOZIONE_LOBBY_DISCONNESSO_MS (se c'è qualcun
+ * altro collegato); in partita, dopo TOLLERANZA_DISCONNESSIONE_MS, il motore
+ * fa avanzare il gioco se lo stava bloccando e l'host cede il ruolo; se è un
+ * debitore, dopo BANCAROTTA_DISCONNESSO_MS viene dichiarato in bancarotta
+ * d'ufficio, e in ogni caso dopo ABBANDONO_DISCONNESSO_MS abbandona d'ufficio
+ * (azione `abbandona` eseguita per lui).
  */
 function disconnetti(stanza, giocatoreId, { ora = Date.now, random = casualeSicuro } = {}) {
   if (!stanza || !stanza.giocatori.has(giocatoreId)) return { eventi: [] };
@@ -348,10 +385,8 @@ function disconnetti(stanza, giocatoreId, { ora = Date.now, random = casualeSicu
   if (stanza.stato.fase === 'lobby') {
     sincronizzaLobby(stanza, eventi, t);
     programmaTimer(stanza, giocatoreId, 'lobby', TEMPI.RIMOZIONE_LOBBY_DISCONNESSO_MS, () => {
-      const reg = stanza.giocatori.get(giocatoreId);
-      if (!reg || reg.connesso || stanza.stato.fase !== 'lobby') return;
-      const esito = esci(stanza, giocatoreId, { ora });
-      if (!esito.errore && !esito.chiusa) diffondiAggiornamento(stanza, esito.eventi);
+      const esito = rimuoviAssenteLobby(stanza, giocatoreId, { ora });
+      if (esito && !esito.chiusa) diffondiAggiornamento(stanza, esito.eventi);
     });
   } else {
     sincronizzaConnessione(stanza, giocatoreId, false, eventi, t);
@@ -379,14 +414,18 @@ function bloccaIlGioco(stato, id) {
 }
 
 /**
- * Programma (se non sono già in corso) i timer dei giocatori disconnessi che
- * tengono ferma la partita: la tolleranza per turno/asta/scambio e la
- * bancarotta d'ufficio per un debito. Va richiamata dopo ogni cambio di stato,
- * perché un disconnesso può diventare "bloccante" anche più tardi (per esempio
- * quando una carta gli addebita una somma che non ha).
+ * Programma (se non sono già in corso) i timer dei giocatori disconnessi: la
+ * tolleranza per chi tiene fermo turno/asta/scambio, la bancarotta d'ufficio
+ * per un debito, l'abbandono d'ufficio per chi non torna e il passaggio del
+ * ruolo di host; più l'inattività dei connessi e la scadenza dello scambio.
+ * Va richiamata dopo ogni cambio di stato, perché un disconnesso può diventare
+ * "bloccante" anche più tardi (per esempio quando una carta gli addebita una
+ * somma che non ha).
  */
 function sorvegliaDisconnessi(stanza, { ora = Date.now, random = casualeSicuro } = {}) {
   sorvegliaAssenti(stanza, { ora, random });
+  sorvegliaHost(stanza, { ora });
+  sorvegliaScambio(stanza, { ora, random });
   programmaInattivita(stanza, { ora, random });
 }
 
@@ -408,7 +447,126 @@ function sorvegliaAssenti(stanza, { ora, random }) {
       programmaTimer(stanza, g.id, 'bancarotta', TEMPI.BANCAROTTA_DISCONNESSO_MS,
         () => bancarottaDisconnesso(stanza, g.id, { ora, random }));
     }
+    // Il conto parte quando c'è qualcuno collegato che aspetta (qui sopra si
+    // esce se non c'è nessuno) e si azzera quando l'assente rientra.
+    if (!stanza.timer.has(`${g.id}|abbandono`)) {
+      programmaTimer(stanza, g.id, 'abbandono', TEMPI.ABBANDONO_DISCONNESSO_MS,
+        () => abbandonoDisconnesso(stanza, g.id, { ora, random }));
+    }
   }
+}
+
+/**
+ * Assente da ABBANDONO_DISCONNESSO_MS: esce dalla partita come se avesse
+ * abbandonato (i suoi beni tornano alla banca o al creditore). Se nel
+ * frattempo se ne sono andati tutti non succede nulla: la partita aspetta, e il
+ * conto riparte da capo quando rientra qualcuno.
+ */
+function abbandonoDisconnesso(stanza, giocatoreId, { ora = Date.now, random = casualeSicuro } = {}) {
+  const g = stanza.giocatori.get(giocatoreId);
+  if (!g || g.connesso || stanza.chiusa) return;
+  const stato = stanza.stato;
+  if (stato.fase === 'lobby' || stato.fase === 'finePartita') return;
+  if (!qualcunoInGara(stanza)) return;
+  const inGara = stato.giocatori.find((x) => x.id === giocatoreId);
+  if (!inGara || inGara.fallito) return;
+  const esito = applica(stanza, giocatoreId, { tipo: 'abbandona' }, { random, ora, motivo: 'assente' });
+  if (!esito.errore) diffondiAggiornamento(stanza, esito.eventi);
+}
+
+/** Il primo giocatore collegato (meglio se ancora in gara) a cui dare il ruolo di host. */
+function eredeHost(stanza) {
+  const collegato = (g) => {
+    const reg = stanza.giocatori.get(g.id);
+    return Boolean(reg) && reg.connesso;
+  };
+  const giocatori = stanza.stato.giocatori || [];
+  return giocatori.find((g) => !g.fallito && collegato(g)) || giocatori.find(collegato) || null;
+}
+
+/** L'host di una partita iniziata è scollegato e non è l'admin? */
+function hostAssente(stanza) {
+  const stato = stanza.stato;
+  if (stanza.chiusa || !stato || stato.fase === 'lobby') return false;
+  const id = stanza.hostId;
+  if (!id || id === stanza.adminId) return false;
+  const host = stanza.giocatori.get(id);
+  return !host || !host.connesso;
+}
+
+/**
+ * In partita un host scollegato lascerebbe la stanza senza nessuno che possa
+ * togliere un giocatore o chiuderla: dopo la tolleranza il ruolo passa al
+ * primo giocatore collegato. L'admin è escluso: resta host anche da assente.
+ */
+function sorvegliaHost(stanza, { ora = Date.now } = {}) {
+  if (!hostAssente(stanza) || !eredeHost(stanza)) return;
+  const id = stanza.hostId;
+  if (stanza.timer.has(`${id}|host`)) return;
+  programmaTimer(stanza, id, 'host', TEMPI.TOLLERANZA_DISCONNESSIONE_MS, () => passaHostAssente(stanza, { ora }));
+}
+
+/** Scaduta la tolleranza: se l'host è ancora scollegato il ruolo passa a un collegato. */
+function passaHostAssente(stanza, { ora = Date.now } = {}) {
+  if (!hostAssente(stanza)) return;
+  const nuovo = eredeHost(stanza);
+  if (!nuovo) return;
+  const precedenteId = stanza.hostId;
+  const vecchio = stanza.giocatori.get(precedenteId);
+  const t = ora();
+  const eventi = [evento('host', nuovo.id,
+    `${nuovo.nome} è il nuovo host della stanza: ${vecchio ? vecchio.nome : 'chi lo era'} ha perso la connessione`,
+    { giocatoreId: nuovo.id, precedenteId }, t)];
+  const stato = structuredClone(stanza.stato);
+  stato.hostId = nuovo.id;
+  stato.versione += 1;
+  stato.log = [...stato.log, ...eventi].slice(-P.LIMITI.LOG_MAX);
+  stanza.hostId = nuovo.id;
+  stanza.stato = stato;
+  diffondiAggiornamento(stanza, eventi);
+}
+
+// ---------------------------------------------------------------------------
+// Scambio in attesa
+// ---------------------------------------------------------------------------
+
+/**
+ * Finché c'è uno scambio in attesa nessun altro può proporne: senza una
+ * scadenza basterebbe non rispondere per bloccare gli scambi di tutti. Il timer
+ * parte quando compare la proposta e viene annullato quando sparisce.
+ */
+function sorvegliaScambio(stanza, { ora = Date.now, random = casualeSicuro } = {}) {
+  const stato = stanza.stato;
+  const inCorso = !stanza.chiusa && stato && stato.fase !== 'lobby' && stato.fase !== 'finePartita';
+  const id = inCorso && stato.scambio ? stato.scambio.id : null;
+  const chiave = `${ID_SCAMBIO}|scadenza`;
+  if (id && stanza.scambioInAttesa === id && stanza.timer.has(chiave)) return;
+  annullaTimer(stanza, ID_SCAMBIO);
+  stanza.scambioInAttesa = id;
+  if (!id) return;
+  programmaTimer(stanza, ID_SCAMBIO, 'scadenza', TEMPI.SCAMBIO_MS, () => scadutoScambio(stanza, id, { ora, random }));
+}
+
+/** Nessuna risposta entro SCAMBIO_MS: la proposta decade (evento `scambioRifiutato`). */
+function scadutoScambio(stanza, scambioId, { ora = Date.now, random = casualeSicuro } = {}) {
+  const stato = stanza.stato;
+  if (stanza.chiusa || !stato || !stato.scambio || stato.scambio.id !== scambioId) return;
+  let esito;
+  try {
+    esito = motore.scadeScambio(stato, scambioId, { ora, random, secondi: Math.round(TEMPI.SCAMBIO_MS / 1000) });
+  } catch (e) {
+    console.error('[stanze] scadeScambio ha lanciato', stanza.codice, e);
+    return;
+  }
+  if (!esito || !esito.eventi || esito.eventi.length === 0) return;
+  for (const x of esito.stato.giocatori) {
+    const reg = stanza.giocatori.get(x.id);
+    if (reg) x.connesso = reg.connesso;
+  }
+  stanza.stato = esito.stato;
+  stanza.aggiornataIl = ora();
+  sorvegliaDisconnessi(stanza, { ora, random });
+  diffondiAggiornamento(stanza, esito.eventi);
 }
 
 /** Scaduta la tolleranza: se il disconnesso blocca la partita, il motore la fa avanzare. */
@@ -502,7 +660,7 @@ function scadutaInattivita(stanza, chiave, { ora = Date.now, random = casualeSic
   const stato = stanza.stato;
   if (!stato || stato.fase === 'lobby' || stato.fase === 'finePartita') return;
   if (stato.fase === 'debito' && stato.debito) {
-    const esito = applica(stanza, stato.debito.giocatoreId, { tipo: 'abbandona' }, { random, ora });
+    const esito = applica(stanza, stato.debito.giocatoreId, { tipo: 'abbandona' }, { random, ora, motivo: 'debito' });
     if (!esito.errore) diffondiAggiornamento(stanza, esito.eventi);
     return;
   }
@@ -540,7 +698,7 @@ function bancarottaDisconnesso(stanza, giocatoreId, { ora = Date.now, random = c
   if (!g || g.connesso) return;
   const stato = stanza.stato;
   if (stato.fase !== 'debito' || !stato.debito || stato.debito.giocatoreId !== giocatoreId) return;
-  const esito = applica(stanza, giocatoreId, { tipo: 'abbandona' }, { random, ora });
+  const esito = applica(stanza, giocatoreId, { tipo: 'abbandona' }, { random, ora, motivo: 'debito' });
   if (!esito.errore) diffondiAggiornamento(stanza, esito.eventi);
 }
 
@@ -612,8 +770,12 @@ function avvia(stanza, giocatoreId, { random = casualeSicuro, ora = Date.now, re
   return { eventi };
 }
 
-/** Applica un'azione di gioco tramite il motore e aggiorna la stanza. */
-function applica(stanza, giocatoreId, azione, { random = casualeSicuro, ora = Date.now } = {}) {
+/**
+ * Applica un'azione di gioco tramite il motore e aggiorna la stanza. `motivo`
+ * lo passa solo il server quando agisce al posto di un giocatore ('assente',
+ * 'debito': vedi `abbandona` nel motore).
+ */
+function applica(stanza, giocatoreId, azione, { random = casualeSicuro, ora = Date.now, motivo = null } = {}) {
   if (!stanza) return errore('STANZA_INESISTENTE');
   if (!stanza.giocatori.has(giocatoreId)) return errore('NON_IN_STANZA');
   if (stanza.stato.fase === 'lobby') {
@@ -621,7 +783,7 @@ function applica(stanza, giocatoreId, azione, { random = casualeSicuro, ora = Da
   }
   let esito;
   try {
-    esito = motore.applicaAzione(stanza.stato, giocatoreId, azione, { random, ora });
+    esito = motore.applicaAzione(stanza.stato, giocatoreId, azione, { random, ora, motivo });
   } catch (e) {
     // Un bug del motore non deve rompere la stanza: lo stato resta quello precedente.
     console.error('[stanze] applicaAzione ha lanciato', stanza.codice, azione && azione.tipo, e);
@@ -688,6 +850,10 @@ function diffondiAggiornamento(stanza, eventi) {
 
 /**
  * Rimuove stanze vuote/inattive e giocatori di lobby disconnessi da troppo.
+ * Scadenze: mai usata 2 minuti; tutti scollegati 10 minuti (le partite appena
+ * ripristinate dal salvataggio aspettano invece STANZA_INATTIVA_MS, finché non
+ * rientra qualcuno); sala d'attesa con un solo giocatore ferma da 30 minuti;
+ * nessun cambiamento da 2 ore; partita finita da 30 minuti.
  * @returns {number} stanze rimosse
  */
 function pulisci({ ora = Date.now } = {}) {
@@ -697,8 +863,8 @@ function pulisci({ ora = Date.now } = {}) {
     if (stanza.stato.fase === 'lobby') {
       for (const g of [...stanza.giocatori.values()]) {
         if (!g.connesso && g.disconnessoIl && t - g.disconnessoIl > TEMPI.RIMOZIONE_LOBBY_DISCONNESSO_MS) {
-          const esito = esci(stanza, g.id, { ora: () => t });
-          if (!esito.errore) diffondiAggiornamento(stanza, esito.eventi);
+          const esito = rimuoviAssenteLobby(stanza, g.id, { ora: () => t });
+          if (esito && !esito.chiusa) diffondiAggiornamento(stanza, esito.eventi);
         }
       }
       if (stanza.chiusa) {
@@ -708,8 +874,12 @@ function pulisci({ ora = Date.now } = {}) {
     }
     const vuota = stanza.giocatori.size === 0 || [...stanza.giocatori.values()].every((g) => !g.connesso);
     const maiUsata = stanza.maiUsata && stanza.giocatori.size === 0 && t - stanza.creataIl > TEMPI.STANZA_MAI_USATA_MS;
+    // Qualcuno ha creato la stanza, è entrato e l'ha lasciata aperta in una scheda.
+    const solitaria = stanza.stato.fase === 'lobby' && stanza.giocatori.size === 1
+      && t - stanza.aggiornataIl > TEMPI.LOBBY_SOLITARIA_MS;
     const daRimuovere =
       maiUsata ||
+      solitaria ||
       (vuota && stanza.vuotaDal && t - stanza.vuotaDal > TEMPI.STANZA_VUOTA_MS) ||
       t - stanza.aggiornataIl > TEMPI.STANZA_INATTIVA_MS ||
       (stanza.stato.fase === 'finePartita' && t - stanza.aggiornataIl > TEMPI.FINE_PARTITA_MS);
@@ -773,6 +943,31 @@ function cediAdmin(stanza, chiId, giocatoreId, { ora = Date.now } = {}) {
     return e;
   }
   return { eventi: passaAdmin(stanza, giocatoreId, `${da ? da.nome : 'L\'admin'} cede l'admin ${N.aChi(a.nome)}`, ora()) };
+}
+
+/**
+ * L'admin rinuncia al ruolo ("Esci da admin su questo browser"): la stanza
+ * resta senza admin e lui resta host, come un giocatore qualunque che l'ha
+ * creata. Ritorna gli eventi da diffondere (nessuno se non era l'admin).
+ */
+function lasciaAdmin(stanza, giocatoreId, { ora = Date.now } = {}) {
+  if (!giocatoreId || stanza.adminId !== giocatoreId) return [];
+  const g = stanza.giocatori.get(giocatoreId);
+  const t = ora();
+  stanza.adminId = null;
+  const eventi = [evento('admin', null, `${g ? g.nome : 'L\'admin'} non è più l'admin della stanza`,
+    { giocatoreId: null, precedenteId: giocatoreId }, t)];
+  if (stanza.stato.fase === 'lobby') {
+    sincronizzaLobby(stanza, eventi, t);
+  } else {
+    const stato = structuredClone(stanza.stato);
+    stato.versione += 1;
+    stato.log = [...stato.log, ...eventi].slice(-P.LIMITI.LOG_MAX);
+    stanza.stato = stato;
+    // Da qui valgono le regole di un host qualunque (anche quella dell'assenza).
+    sorvegliaHost(stanza, { ora });
+  }
+  return eventi;
 }
 
 /** Rende `giocatoreId` admin e host, aggiorna lo stato e ritorna l'evento. */
@@ -889,6 +1084,11 @@ function esporta() {
  * Ricrea le stanze salvate. Tutti i giocatori risultano disconnessi: rientrano
  * con il token che il loro browser ha conservato. Le voci malformate o con un
  * codice già in uso vengono saltate. Ritorna il numero di stanze ripristinate.
+ *
+ * `vuotaDal` e `disconnessoIl` restano vuoti apposta: nessuno ha ancora avuto
+ * modo di rientrare, quindi non valgono i 10 minuti delle stanze svuotate né
+ * il minuto dei giocatori di lobby scollegati. Una stanza ripristinata in cui
+ * non rientra nessuno viene chiusa dopo STANZA_INATTIVA_MS (2 ore).
  */
 function importa(elenco, { ora = Date.now } = {}) {
   if (!Array.isArray(elenco)) return 0;
@@ -902,7 +1102,7 @@ function importa(elenco, { ora = Date.now } = {}) {
     for (const g of d.giocatori) {
       if (!g || !P.REGEX_ID.test(String(g.id)) || !P.REGEX_TOKEN.test(String(g.token))) continue;
       giocatori.set(g.id, {
-        id: g.id, nome: String(g.nome), colore: String(g.colore), token: g.token, connesso: false, socket: null, disconnessoIl: t,
+        id: g.id, nome: String(g.nome), colore: String(g.colore), token: g.token, connesso: false, socket: null, disconnessoIl: null,
       });
     }
     const stato = structuredClone(d.stato);
@@ -912,7 +1112,7 @@ function importa(elenco, { ora = Date.now } = {}) {
       hostId: d.hostId ?? null,
       creataIl: Number(d.creataIl) || t,
       aggiornataIl: t,
-      vuotaDal: t,
+      vuotaDal: null,
       creataDa: d.creataDa || null,
       maiUsata: Boolean(d.maiUsata),
       progresso: 0,
@@ -967,8 +1167,12 @@ module.exports = {
   sorvegliaDisconnessi,
   sbloccaDisconnesso,
   bancarottaDisconnesso,
+  abbandonoDisconnesso,
+  passaHostAssente,
+  scadutoScambio,
   rendiAdmin,
   cediAdmin,
+  lasciaAdmin,
   impostaRegole,
   puoComandare,
   caccia,

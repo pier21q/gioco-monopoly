@@ -80,6 +80,41 @@ test('connessioni: oltre il limite per indirizzo il server rifiuta con 429, poi 
   }
 });
 
+test('connessioni dietro un proxy: inventare indirizzi in X-Forwarded-For non aggira il limite', { skip: SALTA, timeout: 30000 }, async () => {
+  const srv = await avviaServer({ proxyFidato: true });
+  try {
+    // 60 tentativi, ognuno con un indirizzo inventato diverso davanti; l'ultimo
+    // (quello che aggiunge il proxy) è sempre lo stesso.
+    let aperte = 0;
+    let rifiutate = 0;
+    for (let i = 0; i < 60; i += 1) {
+      try {
+        await srv.apri({ 'X-Forwarded-For': `198.51.100.${i}, 203.0.113.50` });
+        aperte += 1;
+      } catch (e) {
+        assert.equal(e.stato, 429);
+        rifiutate += 1;
+      }
+    }
+    assert.equal(aperte, P.LIMITI.MAX_CONNESSIONI_PER_IP, 'passano solo le prime 20');
+    assert.equal(rifiutate, 60 - P.LIMITI.MAX_CONNESSIONI_PER_IP);
+    assert.ok(await srv.apri({ 'X-Forwarded-For': '198.51.100.1, 203.0.113.51' }), 'un altro indirizzo vero passa');
+  } finally {
+    await srv.chiudi();
+  }
+});
+
+test('connessioni: oltre il tetto globale il server rifiuta con 503, da qualunque indirizzo', { skip: SALTA, timeout: 20000 }, async () => {
+  assert.equal(P.LIMITI.MAX_CONNESSIONI, 600);
+  const srv = await avviaServer({ proxyFidato: true, maxConnessioni: 4 });
+  try {
+    for (let i = 0; i < 4; i += 1) await srv.apri({ 'X-Forwarded-For': `203.0.113.${i}` });
+    await assert.rejects(srv.apri({ 'X-Forwarded-For': '203.0.113.99' }), (e) => e.stato === 503);
+  } finally {
+    await srv.chiudi();
+  }
+});
+
 test('stanze: al massimo 10 stanze aperte per indirizzo, anche cambiando socket', { skip: SALTA, timeout: 20000 }, async () => {
   const srv = await avviaServer();
   try {
@@ -159,16 +194,28 @@ test('indirizzo e link: X-Forwarded-For/Host ignorati senza proxy fidato', () =>
     socket: { remoteAddress: '::ffff:192.168.1.20' },
   };
   assert.equal(indice.ipDi(req, false), '192.168.1.20');
-  assert.equal(indice.ipDi(req, true), '203.0.113.9');
+  // Dietro il proxy vale l'ULTIMO indirizzo (l'ha scritto il proxy): quelli
+  // davanti li manda il client e li può inventare.
+  assert.equal(indice.ipDi(req, true, null), '10.0.0.1');
+  // Con un'intestazione dedicata (su Render: CF-Connecting-IP) vale quella.
+  const conCf = { ...req, headers: { ...req.headers, 'cf-connecting-ip': '198.51.100.7' } };
+  assert.equal(indice.ipDi(conCf, true, 'cf-connecting-ip'), '198.51.100.7');
+  assert.equal(indice.ipDi(conCf, false, 'cf-connecting-ip'), '192.168.1.20', 'senza proxy fidato non conta nemmeno quella');
+  assert.equal(indice.ipDi(req, true, 'cf-connecting-ip'), '10.0.0.1', 'se manca si torna all\'ultimo di X-Forwarded-For');
   assert.equal(indice.baseLink(null, req, 3000, false), 'http://localhost:3000');
   assert.equal(indice.baseLink(null, req, 3000, true), 'http://cattivo.example');
-  const salvato = { RENDER: process.env.RENDER, PROXY_FIDATO: process.env.PROXY_FIDATO };
+  const salvato = { RENDER: process.env.RENDER, PROXY_FIDATO: process.env.PROXY_FIDATO, PROXY_INTESTAZIONE_IP: process.env.PROXY_INTESTAZIONE_IP };
   try {
     delete process.env.PROXY_FIDATO;
     delete process.env.RENDER;
+    delete process.env.PROXY_INTESTAZIONE_IP;
     assert.equal(indice.proxyFidato(), false);
+    assert.equal(indice.intestazioneIp(), null);
     process.env.RENDER = 'true';
     assert.equal(indice.proxyFidato(), true, 'su Render il proxy è fidato');
+    assert.equal(indice.intestazioneIp(), 'cf-connecting-ip', 'su Render l\'indirizzo vero lo scrive Cloudflare');
+    process.env.PROXY_INTESTAZIONE_IP = 'X-Real-IP';
+    assert.equal(indice.intestazioneIp(), 'x-real-ip');
     process.env.PROXY_FIDATO = '0';
     assert.equal(indice.proxyFidato(), false, 'PROXY_FIDATO=0 vince');
   } finally {
