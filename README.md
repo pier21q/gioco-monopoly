@@ -5,8 +5,11 @@ avvia il server, crea una stanza e manda il link agli amici: ognuno entra dal
 proprio browser, senza installare nulla e senza registrarsi.
 
 Il server tiene lo stato della partita e applica le regole; i browser mostrano
-il tabellone e inviano le mosse. Le partite vivono in memoria: se il server
-viene riavviato, le partite in corso si perdono.
+il tabellone e inviano le mosse. Le partite vivono in memoria e vengono
+salvate ogni pochi secondi in `.partite/partite.json`: se riavvii il server sul
+tuo computer, le partite ripartono da dove erano e ognuno rientra ricaricando
+la pagina. Su Render gratuito il disco si azzera, quindi lì il salvataggio non
+aiuta (vedi "Metterlo online").
 
 ## Requisiti
 
@@ -45,6 +48,12 @@ Amici sulla stessa rete:   http://192.168.1.20:3000
 
 Apri l'indirizzo nel browser, scrivi il tuo nome e premi **Crea una stanza**.
 Per fermare il server premi `Ctrl+C`.
+
+Di norma il server accetta connessioni da tutta la rete locale (`HOST=0.0.0.0`):
+serve per giocare con gli amici sullo stesso Wi-Fi, ma su una rete pubblica
+(bar, treno, albergo) chiunque su quella rete può aprire il gioco e creare
+stanze. Lì avvialo con `HOST=127.0.0.1 npm start`: il server lo conferma
+all'avvio e non stampa indirizzi di rete.
 
 ## Come condividere il link con gli amici
 
@@ -93,14 +102,32 @@ che ha un piano gratuito adatto a un gioco fra amici.
    `https://gioco-monopoly.onrender.com`: è il link da aprire dal telefono e
    da mandare agli amici. I link d'invito delle stanze lo usano da soli.
 
+**Quando si ripubblica.** `render.yaml` dice a Render di pubblicare solo il
+ramo `pubblicazione`, non quello su cui lavori: così salvare il lavoro su
+GitHub non interrompe le partite in corso. Per mettere online la versione
+attuale, quando nessuno sta giocando:
+
+```bash
+git push origin HEAD:pubblicazione
+```
+
+La prima volta questo comando crea il ramo `pubblicazione` su GitHub: fallo
+*prima* di caricare su GitHub il `render.yaml` che lo nomina, altrimenti
+Render cerca un ramo che non c'è e la pubblicazione fallisce (quella già
+online resta in piedi).
+
 Cosa sapere del piano gratuito:
 
-- Dopo circa 15 minuti senza nessuno collegato il servizio si addormenta. Il
-  primo che riapre il link aspetta fino a un minuto, poi tutto è normale.
-  Finché almeno una pagina del gioco è aperta il servizio resta sveglio.
-- Le partite vivono in memoria: quando il servizio si addormenta o viene
-  aggiornato, le partite in corso si perdono.
-- A ogni `git push` sul ramo collegato Render ripubblica da solo.
+- Dopo circa 15 minuti senza traffico il servizio si addormenta. Il primo che
+  riapre il link aspetta fino a un minuto, poi tutto è normale. Una pagina del
+  gioco aperta **e in primo piano** lo tiene sveglio (ogni 4 minuti chiede
+  `/salute` al server); una scheda in background o un telefono con lo schermo
+  spento no.
+- Quando il servizio si addormenta o viene ripubblicato, le partite in corso
+  si perdono: il disco di Render gratuito si azzera, quindi il salvataggio su
+  file lì non serve.
+- Render passa le richieste attraverso un suo proxy: il server lo riconosce
+  (variabile `RENDER`) e legge l'indirizzo del giocatore da `X-Forwarded-For`.
 
 ## Variabili d'ambiente
 
@@ -112,6 +139,8 @@ Nessuna è obbligatoria e nessuna è un segreto.
 | `HOST` | `0.0.0.0` | Interfaccia di ascolto. Con `127.0.0.1` il gioco è raggiungibile solo dal tuo computer. |
 | `PUBLIC_URL` | l'indirizzo con cui il browser ha raggiunto il server | Base dei link d'invito, da impostare quando usi un tunnel o un dominio. |
 | `ORIGINE_LIBERA` | non impostata | Con `1` disattiva il controllo dell'origine sulle connessioni WebSocket. Serve solo se un proxy riscrive l'host e i giocatori non riescono a collegarsi. |
+| `PROXY_FIDATO` | `1` su Render, altrimenti non impostata | Con `1` il server crede alle intestazioni `X-Forwarded-For`/`-Host`/`-Proto` (indirizzo del giocatore, host pubblico). Impostala quando il server sta dietro un tunnel o un proxy; senza proxy lasciala spenta, perché quelle intestazioni le potrebbe scrivere chiunque. `0` la spegne anche su Render. |
+| `SALVATAGGIO` | `.partite/partite.json` | File in cui salvare le partite. `0` disattiva il salvataggio. Il file contiene i token di sessione dei giocatori: viene creato leggibile solo da te ed è escluso da git. |
 
 Esempio:
 
@@ -128,11 +157,19 @@ npm test
 ```
 
 Esegue con il test runner di Node (`node --test`) tutti i file `*.test.js` di
-`tests/` e di `server/gioco/test/`: dati del tabellone e delle carte, regole
-del motore (movimento, affitti, costruzioni, carte, aste, scambi, debiti,
-bancarotta, abbandono), gestione delle stanze e delle disconnessioni, e i test
-di integrazione che avviano il server vero su una porta libera e ci parlano
-via HTTP e WebSocket. I test di integrazione hanno bisogno di `npm install`.
+`tests/`: dati del tabellone e delle carte, regole del motore (movimento,
+affitti, costruzioni, carte, aste, scambi, debiti, bancarotta, abbandono),
+stanze, disconnessioni e inattività, salvataggio su file, difese del server
+(limiti per indirizzo, origine, nomi), e i test di integrazione che avviano il
+server vero su una porta libera e ci parlano via HTTP e WebSocket. I test di
+integrazione hanno bisogno di `npm install`.
+
+`tests/client.test.js` carica in Node i moduli del browser e ne prova le
+funzioni pure; fra l'altro confronta, su migliaia di stati di partite giocate a
+caso, le spiegazioni dei pulsanti del client con le risposte del motore. Serve
+Node 22.15 o successivo: con un Node più vecchio quei test vengono saltati. La
+grafica (tabellone 3D, animazioni, finestre) non ha test automatici e va
+provata nel browser.
 
 Per un solo file: `node --test tests/motore-affitti.test.js`.
 
@@ -158,6 +195,8 @@ Il gioco segue il regolamento classico dell'edizione italiana, in euro.
   Chi crea la stanza può scegliere, prima di avviare, la variante **Solo dove
   ti fermi**: si costruisce su un colore solo nel turno in cui la propria
   pedina si ferma su una sua casella (e sempre solo con il gruppo completo).
+  Vale ogni sosta del turno: chi fa un doppio, si ferma su un suo colore e poi
+  rilancia può costruire su quel colore fino alla fine del turno.
 - **Ipoteche.** Si incassa metà del prezzo; per riscattare si paga il valore
   d'ipoteca più il 10%. Non si ipoteca un terreno se nel gruppo ci sono case.
 - **Scambi.** Denaro, proprietà senza costruzioni e carte "Uscite gratis di
@@ -186,9 +225,35 @@ Cose che funzionano in modo diverso dal gioco da tavolo:
   pagina. Se è il suo turno e non torna entro 45 secondi, il turno passa (lo
   stesso vale per un'asta in corso). Se ha un debito aperto e resta assente per
   3 minuti viene dichiarato in bancarotta, così gli altri non restano bloccati.
+- Anche chi resta collegato ma non gioca ha un tempo massimo: 3 minuti per il
+  proprio turno (poi rinuncia all'acquisto o salta il turno), 60 secondi per
+  rispondere in un'asta (poi passa), 5 minuti per saldare un debito (poi
+  bancarotta). Trenta secondi prima compare un avviso. Riconnettersi non fa
+  ripartire il tempo; qualunque mossa sì. Dopo due giri interi di turni saltati
+  senza che nessuno giochi, la partita smette di avanzare da sola e aspetta.
 
 Il dettaglio di ogni regola, con i casi limite, è nel capitolo 8 di
 `INTERFACCE.md`.
+
+## Limiti contro gli abusi
+
+Il gioco non ha account: per tenerlo utilizzabile anche con un link pubblico il
+server limita quello che una persona sola può fare.
+
+- Al massimo 20 connessioni contemporanee e 10 stanze aperte per indirizzo IP,
+  5 stanze per connessione, 200 stanze in tutto.
+- Una stanza in cui non entra nessuno si chiude dopo 2 minuti. Se le 200 stanze
+  sono tutte occupate, chi ne crea una nuova fa chiudere la stanza vuota più
+  vecchia: si viene rifiutati solo se tutte e 200 hanno giocatori dentro.
+- Nomi senza caratteri invisibili (spazi a larghezza zero, inversione del
+  verso del testo): non si può entrare con un nome che sembra quello di un
+  altro.
+
+Dietro un proxy (Render, tunnel) l'indirizzo del giocatore arriva
+dall'intestazione `X-Forwarded-For`, che un client malintenzionato può
+riempire a piacere: lì i limiti per indirizzo sono di buona volontà. Restano
+comunque il tetto alle stanze e la regola delle stanze vuote, che impediscono
+di bloccare il gioco a chi arriva.
 
 ## Accessibilità
 
@@ -223,11 +288,12 @@ package.json          script npm e dipendenza ws
 Avvia Monopoly.command  doppio clic per avviare il gioco su Mac
 render.yaml           configurazione per pubblicarlo su Render
 INTERFACCE.md         contratti fra motore, server e client (stato, azioni, protocollo)
-REVISIONE.md          revisione del codice fatta prima dell'integrazione
+REVISIONE.md          revisione storica (fase 3 dello sviluppo): superata, non descrive il codice attuale
 server/
   index.js            server HTTP (file statici, /dati/*.js, /salute) e WebSocket su /ws
   stanze.js           stanze, giocatori, token di sessione, disconnessioni
   protocollo.js       messaggi, limiti, codici d'errore e validazione
+  salvataggio.js      salvataggio delle partite su file e ripristino all'avvio
   gioco/
     motore.js         regole del gioco: creaPartita e applicaAzione (funzioni pure)
     nucleo.js         pagamenti, debiti, aste, turni
@@ -236,7 +302,6 @@ server/
     errori.js         codici e messaggi d'errore del motore
     tabellone.js      le 40 caselle, i gruppi, prezzi e affitti
     carte.js          Probabilità e Imprevisti
-    test/             test delle regole del motore
 client/               pagine servite al browser, senza build
   index.html
   css/                base.css, tabellone.css, pannelli.css, tema.css
@@ -248,7 +313,7 @@ client/               pagine servite al browser, senza build
     suoni.js          suoni sintetizzati (Web Audio), senza file audio
     pannelli.js       giocatori, azioni del turno, cronaca
     dialoghi.js       finestre di dialogo (acquisto, asta, scambio, debito…) e notifiche
-tests/                test del server, delle stanze e di integrazione
+tests/                tutti i test: motore, server, stanze, sicurezza, salvataggio, client
 ```
 
 I dati di `tabellone.js` e `carte.js` sono scritti una sola volta sul server,

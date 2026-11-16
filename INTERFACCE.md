@@ -28,10 +28,10 @@ Indice
 | Moduli server | **CommonJS** (`'use strict'`, `require`, `module.exports`). In `package.json` **non** c'è `"type": "module"`. |
 | Dipendenze | **una sola**: `ws` (WebSocket). File statici serviti con il modulo nativo `http`. |
 | Client | HTML + CSS + JavaScript puro, **ES module nel browser** (`<script type="module">`), nessun build step |
-| Test | `node:test` + `node:assert/strict`, file `tests/*.test.js` e `server/gioco/test/*.test.js`, comando `npm test` (= `node --test`, che li trova da solo) |
+| Test | `node:test` + `node:assert/strict`, file `tests/*.test.js`, comando `npm test` (= `node --test`, che li trova da solo) |
 | Avvio | `npm start` (= `node server/index.js`) |
 
-Variabili d'ambiente lette dal server (nessuna è un segreto; non serve `.env`):
+Variabili d'ambiente lette dal server (nessuna è un segreto; non serve `.env`; il file di `SALVATAGGIO` invece contiene i token di sessione ed è escluso da git):
 
 | Variabile | Default | Significato |
 |---|---|---|
@@ -39,6 +39,8 @@ Variabili d'ambiente lette dal server (nessuna è un segreto; non serve `.env`):
 | `HOST` | `0.0.0.0` | interfaccia di ascolto |
 | `PUBLIC_URL` | l'host con cui il browser ha raggiunto il server | base del link condiviso (es. dietro un tunnel/proxy) |
 | `ORIGINE_LIBERA` | non impostata | con `1` disattiva il controllo dell'`Origin` sul WebSocket (§3.5), utile solo dietro proxy che riscrivono l'host |
+| `PROXY_FIDATO` | `1` su Render (variabile `RENDER`), altrimenti spenta | con `1` il server crede a `X-Forwarded-For`/`-Host`/`-Proto`; `0` la spegne anche su Render |
+| `SALVATAGGIO` | `.partite/partite.json` | file del salvataggio delle partite (`server/salvataggio.js`); `0` lo disattiva |
 
 Se in futuro servissero segreti vanno in `.env` (già in `.gitignore`) e nel
 repository entra solo `.env.example` con valori finti.
@@ -242,9 +244,13 @@ viene mescolato). Il turno passa al prossimo giocatore con `fallito: false`.
 ### 1.4 Turno e dadi
 
 ```json
-"turno": { "giocatoreId": "a7k2x9pq", "numero": 7, "doppiConsecutivi": 0 },
+"turno": { "giocatoreId": "a7k2x9pq", "numero": 7, "doppiConsecutivi": 0, "soste": ["marrone"] },
 "dadi": [5, 6]
 ```
+
+* `turno.soste` elenca i gruppi colore delle caselle `proprieta` su cui la
+  pedina di turno si è fermata in questo turno (anche prima di un doppio).
+  Riparte vuoto a ogni cambio di turno; serve alla regola `'sosta'` (§2.4).
 
 * `turno.numero` parte da 1 e cresce a ogni `finisciTurno` (o fine turno
   automatica dopo prigione / bancarotta).
@@ -350,7 +356,10 @@ della banca.
 di pesca (si pesca in testa, si rimette in coda). Le carte `esciGratis`
 escono dal mazzo finché il giocatore non le usa. **Il server rimuove `mazzi`
 dallo stato inviato ai client** (`motore.statoPubblico`): il client non deve
-dipendere da questo campo.
+dipendere da questo campo. In compenso `statoPubblico` aggiunge `azioni`:
+`{ giocatoreId: [tipi] }` con il risultato di `azioniDisponibili` per ogni
+giocatore, che il client usa per accendere i pulsanti senza ricopiare le
+regole.
 
 ### 1.9 bis Campi aggiuntivi (fase 2)
 
@@ -458,7 +467,7 @@ Legenda "chi": **T** = solo giocatore di turno · **D** = solo debitore ·
 | `rifiutaAcquisto` | — | T | `daDecidereAcquisto` | Avvia l'asta (`asta` valorizzata, fase `asta`). Se è l'unico giocatore non fallito la casella resta alla banca. | |
 | `offertaAsta` | `importo` intero | P | `asta` | Offerta `>= offertaMassima + incrementoMinimo` e `<= denaro`. | `OFFERTA_BASSA`, `FONDI_INSUFFICIENTI`, `GIA_PASSATO` |
 | `passaAsta` | — | P | `asta` | Esce dall'asta. Il miglior offerente non può passare. Chiude l'asta quando resta uno solo. | `MIGLIOR_OFFERENTE`, `GIA_PASSATO` |
-| `costruisci` | `casella` | T | gestione | Costruisce una casa (o l'albergo se a 4 case) su `casella`. Richiede gruppo completo, nessuna ipoteca nel gruppo, costruzione uniforme (differenza max 1 nel gruppo), scorte in banca, denaro. Con `stato.regole.costruzione === 'sosta'` serve anche che la pedina si sia fermata in questo turno su una casella del gruppo (fase diversa da `daLanciare`, oppure `doppiConsecutivi > 0`). | `GRUPPO_INCOMPLETO`, `NON_SULLA_CASELLA`, `COSTRUZIONE_NON_UNIFORME`, `CASE_ESAURITE`, `ALBERGHI_ESAURITI`, `IPOTECATA`, `FONDI_INSUFFICIENTI`, `NON_EDIFICABILE` |
+| `costruisci` | `casella` | T | gestione | Costruisce una casa (o l'albergo se a 4 case) su `casella`. Richiede gruppo completo, nessuna ipoteca nel gruppo, costruzione uniforme (differenza max 1 nel gruppo), scorte in banca, denaro. Con `stato.regole.costruzione === 'sosta'` serve anche che la pedina si sia fermata in questo turno su una casella del gruppo: il gruppo è in `turno.soste`, oppure la pedina è sul gruppo e la fase è diversa da `daLanciare` (o `doppiConsecutivi > 0`). | `GRUPPO_INCOMPLETO`, `NON_SULLA_CASELLA`, `COSTRUZIONE_NON_UNIFORME`, `CASE_ESAURITE`, `ALBERGHI_ESAURITI`, `IPOTECATA`, `FONDI_INSUFFICIENTI`, `NON_EDIFICABILE` |
 | `vendiCasa` | `casella` | T, D, P | gestione + `debito` + `asta` | Vende una casa alla banca a **metà** del `costoCasa`, rispettando l'uniformità. Un albergo torna a 4 case se la banca ne ha 4; altrimenti viene venduto **per intero** (`caseCostruite` → 0, ricavo `5 × costoCasa / 2`, nessuna casa restituita). | `NESSUNA_COSTRUZIONE`, `COSTRUZIONE_NON_UNIFORME` |
 | `ipoteca` | `casella` | T, D, P | gestione + `debito` + `asta` | Incassa `CASELLE[i].ipoteca`; richiede `caseCostruite === 0` su **tutto il gruppo**. | `HA_COSTRUZIONI`, `GIA_IPOTECATA` |
 | `disipoteca` | `casella` | T | gestione | Paga `ipoteca + ceil(10%)`, toglie l'ipoteca. | `NON_IPOTECATA`, `FONDI_INSUFFICIENTI` |
@@ -511,16 +520,18 @@ Esempi di oggetto `azione`:
 | `AZIONI` | array frozen dei 17 `tipo` ammessi (nell'ordine della tabella §2.4) |
 | `FASI` | array frozen delle 7 fasi |
 | `azioniDisponibili(stato, giocatoreId) → string[]` | i `tipo` che `giocatoreId` può eseguire adesso (per abilitare i pulsanti del client). Non valuta i parametri. |
-| `statoPubblico(stato) → StatoPartita` | copia senza `mazzi` (quella che va ai client) |
+| `statoPubblico(stato) → StatoPartita` | copia senza `mazzi`, con `azioni` per giocatore (quella che va ai client) |
 | `prossimoGiocatore(stato) → giocatoreId` | prossimo non fallito **e connesso** dopo il giocatore di turno (se nessun altro è connesso: il prossimo non fallito) |
 | `gestisciDisconnessione(stato, giocatoreId, {random, ora}) → { stato, eventi }` | chiamata da `stanze.js` quando un disconnesso blocca la partita, dopo la tolleranza di §3.4: annulla il suo scambio pendente, lo fa passare all'asta (se non è il miglior offerente), se è di turno in `daDecidereAcquisto` apre l'asta, in `daLanciare`/`mossa` passa il turno. Un debito resta in attesa. Se non c'è nulla da fare ritorna lo stesso `stato` ed `eventi: []` (versione invariata). |
+| `gestisciInattivita(stato, giocatoreId, {random, ora}) → { stato, eventi }` | come `gestisciDisconnessione`, per un giocatore collegato che non agisce in tempo (§3.4): **non** annulla gli scambi pendenti; in `daDecidereAcquisto` e `daLanciare`/`mossa` emette `turnoSaltato` con `motivo: 'inattivo'`. |
+| `chiDeveAgire(stato) → string[]` | chi tiene ferma la partita adesso: il debitore, i partecipanti all'asta che non hanno passato (escluso il miglior offerente) o il giocatore di turno. |
 | `calcolaAffitto(stato, casella, opz?) → { importo, moltiplicatore? }` | affitto corrente di una casella posseduta (società: usa `stato.dadi`) |
 | `patrimonioLiquidabile(stato, giocatoreId)` | come in `bancarotta.js` |
 
 Moduli interni aggiunti in `server/gioco/`: `nucleo.js` (pagamenti, debiti,
 aste, turno: primitive mutanti usate su copie), `errori.js` (codici e
 messaggi del motore, così il motore non dipende da `protocollo.js`). Test:
-`server/gioco/test/motore.test.js`, eseguito da `npm test` insieme a `tests/`.
+`tests/motore-regole.test.js`, eseguito da `npm test` insieme agli altri test di `tests/`.
 
 ### 2.6 `server/gioco/scambi.js`
 
@@ -565,7 +576,7 @@ Usato dal motore; esportato per i test.
 
 | `tipo` | Campi | Risposta | Note |
 |---|---|---|---|
-| `creaStanza` | — | `stanzaCreata` al mittente | Non entra nella stanza: va seguito da `entraStanza`. `TROPPE_STANZE` oltre 200 stanze aperte o 5 create dalla stessa connessione. |
+| `creaStanza` | — | `stanzaCreata` al mittente | Non entra nella stanza: va seguito da `entraStanza`. `TROPPE_STANZE` oltre 5 stanze create dalla stessa connessione, 10 aperte dallo stesso indirizzo IP, o 200 aperte sul server tutte con giocatori dentro (se ce n'è una senza giocatori, la più vecchia viene chiusa per fare posto). |
 | `entraStanza` | `codice`, `nome`, `colore?` | `entrato` al mittente, poi `evento giocatoreEntrato` + `stato` a tutti | Solo in fase `lobby`, max 6 giocatori. |
 | `avviaPartita` | `regole?` | `evento partitaIniziata` + `stato` a tutti | Solo `hostId`, almeno 2 giocatori connessi. `regole.costruzione` è `'libera'` (predefinita) o `'sosta'`: finisce in `stato.regole`. |
 | `azione` | `azione: { tipo, … }` (§2.4) | a tutti `evento`* + `stato`; al mittente `errore` se rifiutata | Il server ricava `giocatoreId` dal socket, mai dal messaggio. |
@@ -640,7 +651,20 @@ Esempi:
    disconnessione: `stanze.sorvegliaDisconnessi` è richiamata a ogni cambio di
    stato), si annullano alla riconnessione e non scattano se nessun giocatore
    in gara è collegato (la partita aspetta).
-3. Una stanza viene eliminata quando è vuota da 10 minuti o inattiva da 2 ore,
+
+   **Inattività dei collegati.** C'è anche un timer per stanza
+   (`stanze.programmaInattivita`) per chi è collegato ma non agisce
+   (`motore.chiDeveAgire`): 3 minuti per il turno
+   (`INATTIVITA_TURNO_MS`), 60 s in asta (`INATTIVITA_ASTA_MS`), 5 minuti per
+   un debito (`INATTIVITA_DEBITO_MS`). 30 s prima arriva a tutti un `evento`
+   `avvisoInattivita` (`dati: { giocatori, secondi, debito }`, non entra nel
+   log). Allo scadere: debito → `abbandona` per il debitore; altrimenti
+   `motore.gestisciInattivita` per ognuno. Il timer riparte solo quando la
+   partita va avanti (`stanza.progresso`), non a connessioni e riconnessioni;
+   si ferma se nessuno in gara è collegato o dopo due giri interi di turni
+   saltati senza azioni (`stanza.saltiInattivita`).
+3. Una stanza viene eliminata quando nessuno ci è mai entrato da 2 minuti, è
+   vuota da 10 minuti o inattiva da 2 ore,
    o quando la partita è in `finePartita` da 30 minuti. Ai socket ancora
    collegati arriva `errore STANZA_INESISTENTE` (senza `rif`) e poi la
    chiusura con codice `4002`; il client torna alla schermata iniziale.
@@ -664,7 +688,7 @@ Esempi:
 | `GET /dati/tabellone.js` | ES module **generato** dal CommonJS `server/gioco/tabellone.js`: una riga `export const NOME = <JSON>;` per ogni export JSON-serializzabile (funzioni escluse). Il client fa `import { CASELLE, GRUPPI } from '/dati/tabellone.js'`. |
 | `GET /dati/carte.js` | idem per `server/gioco/carte.js`: `import { PROBABILITA, IMPREVISTI } from '/dati/carte.js'`. |
 | `GET /salute` | `{ "ok": true, "stanze": 3, "versione": "0.1.0", "websocket": true }` |
-| `GET /ws` con Upgrade | WebSocket. L'handshake è accettato solo se manca `Origin` (client non browser) o se il suo host coincide con `Host`, `X-Forwarded-Host` o `PUBLIC_URL` (`index.origineAmmessa`); `ORIGINE_LIBERA=1` disattiva il controllo. |
+| `GET /ws` con Upgrade | WebSocket. L'handshake è accettato solo se manca `Origin` (client non browser) o se il suo host coincide con `Host`, `PUBLIC_URL` o, dietro un proxy fidato (`PROXY_FIDATO=1`, oppure su Render), `X-Forwarded-Host` (`index.origineAmmessa`). Oltre 20 connessioni contemporanee dallo stesso indirizzo (`index.ipDi`: `X-Forwarded-For` dietro un proxy fidato, altrimenti l'indirizzo del socket) l'handshake è rifiutato con 429; un'origine non ammessa con 403; `ORIGINE_LIBERA=1` disattiva il controllo. |
 
 Ogni risposta HTTP porta `X-Content-Type-Options: nosniff`,
 `X-Frame-Options: DENY`, `Referrer-Policy: same-origin` e una
@@ -694,6 +718,12 @@ stanze.diffondiAggiornamento(stanza, eventi) → void        // prima gli `event
 stanze.sorvegliaDisconnessi(stanza, { ora, random }) → void   // programma i timer dei disconnessi bloccanti
 stanze.sbloccaDisconnesso(stanza, giocatoreId, { ora, random }) → void     // ciò che fa il timer dei 45 s
 stanze.bancarottaDisconnesso(stanza, giocatoreId, { ora, random }) → void  // ciò che fa il timer dei 3 minuti
+stanze.programmaInattivita(stanza, { ora, random }) → void   // timer d'inattività dei collegati (§3.4)
+stanze.preavvisaInattivita(stanza, chiave, { ora }) → void   // evento avvisoInattivita, 30 s prima
+stanze.scadutaInattivita(stanza, chiave, { ora, random }) → void   // ciò che fa il timer allo scadere
+stanze.aperteDa(ip) → numero stanze aperte create da quell'indirizzo
+stanze.liberaPosto() → boolean                             // chiude la stanza senza giocatori più vecchia
+stanze.esporta() → object[]  /  stanze.importa(elenco, { ora }) → numero   // salvataggio su file (server/salvataggio.js)
 stanze.pulisci({ ora }) → numero stanze rimosse            // chiamata da un timer in index.js
 stanze.rimuovi(codice) → boolean                           // chiude la stanza (errore + chiusura 4002)
 stanze.azzera() → void                                     // svuota il registro e annulla i timer (test)
@@ -717,7 +747,7 @@ P.MESSAGGI_SERVER      // ['stanzaCreata','entrato','stato','evento','errore','p
 P.ERRORI               // { NON_IL_TUO_TURNO: 'Non è il tuo turno', ... } (§7)
 P.COLORI_GIOCATORE     // palette §0.5
 P.LIMITI               // { MAX_GIOCATORI: 6, MIN_GIOCATORI: 2, NOME_MAX: 16, MESSAGGIO_MAX_BYTE: 16384, FRAME_MAX_BYTE: 65536,
-                       //   LOG_MAX: 200, LOG_BREVE: 30, MAX_STANZE: 200, MAX_STANZE_PER_SOCKET: 5, MESSAGGI_AL_SECONDO_MAX: 30, … }
+                       //   LOG_MAX: 200, LOG_BREVE: 30, MAX_STANZE: 200, MAX_STANZE_PER_SOCKET: 5, MAX_STANZE_PER_IP: 10, MAX_CONNESSIONI_PER_IP: 20, MESSAGGI_AL_SECONDO_MAX: 30, … }
 P.CHIUSURE             // { SOSTITUITO: 4001, STANZA_CHIUSA: 4002 } (§3.4)
 P.chiaveNome(str) → 'anna'   // chiave di confronto dei nomi: minuscolo, senza diacritici
 P.REGEX_CODICE         // /^[A-Z0-9]{6}$/
@@ -725,7 +755,7 @@ P.REGEX_COLORE         // /^#[0-9a-f]{6}$/
 P.analizza(testo) → { ok: true, messaggio } | { ok: false, errore }   // JSON.parse + validazione shape per tipo
 P.errore(codice, extra?) → { tipo: 'errore', codice, messaggio, ...extra }
 P.normalizzaCodice(str) → 'K7PQ2M' | null
-P.normalizzaNome(str) → 'Anna' | null
+P.normalizzaNome(str) → 'Anna' | null   // NFC, senza caratteri invisibili (Cc, Cf, Co, Cn), spazi compressi
 P.normalizzaColore(str) → '#d62828' | null
 ```
 
@@ -1074,7 +1104,8 @@ Esempi:
 | `connessione` | `{ giocatoreId, connesso }` |
 | `partitaIniziata` | `{ ordine: [giocatoreId…], denaroIniziale }` |
 | `turno` | `{ giocatoreId, numero }` |
-| `turnoSaltato` | `{ giocatoreId, motivo: 'disconnesso' }` (fase 2) |
+| `turnoSaltato` | `{ giocatoreId, motivo: 'disconnesso' \| 'inattivo' }` |
+| `avvisoInattivita` | `{ giocatori: string[], secondi, debito: bool }`: solo come `evento` del server 30 s prima dello scadere del tempo (§3.4), non entra nel log |
 | `dadi` | `{ dadi: [d1, d2], doppio, inPrigione, doppiConsecutivi, perAffitto? }` (`perAffitto: true` per il lancio della carta "società più vicina") |
 | `movimento` | `{ da, a, passi, passatoDalVia, causa: 'dadi' \| 'carta' }` (`passi` negativo per `indietro`) |
 | `passaggioVia` | `{ importo }` |
@@ -1117,8 +1148,8 @@ Protocollo e stanze:
 `NON_HOST` · `POCHI_GIOCATORI` · `TOKEN_NON_VALIDO` · `SOLO_IN_LOBBY` ·
 `ERRORE_INTERNO` (eccezione nel motore o nel server: l'azione non è
 applicata) · `TROPPI_MESSAGGI` (anti-flood, più di 30 messaggi al secondo) ·
-`TROPPE_STANZE` (200 stanze aperte sul server o 5 create dalla stessa
-connessione)
+`TROPPE_STANZE` (5 stanze create dalla stessa connessione, 10 aperte dallo
+stesso indirizzo, o 200 aperte sul server tutte con giocatori dentro)
 
 Motore:
 `AZIONE_NON_VALIDA` · `PARAMETRI_NON_VALIDI` · `GIOCATORE_NON_VALIDO` ·
@@ -1180,8 +1211,9 @@ Regolamento ufficiale, con queste scelte esplicite:
     bancarotta il creditore è quello del debito aperto. Fine partita quando
     resta un solo giocatore non fallito.
 11. **Carte**: `esciGratis` resta al giocatore e torna in coda al **suo** mazzo
-    quando usata; le altre tornano in coda subito. Nessun limite di tempo per
-    i turni.
+    quando usata; le altre tornano in coda subito. I turni hanno un limite di
+    tempo solo contro chi non gioca affatto (§3.4: 3 minuti, 60 s in asta,
+    5 minuti per un debito).
 12. **Disconnessioni e abbandono**: in partita il giocatore resta e può
     riconnettersi col token. Quando il turno passa, i disconnessi vengono
     **saltati** (evento `turnoSaltato`); se il disconnesso è già di turno,

@@ -33,6 +33,10 @@ const LIMITI = Object.freeze({
   MAX_STANZE: 200,
   // Stanze che una singola connessione può creare (anti-abuso).
   MAX_STANZE_PER_SOCKET: 5,
+  // Stanze aperte create dallo stesso indirizzo IP.
+  MAX_STANZE_PER_IP: 10,
+  // Connessioni WebSocket contemporanee dallo stesso indirizzo IP.
+  MAX_CONNESSIONI_PER_IP: 20,
   // Eventi di log inclusi in ogni `stato` di aggiornamento; il log completo
   // (fino a LOG_MAX) arriva solo con `entrato`/`riconnetti`.
   LOG_BREVE: 30,
@@ -158,11 +162,17 @@ function normalizzaCodice(valore) {
   return REGEX_CODICE.test(codice) ? codice : null;
 }
 
-/** Nome: trim, spazi interni compressi, 1–16 caratteri, niente controlli. */
+/**
+ * Caratteri tolti dai nomi: di controllo (Cc), di formato invisibili come lo
+ * spazio a larghezza zero o l'inversione del verso del testo (Cf), ad uso
+ * privato (Co), non assegnati (Cn) e separatori di riga o paragrafo.
+ */
+const REGEX_INVISIBILI = /[\p{Cc}\p{Cf}\p{Co}\p{Cn}\p{Zl}\p{Zp}]/gu;
+
+/** Nome: forma NFC, niente caratteri invisibili, spazi compressi, 1–16 caratteri. */
 function normalizzaNome(valore) {
   if (typeof valore !== 'string') return null;
-  // eslint-disable-next-line no-control-regex
-  const nome = valore.replace(/[\u0000-\u001f\u007f]/g, '').replace(/\s+/g, ' ').trim();
+  const nome = valore.normalize('NFC').replace(REGEX_INVISIBILI, '').replace(/[\s\p{Zs}]+/gu, ' ').trim();
   if (nome.length < LIMITI.NOME_MIN || nome.length > LIMITI.NOME_MAX) return null;
   return nome;
 }
@@ -172,7 +182,8 @@ function normalizzaNome(valore) {
  * segni diacritici, così "Anna", "ANNA" e "Ánna" contano come lo stesso nome.
  */
 function chiaveNome(nome) {
-  return String(nome).normalize('NFD').replace(/\p{M}/gu, '').toLowerCase();
+  return String(nome).normalize('NFD').replace(/\p{M}/gu, '').replace(REGEX_INVISIBILI, '')
+    .replace(/[\s\p{Zs}]+/gu, ' ').trim().toLowerCase();
 }
 
 /** '#D62828' → '#d62828'; non valido → null. */

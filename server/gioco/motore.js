@@ -69,12 +69,25 @@ const FASI_GESTIONE = Object.freeze(['daLanciare', 'mossa', 'daDecidereAcquisto'
  */
 const COSTRUZIONE = Object.freeze(['libera', 'sosta']);
 
-/** Con la regola 'sosta': true se g si è fermato in questo turno su una casella del gruppo. */
+/**
+ * Con la regola 'sosta': true se in questo turno g si è fermato su una casella
+ * del gruppo. Valgono tutte le soste del turno (`turno.soste`, anche quella
+ * prima di un doppio) e la casella dove si trova adesso, se ci è arrivato in
+ * questo turno: prima del primo lancio la pedina è ancora dove era arrivata
+ * al turno scorso.
+ */
 function fermoSulGruppo(stato, g, gruppo) {
+  if (Array.isArray(stato.turno.soste) && stato.turno.soste.includes(gruppo)) return true;
   const qui = TAB.CASELLE[g.posizione];
   if (!qui || qui.tipo !== 'proprieta' || qui.gruppo !== gruppo) return false;
-  // Prima del primo lancio del turno la pedina è ancora dove era arrivata al turno scorso.
   return stato.fase !== 'daLanciare' || stato.turno.doppiConsecutivi > 0;
+}
+
+/** Ricorda che la pedina di turno si è fermata su una casella del gruppo (regola 'sosta'). */
+function registraSosta(stato, g, c) {
+  if (c.tipo !== 'proprieta' || !stato.turno || stato.turno.giocatoreId !== g.id) return;
+  if (!Array.isArray(stato.turno.soste)) stato.turno.soste = [];
+  if (!stato.turno.soste.includes(c.gruppo)) stato.turno.soste.push(c.gruppo);
 }
 
 const { CASE_TOTALI, ALBERGHI_TOTALI, NUMERO_CASELLE } = N;
@@ -124,7 +137,7 @@ function creaStatoLobby(o) {
     creataIl: t,
     aggiornataIl: t,
     giocatori: (o.giocatori || []).map((g) => giocatoreBase(g, 0)),
-    turno: { giocatoreId: null, numero: 0, doppiConsecutivi: 0 },
+    turno: { giocatoreId: null, numero: 0, doppiConsecutivi: 0, soste: [] },
     dadi: null,
     proprieta: proprietaIniziali(),
     caseDisponibili: CASE_TOTALI,
@@ -175,7 +188,7 @@ function creaPartita(o) {
   stato.giocatori = ordine.map((g) => giocatoreBase(g, opzioni.denaroIniziale));
   stato.regole = { costruzione: opzioni.costruzione };
   stato.fase = 'daLanciare';
-  stato.turno = { giocatoreId: ordine[0].id, numero: 1, doppiConsecutivi: 0 };
+  stato.turno = { giocatoreId: ordine[0].id, numero: 1, doppiConsecutivi: 0, soste: [] };
   stato.mazzi = {
     probabilita: N.mescola(N.CARTE.PROBABILITA.map((c) => c.id), random),
     imprevisti: N.mescola(N.CARTE.IMPREVISTI.map((c) => c.id), random),
@@ -198,11 +211,17 @@ function prossimoGiocatore(stato) {
   return N.calcolaProssimo(stato).prossimo;
 }
 
-/** Copia dello stato destinata ai client: senza mazzi e contatori interni. */
+/**
+ * Copia dello stato destinata ai client: senza mazzi e contatori interni, con
+ * `azioni` = { giocatoreId: [tipi ammessi adesso] } calcolato dal motore, così
+ * il client non deve ricopiare le regole per sapere quali pulsanti attivare.
+ */
 function statoPubblico(stato) {
   const pubblico = structuredClone(stato);
   delete pubblico.mazzi;
   delete pubblico.contatoreScambi;
+  pubblico.azioni = {};
+  for (const g of stato.giocatori || []) pubblico.azioni[g.id] = azioniDisponibili(stato, g.id);
   return pubblico;
 }
 
@@ -385,6 +404,7 @@ function arretra(stato, g, ctx, passi) {
  */
 function risolviCasella(stato, g, ctx, opz = {}) {
   const c = casella(g.posizione);
+  registraSosta(stato, g, c);
   switch (c.tipo) {
     case 'vaiInPrigione':
       N.mandaInPrigione(stato, g, ctx, 'casella');
@@ -927,26 +947,27 @@ function applicaAzione(stato, giocatoreId, azione, contesto = {}) {
 }
 
 /**
- * Da chiamare (dal server) quando un giocatore è disconnesso e la partita lo
- * aspetta, ad esempio dopo un periodo di tolleranza. In ordine:
- *   - annulla lo scambio pendente che lo coinvolge;
+ * Fa avanzare la partita quando `giocatoreId` la tiene ferma. In ordine:
+ *   - (solo se disconnesso) annulla lo scambio pendente che lo coinvolge;
  *   - se partecipa a un'asta e non è il miglior offerente, passa;
  *   - se è di turno in 'daDecidereAcquisto' rinuncia (la casella va all'asta);
  *   - se è di turno in 'daLanciare' o 'mossa' il turno passa al prossimo.
- * Un debito aperto resta in attesa del suo ritorno (la bancarotta è una
- * scelta del giocatore). Ritorna sempre { stato, eventi }: se non c'è nulla da
- * fare `eventi` è vuoto e lo stato è quello ricevuto.
+ * Un debito aperto non viene toccato: la bancarotta d'ufficio la decide il
+ * server con l'azione `abbandona`. Ritorna sempre { stato, eventi }: se non
+ * c'è nulla da fare `eventi` è vuoto e lo stato è quello ricevuto.
  */
-function gestisciDisconnessione(stato, giocatoreId, contesto = {}) {
+function sblocca(stato, giocatoreId, contesto, motivo) {
   const g0 = stato && trova(stato, giocatoreId);
   if (!g0 || g0.fallito || stato.fase === 'lobby' || stato.fase === 'finePartita') return { stato, eventi: [] };
 
   const nuovo = N.normalizzaStato(structuredClone(stato));
   const g = trova(nuovo, giocatoreId);
   const ctx = N.creaContesto(contesto);
+  const disconnesso = motivo === 'disconnesso';
+  const perche = disconnesso ? 'è disconnesso' : 'non ha giocato in tempo';
 
   const sc = nuovo.scambio;
-  if (sc && (sc.daId === g.id || sc.aId === g.id)) {
+  if (disconnesso && sc && (sc.daId === g.id || sc.aId === g.id)) {
     nuovo.scambio = null;
     emetti(ctx, 'scambioRifiutato', g.id, `Lo scambio è annullato perché ${g.nome} si è disconnesso`,
       { scambio: structuredClone(sc), daId: g.id });
@@ -955,19 +976,52 @@ function gestisciDisconnessione(stato, giocatoreId, contesto = {}) {
   if (nuovo.fase === 'asta' && a && a.partecipanti.includes(g.id) && !a.passati.includes(g.id)
     && a.migliorOfferenteId !== g.id) {
     a.passati.push(g.id);
-    emetti(ctx, 'astaPasso', g.id, `${g.nome} è disconnesso e passa`, { casella: a.casella });
+    emetti(ctx, 'astaPasso', g.id, `${g.nome} ${perche} e passa`, { casella: a.casella, motivo });
     N.verificaChiusuraAsta(nuovo, ctx);
   }
   if (nuovo.turno.giocatoreId === g.id) {
     if (nuovo.fase === 'daDecidereAcquisto') {
+      if (!disconnesso) {
+        emetti(ctx, 'turnoSaltato', g.id, `${g.nome} non decide in tempo: ${casella(g.posizione).nome} va all'asta`,
+          { giocatoreId: g.id, motivo });
+      }
       N.avviaAsta(nuovo, ctx, g.posizione, N.faseDopoMossa(nuovo));
     } else if (nuovo.fase === 'daLanciare' || nuovo.fase === 'mossa') {
-      emetti(ctx, 'turnoSaltato', g.id, `${g.nome} è disconnesso e salta il turno`, { giocatoreId: g.id, motivo: 'disconnesso' });
+      emetti(ctx, 'turnoSaltato', g.id, `${g.nome} ${perche} e salta il turno`, { giocatoreId: g.id, motivo });
       N.passaTurno(nuovo, ctx);
     }
   }
   if (ctx.eventi.length === 0) return { stato, eventi: [] };
   return concludi(stato, nuovo, ctx);
+}
+
+/** Il giocatore è disconnesso e la partita lo aspetta (dopo la tolleranza). */
+function gestisciDisconnessione(stato, giocatoreId, contesto = {}) {
+  return sblocca(stato, giocatoreId, contesto, 'disconnesso');
+}
+
+/**
+ * Il giocatore è connesso ma non agisce da troppo tempo: passa all'asta,
+ * rinuncia all'acquisto o salta il turno. Gli scambi pendenti restano.
+ */
+function gestisciInattivita(stato, giocatoreId, contesto = {}) {
+  return sblocca(stato, giocatoreId, contesto, 'inattivo');
+}
+
+/**
+ * Chi deve agire perché la partita vada avanti: il debitore, i partecipanti
+ * all'asta che non hanno passato (escluso il miglior offerente) oppure il
+ * giocatore di turno. Lista vuota in lobby e a partita finita.
+ */
+function chiDeveAgire(stato) {
+  if (!stato || stato.fase === 'lobby' || stato.fase === 'finePartita') return [];
+  if (stato.fase === 'debito' && stato.debito) return [stato.debito.giocatoreId];
+  if (stato.fase === 'asta' && stato.asta) {
+    const a = stato.asta;
+    return a.partecipanti.filter((id) => !a.passati.includes(id) && id !== a.migliorOfferenteId);
+  }
+  if (FASI_GESTIONE.includes(stato.fase) && stato.turno.giocatoreId) return [stato.turno.giocatoreId];
+  return [];
 }
 
 module.exports = {
@@ -980,6 +1034,8 @@ module.exports = {
   applicaAzione,
   azioniDisponibili,
   gestisciDisconnessione,
+  gestisciInattivita,
+  chiDeveAgire,
   statoPubblico,
   prossimoGiocatore,
   // esposti per i test e per chi vuole mostrare valori calcolati

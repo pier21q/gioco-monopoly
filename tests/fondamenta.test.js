@@ -226,7 +226,6 @@ test('scambi e bancarotta: firme presenti e validazioni di base', () => {
   const s = motore.creaPartita({ codice: 'K7PQ2M', hostId: 'g0aaaaaa', giocatori: giocatoriDiProva(2), random: rngDeterministico(9), ora: ORA_FISSA, opzioni: { ordineCasuale: false } });
   const [a, b] = s.giocatori.map((g) => g.id);
   assert.equal(typeof scambi.validaProposta, 'function');
-  assert.equal(typeof scambi.applicaScambio, 'function');
   assert.equal(scambi.validaProposta(s, a, { aId: b }).errore.codice, 'SCAMBIO_VUOTO');
   assert.equal(scambi.validaProposta(s, a, { aId: a, offre: { denaro: 10 } }).errore.codice, 'GIOCATORE_NON_VALIDO');
   // Chi offre deve possedere le proprietà: a ottiene le caselle 1 e 3 in una copia dello stato.
@@ -238,11 +237,10 @@ test('scambi e bancarotta: firme presenti e validazioni di base', () => {
   assert.deepEqual(ok.scambio.offre, { denaro: 100, proprieta: [1, 3], cartePrigione: 0 });
   assert.equal(ok.scambio.id, 's1');
 
-  assert.equal(typeof bancarotta.liquida, 'function');
   assert.equal(bancarotta.patrimonioLiquidabile(s, a), 1500);
-  const liq = bancarotta.liquida(s, a, null, { ora: ORA_FISSA });
+  const liq = motore.applicaAzione(s, a, { tipo: 'abbandona' }, { ora: ORA_FISSA });
   assert.equal(liq.stato.giocatori[0].fallito, true);
-  assert.equal(s.giocatori[0].fallito, false);
+  assert.equal(s.giocatori[0].fallito, false, 'lo stato di partenza non cambia');
 });
 
 // ---------------------------------------------------------------------------

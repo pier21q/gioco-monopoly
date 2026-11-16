@@ -1,3 +1,9 @@
+> **Documento storico.** Questa revisione è stata scritta durante lo sviluppo
+> (fase 3 di 4), prima dell'integrazione: numeri di riga e problemi si
+> riferiscono al codice di allora e quasi tutti sono stati risolti. Non usarla
+> come descrizione del codice attuale; per quello vedi `README.md` e
+> `INTERFACCE.md`.
+
 # Revisione del codice — Monopoly online (fase 3 di 4)
 
 Revisore: claude-2. Data: 15 novembre 2026. Commit di partenza: `a39b840`.

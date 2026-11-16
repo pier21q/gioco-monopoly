@@ -14,8 +14,8 @@
  *   4. il giocatore diventa `fallito`; se era di turno il turno passa;
  *      se resta un solo giocatore la partita finisce.
  *
- * Le funzioni pubbliche non mutano lo stato ricevuto; `liquidaInterno` è la
- * versione mutante usata dal motore su uno stato già clonato.
+ * `patrimonioLiquidabile` non muta lo stato; `liquidaInterno` lo muta ed è
+ * usata dal motore (dichiaraBancarotta, abbandona) su uno stato già clonato.
  */
 
 const N = require('./nucleo');
@@ -124,32 +124,7 @@ function liquidaInterno(stato, giocatoreId, creditoreId, ctx) {
   N.continuaCatena(stato, ctx);
 }
 
-/**
- * Liquida `giocatoreId` su una copia dello stato: vende le costruzioni,
- * trasferisce i beni al creditore (o alla banca, con asta), marca
- * `fallito: true`, passa il turno se necessario e chiude la partita se resta
- * un solo giocatore.
- *
- * @param {object} stato         StatoPartita (non mutato)
- * @param {string} giocatoreId   chi fallisce
- * @param {string|null} creditoreId  giocatore creditore, o null per la banca
- * @param {object} [contesto]    { ora, random }
- * @returns {{stato: object, eventi: object[]} | {errore: object}}
- */
-function liquida(stato, giocatoreId, creditoreId, contesto = {}) {
-  const g0 = stato && trova(stato, giocatoreId);
-  if (!g0) return errore('GIOCATORE_NON_VALIDO');
-  if (g0.fallito) return errore('GIOCATORE_FALLITO');
-  const nuovo = N.normalizzaStato(structuredClone(stato));
-  const ctx = N.creaContesto(contesto);
-  liquidaInterno(nuovo, giocatoreId, creditoreId ?? null, ctx);
-  N.saldaDebiti(nuovo, ctx);
-  N.appendiLog(nuovo, ctx.eventi);
-  return { stato: nuovo, eventi: ctx.eventi };
-}
-
 module.exports = {
   patrimonioLiquidabile,
   liquidaInterno,
-  liquida,
 };

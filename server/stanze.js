@@ -9,6 +9,12 @@
  * Contratto in INTERFACCE.md §3.6. Nessuna persistenza (fase 1).
  *
  * I token e i socket vivono solo qui, mai nello StatoPartita.
+ *
+ * Oltre ai timer per i disconnessi c'è un timer d'inattività per stanza: se
+ * chi deve agire (giocatore di turno, partecipanti all'asta, debitore) non lo
+ * fa entro TEMPI.INATTIVITA_*, il server fa avanzare la partita per lui, con
+ * un preavviso 30 secondi prima. `esporta`/`importa` servono al salvataggio
+ * su file (server/salvataggio.js).
  */
 
 const crypto = require('node:crypto');
@@ -25,9 +31,24 @@ const TEMPI = Object.freeze({
   // Un debitore disconnesso da così a lungo viene dichiarato in bancarotta d'ufficio.
   BANCAROTTA_DISCONNESSO_MS: 3 * 60 * 1000,
   STANZA_VUOTA_MS: 10 * 60 * 1000,
+  // Stanza creata ma in cui non è mai entrato nessuno.
+  STANZA_MAI_USATA_MS: 2 * 60 * 1000,
   STANZA_INATTIVA_MS: 2 * 60 * 60 * 1000,
   FINE_PARTITA_MS: 30 * 60 * 1000,
+  // Giocatori connessi che non agiscono: dopo questi tempi la partita va avanti da sola.
+  INATTIVITA_TURNO_MS: 3 * 60 * 1000,
+  INATTIVITA_ASTA_MS: 60 * 1000,
+  INATTIVITA_DEBITO_MS: 5 * 60 * 1000,
+  PREAVVISO_INATTIVITA_MS: 30 * 1000,
 });
+
+/** Chiave dei timer che riguardano la stanza intera (gli id giocatore sono [a-z0-9]{8}). */
+const ID_STANZA = '_stanza';
+
+/** Numero casuale in [0, 1) da crypto: codici stanza, dadi e mazzi non prevedibili. */
+function casualeSicuro() {
+  return crypto.randomInt(0, 2 ** 47) / 2 ** 47;
+}
 
 // ---------------------------------------------------------------------------
 // Timer per giocatore (lobby, tolleranza, bancarotta d'ufficio)
@@ -65,7 +86,7 @@ function programmaTimer(stanza, giocatoreId, nome, ms, fn) {
 // Generatori
 // ---------------------------------------------------------------------------
 
-function generaCodice(random = Math.random) {
+function generaCodice(random = casualeSicuro) {
   const alfabeto = P.ALFABETO_CODICE;
   for (let tentativo = 0; tentativo < 1000; tentativo += 1) {
     let codice = '';
@@ -140,8 +161,11 @@ function sincronizzaConnessione(stanza, giocatoreId, connesso, eventi, t) {
 // API
 // ---------------------------------------------------------------------------
 
-/** Crea una stanza vuota in lobby e la registra. */
-function crea({ ora = Date.now, random = Math.random } = {}) {
+/**
+ * Crea una stanza vuota in lobby e la registra. `ip` è l'indirizzo di chi la
+ * crea, per il limite di stanze aperte per indirizzo (index.js).
+ */
+function crea({ ora = Date.now, random = casualeSicuro, ip = null } = {}) {
   const t = ora();
   const stanza = {
     codice: generaCodice(random),
@@ -149,6 +173,11 @@ function crea({ ora = Date.now, random = Math.random } = {}) {
     creataIl: t,
     aggiornataIl: t,
     vuotaDal: t,
+    creataDa: ip,
+    maiUsata: true,
+    progresso: 0,
+    saltiInattivita: 0,
+    inattivita: null,
     giocatori: new Map(),
     timer: new Map(),
     stato: null,
@@ -165,6 +194,28 @@ function trova(codice) {
 
 function tutte() {
   return [...registro.values()];
+}
+
+/** Stanze ancora aperte create dall'indirizzo `ip`. */
+function aperteDa(ip) {
+  if (!ip) return 0;
+  let n = 0;
+  for (const s of registro.values()) if (s.creataDa === ip) n += 1;
+  return n;
+}
+
+/**
+ * Libera un posto nel registro chiudendo la stanza senza giocatori creata da
+ * più tempo (mai usata o svuotata). Ritorna true se ne ha chiusa una.
+ */
+function liberaPosto() {
+  let vecchia = null;
+  for (const s of registro.values()) {
+    if (s.giocatori.size === 0 && (!vecchia || s.creataIl < vecchia.creataIl)) vecchia = s;
+  }
+  if (!vecchia) return false;
+  chiudiStanza(vecchia, 'La stanza è stata chiusa');
+  return true;
 }
 
 function coloreLibero(stanza) {
@@ -203,6 +254,7 @@ function entra(stanza, { nome, colore, socket, ora = Date.now }) {
   stanza.giocatori.set(id, giocatore);
   if (!stanza.hostId) stanza.hostId = id;
   stanza.vuotaDal = null;
+  stanza.maiUsata = false;
 
   const eventi = [evento('giocatoreEntrato', id, `${nomeOk} entra nella stanza`, { giocatoreId: id, nome: nomeOk, colore: coloreOk }, t)];
   sincronizzaLobby(stanza, eventi, t);
@@ -273,7 +325,7 @@ function esci(stanza, giocatoreId, { ora = Date.now } = {}) {
  * stava bloccando e, se è un debitore, dopo BANCAROTTA_DISCONNESSO_MS viene
  * dichiarato in bancarotta d'ufficio (azione `abbandona` eseguita per lui).
  */
-function disconnetti(stanza, giocatoreId, { ora = Date.now, random = Math.random } = {}) {
+function disconnetti(stanza, giocatoreId, { ora = Date.now, random = casualeSicuro } = {}) {
   if (!stanza || !stanza.giocatori.has(giocatoreId)) return { eventi: [] };
   const g = stanza.giocatori.get(giocatoreId);
   const t = ora();
@@ -322,7 +374,12 @@ function bloccaIlGioco(stato, id) {
  * perché un disconnesso può diventare "bloccante" anche più tardi (per esempio
  * quando una carta gli addebita una somma che non ha).
  */
-function sorvegliaDisconnessi(stanza, { ora = Date.now, random = Math.random } = {}) {
+function sorvegliaDisconnessi(stanza, { ora = Date.now, random = casualeSicuro } = {}) {
+  sorvegliaAssenti(stanza, { ora, random });
+  programmaInattivita(stanza, { ora, random });
+}
+
+function sorvegliaAssenti(stanza, { ora, random }) {
   const stato = stanza.stato;
   if (stanza.chiusa || !stato || stato.fase === 'lobby' || stato.fase === 'finePartita') return;
   // Se nessun giocatore ancora in gara è collegato non c'è nessuno da
@@ -344,7 +401,7 @@ function sorvegliaDisconnessi(stanza, { ora = Date.now, random = Math.random } =
 }
 
 /** Scaduta la tolleranza: se il disconnesso blocca la partita, il motore la fa avanzare. */
-function sbloccaDisconnesso(stanza, giocatoreId, { ora = Date.now, random = Math.random } = {}) {
+function sbloccaDisconnesso(stanza, giocatoreId, { ora = Date.now, random = casualeSicuro } = {}) {
   const g = stanza.giocatori.get(giocatoreId);
   if (!g || g.connesso) return;
   const stato = stanza.stato;
@@ -364,12 +421,109 @@ function sbloccaDisconnesso(stanza, giocatoreId, { ora = Date.now, random = Math
   }
   stanza.stato = esito.stato;
   stanza.aggiornataIl = ora();
+  stanza.progresso += 1;
   sorvegliaDisconnessi(stanza, { ora, random });
   diffondiAggiornamento(stanza, esito.eventi);
 }
 
+// ---------------------------------------------------------------------------
+// Inattività dei giocatori connessi
+// ---------------------------------------------------------------------------
+
+function durataInattivita(fase) {
+  if (fase === 'asta') return TEMPI.INATTIVITA_ASTA_MS;
+  if (fase === 'debito') return TEMPI.INATTIVITA_DEBITO_MS;
+  return TEMPI.INATTIVITA_TURNO_MS;
+}
+
+/**
+ * (Ri)programma il timer d'inattività della stanza. Riparte da capo solo
+ * quando la partita è andata avanti (`stanza.progresso` cambiato): connessioni
+ * e riconnessioni non lo azzerano. Si ferma se nessun giocatore in gara è
+ * collegato, o dopo due giri interi di turni saltati senza che nessuno giochi
+ * (tutti lontani dal computer: la partita aspetta, e la pulizia la chiuderà).
+ */
+function programmaInattivita(stanza, { ora = Date.now, random = casualeSicuro } = {}) {
+  const stato = stanza.stato;
+  const inCorso = !stanza.chiusa && stato && stato.fase !== 'lobby' && stato.fase !== 'finePartita'
+    && qualcunoInGara(stanza);
+  const daAspettare = inCorso ? motore.chiDeveAgire(stato) : [];
+  const vivi = inCorso ? stato.giocatori.filter((g) => !g.fallito).length : 0;
+  if (!inCorso || daAspettare.length === 0 || stanza.saltiInattivita >= 2 * vivi) {
+    annullaTimer(stanza, ID_STANZA);
+    stanza.inattivita = null;
+    return;
+  }
+  const chiave = stanza.progresso;
+  if (stanza.inattivita && stanza.inattivita.chiave === chiave) return;
+  annullaTimer(stanza, ID_STANZA);
+  const durata = durataInattivita(stato.fase);
+  stanza.inattivita = { chiave, scadeIl: ora() + durata, giocatori: daAspettare };
+  programmaTimer(stanza, ID_STANZA, 'preavviso', Math.max(0, durata - TEMPI.PREAVVISO_INATTIVITA_MS),
+    () => preavvisaInattivita(stanza, chiave, { ora }));
+  programmaTimer(stanza, ID_STANZA, 'scadenza', durata,
+    () => scadutaInattivita(stanza, chiave, { ora, random }));
+}
+
+/** 30 secondi prima della scadenza: avviso a tutti (solo evento, non entra nel log). */
+function preavvisaInattivita(stanza, chiave, { ora = Date.now } = {}) {
+  if (!stanza.inattivita || stanza.inattivita.chiave !== chiave) return;
+  const ids = motore.chiDeveAgire(stanza.stato);
+  if (ids.length === 0) return;
+  const nomi = ids.map((id) => (stanza.giocatori.get(id) || {}).nome || 'un giocatore');
+  const secondi = Math.round(TEMPI.PREAVVISO_INATTIVITA_MS / 1000);
+  const debito = stanza.stato.fase === 'debito';
+  const poi = debito ? 'poi viene dichiarata la bancarotta' : 'poi la partita va avanti da sola';
+  const testo = `${nomi.join(', ')}: ancora ${secondi} secondi per giocare, ${poi}`;
+  const ev = evento('avvisoInattivita', null, testo, { giocatori: ids, secondi, debito }, ora());
+  broadcast(stanza, { tipo: 'evento', versione: stanza.stato.versione, evento: ev });
+}
+
+/**
+ * Scaduto il tempo: il debitore fa bancarotta (azione `abbandona`); chi deve
+ * agire in un'asta passa; il giocatore di turno rinuncia all'acquisto o salta
+ * il turno (motore.gestisciInattivita).
+ */
+function scadutaInattivita(stanza, chiave, { ora = Date.now, random = casualeSicuro } = {}) {
+  if (!stanza.inattivita || stanza.inattivita.chiave !== chiave) return;
+  stanza.inattivita = null;
+  const stato = stanza.stato;
+  if (!stato || stato.fase === 'lobby' || stato.fase === 'finePartita') return;
+  if (stato.fase === 'debito' && stato.debito) {
+    const esito = applica(stanza, stato.debito.giocatoreId, { tipo: 'abbandona' }, { random, ora });
+    if (!esito.errore) diffondiAggiornamento(stanza, esito.eventi);
+    return;
+  }
+  let nuovo = stato;
+  const eventi = [];
+  for (const id of motore.chiDeveAgire(stato)) {
+    let esito;
+    try {
+      esito = motore.gestisciInattivita(nuovo, id, { random, ora });
+    } catch (e) {
+      console.error('[stanze] gestisciInattivita ha lanciato', stanza.codice, e);
+      return;
+    }
+    if (esito.eventi.length) {
+      nuovo = esito.stato;
+      eventi.push(...esito.eventi);
+    }
+  }
+  if (eventi.length === 0) return;
+  for (const x of nuovo.giocatori) {
+    const reg = stanza.giocatori.get(x.id);
+    if (reg) x.connesso = reg.connesso;
+  }
+  stanza.stato = nuovo;
+  stanza.aggiornataIl = ora();
+  stanza.progresso += 1;
+  stanza.saltiInattivita += 1;
+  sorvegliaDisconnessi(stanza, { ora, random });
+  diffondiAggiornamento(stanza, eventi);
+}
+
 /** Debitore assente da troppo: bancarotta d'ufficio tramite l'azione `abbandona`. */
-function bancarottaDisconnesso(stanza, giocatoreId, { ora = Date.now, random = Math.random } = {}) {
+function bancarottaDisconnesso(stanza, giocatoreId, { ora = Date.now, random = casualeSicuro } = {}) {
   const g = stanza.giocatori.get(giocatoreId);
   if (!g || g.connesso) return;
   const stato = stanza.stato;
@@ -379,7 +533,7 @@ function bancarottaDisconnesso(stanza, giocatoreId, { ora = Date.now, random = M
 }
 
 /** Avvia la partita (solo host, almeno 2 giocatori connessi). */
-function avvia(stanza, giocatoreId, { random = Math.random, ora = Date.now, regole = null } = {}) {
+function avvia(stanza, giocatoreId, { random = casualeSicuro, ora = Date.now, regole = null } = {}) {
   if (!stanza) return errore('STANZA_INESISTENTE');
   if (stanza.stato.fase !== 'lobby') return errore('PARTITA_INIZIATA');
   if (stanza.hostId !== giocatoreId) return errore('NON_HOST');
@@ -415,11 +569,13 @@ function avvia(stanza, giocatoreId, { random = Math.random, ora = Date.now, rego
   stato.log = [...precedente.log, ...eventi].slice(-P.LIMITI.LOG_MAX);
   stanza.stato = stato;
   stanza.aggiornataIl = stato.aggiornataIl;
+  stanza.progresso += 1;
+  sorvegliaDisconnessi(stanza, { ora, random });
   return { eventi };
 }
 
 /** Applica un'azione di gioco tramite il motore e aggiorna la stanza. */
-function applica(stanza, giocatoreId, azione, { random = Math.random, ora = Date.now } = {}) {
+function applica(stanza, giocatoreId, azione, { random = casualeSicuro, ora = Date.now } = {}) {
   if (!stanza) return errore('STANZA_INESISTENTE');
   if (!stanza.giocatori.has(giocatoreId)) return errore('NON_IN_STANZA');
   if (stanza.stato.fase === 'lobby') {
@@ -451,6 +607,8 @@ function applica(stanza, giocatoreId, azione, { random = Math.random, ora = Date
   }
   stanza.stato = esito.stato;
   stanza.aggiornataIl = typeof esito.stato.aggiornataIl === 'number' ? esito.stato.aggiornataIl : ora();
+  stanza.progresso += 1;
+  stanza.saltiInattivita = 0;
   sorvegliaDisconnessi(stanza, { ora, random });
   return { eventi: Array.isArray(esito.eventi) ? esito.eventi : [] };
 }
@@ -509,7 +667,9 @@ function pulisci({ ora = Date.now } = {}) {
       }
     }
     const vuota = stanza.giocatori.size === 0 || [...stanza.giocatori.values()].every((g) => !g.connesso);
+    const maiUsata = stanza.maiUsata && stanza.giocatori.size === 0 && t - stanza.creataIl > TEMPI.STANZA_MAI_USATA_MS;
     const daRimuovere =
+      maiUsata ||
       (vuota && stanza.vuotaDal && t - stanza.vuotaDal > TEMPI.STANZA_VUOTA_MS) ||
       t - stanza.aggiornataIl > TEMPI.STANZA_INATTIVA_MS ||
       (stanza.stato.fase === 'finePartita' && t - stanza.aggiornataIl > TEMPI.FINE_PARTITA_MS);
@@ -536,6 +696,66 @@ function chiudiStanza(stanza, messaggio) {
   }
 }
 
+// ---------------------------------------------------------------------------
+// Salvataggio su file (server/salvataggio.js)
+// ---------------------------------------------------------------------------
+
+/** Le stanze aperte in forma serializzabile (senza socket né timer; con i token). */
+function esporta() {
+  return [...registro.values()].filter((s) => !s.chiusa).map((s) => ({
+    codice: s.codice,
+    hostId: s.hostId,
+    creataIl: s.creataIl,
+    aggiornataIl: s.aggiornataIl,
+    creataDa: s.creataDa || null,
+    maiUsata: Boolean(s.maiUsata),
+    giocatori: [...s.giocatori.values()].map((g) => ({ id: g.id, nome: g.nome, colore: g.colore, token: g.token })),
+    stato: s.stato,
+  }));
+}
+
+/**
+ * Ricrea le stanze salvate. Tutti i giocatori risultano disconnessi: rientrano
+ * con il token che il loro browser ha conservato. Le voci malformate o con un
+ * codice già in uso vengono saltate. Ritorna il numero di stanze ripristinate.
+ */
+function importa(elenco, { ora = Date.now } = {}) {
+  if (!Array.isArray(elenco)) return 0;
+  const t = ora();
+  let n = 0;
+  for (const d of elenco) {
+    if (!d || typeof d !== 'object' || !P.REGEX_CODICE.test(String(d.codice)) || registro.has(d.codice)) continue;
+    if (!d.stato || typeof d.stato !== 'object' || typeof d.stato.fase !== 'string' || !Array.isArray(d.stato.giocatori)) continue;
+    if (!Array.isArray(d.giocatori)) continue;
+    const giocatori = new Map();
+    for (const g of d.giocatori) {
+      if (!g || !P.REGEX_ID.test(String(g.id)) || !P.REGEX_TOKEN.test(String(g.token))) continue;
+      giocatori.set(g.id, {
+        id: g.id, nome: String(g.nome), colore: String(g.colore), token: g.token, connesso: false, socket: null, disconnessoIl: t,
+      });
+    }
+    const stato = structuredClone(d.stato);
+    for (const g of stato.giocatori) g.connesso = false;
+    registro.set(d.codice, {
+      codice: d.codice,
+      hostId: d.hostId ?? null,
+      creataIl: Number(d.creataIl) || t,
+      aggiornataIl: t,
+      vuotaDal: t,
+      creataDa: d.creataDa || null,
+      maiUsata: Boolean(d.maiUsata),
+      progresso: 0,
+      saltiInattivita: 0,
+      inattivita: null,
+      giocatori,
+      timer: new Map(),
+      stato,
+    });
+    n += 1;
+  }
+  return n;
+}
+
 function rimuovi(codice) {
   const stanza = registro.get(P.normalizzaCodice(codice));
   if (!stanza) return false;
@@ -554,12 +774,15 @@ function azzera() {
 
 module.exports = {
   TEMPI,
+  casualeSicuro,
   generaCodice,
   generaId,
   generaToken,
   crea,
   trova,
   tutte,
+  aperteDa,
+  liberaPosto,
   entra,
   riconnetti,
   esci,
@@ -572,7 +795,12 @@ module.exports = {
   sorvegliaDisconnessi,
   sbloccaDisconnesso,
   bancarottaDisconnesso,
+  programmaInattivita,
+  preavvisaInattivita,
+  scadutaInattivita,
   pulisci,
+  esporta,
+  importa,
   rimuovi,
   azzera,
 };

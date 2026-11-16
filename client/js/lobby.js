@@ -72,10 +72,12 @@ export function normalizzaCodice(valore) {
   return REGEX_CODICE.test(codice) ? codice : null;
 }
 
-/** Normalizza un nome come fa il server (spazi compressi, 1–16 caratteri). */
+/** Caratteri invisibili tolti dai nomi: stessa regola di server/protocollo.js. */
+const REGEX_INVISIBILI = /[\p{Cc}\p{Cf}\p{Co}\p{Cn}\p{Zl}\p{Zp}]/gu;
+
+/** Normalizza un nome come fa il server (niente invisibili, spazi compressi, 1–16 caratteri). */
 export function normalizzaNome(valore) {
-  // eslint-disable-next-line no-control-regex
-  const nome = String(valore ?? '').replace(/[\u0000-\u001f\u007f]/g, '').replace(/\s+/g, ' ').trim();
+  const nome = String(valore ?? '').normalize('NFC').replace(REGEX_INVISIBILI, '').replace(/[\s\p{Zs}]+/gu, ' ').trim();
   return nome.length >= 1 && nome.length <= NOME_MAX ? nome : null;
 }
 

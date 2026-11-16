@@ -471,7 +471,7 @@ function passaTurno(stato, ctx) {
       { giocatoreId: id, motivo: 'disconnesso' });
   }
   const numero = (stato.turno.numero || 0) + 1;
-  stato.turno = { giocatoreId: prossimo, numero, doppiConsecutivi: 0 };
+  stato.turno = { giocatoreId: prossimo, numero, doppiConsecutivi: 0, soste: [] };
   impostaFase(stato, 'daLanciare');
   emetti(ctx, 'turno', prossimo, `Turno ${numero}: tocca a ${nomeDi(stato, prossimo)}`,
     { giocatoreId: prossimo, numero });

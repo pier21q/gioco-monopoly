@@ -9,28 +9,13 @@
  * prigione". Chi riceve una proprietà ipotecata paga subito alla banca il
  * 10% del valore d'ipoteca; se non può, entra in debito ('interesseScambio').
  *
- * Le funzioni pubbliche non mutano lo stato ricevuto; `eseguiScambio` è la
- * versione interna (mutante) usata dal motore su uno stato già clonato.
+ * `validaProposta` e `verificaPossessi` non mutano lo stato; `eseguiScambio`
+ * lo muta ed è usata dal motore (accettaScambio) su uno stato già clonato.
  */
 
 const N = require('./nucleo');
 
 const { errore, euro, casella, trova, voceDi } = N;
-
-/**
- * Porta una metà di scambio alla forma canonica in modo tollerante (valori
- * non validi → 0 / []). Conservata per compatibilità: la validazione delle
- * azioni usa `leggiParte`, che invece rifiuta i parametri malformati.
- */
-function normalizzaParte(parte) {
-  const p = parte && typeof parte === 'object' ? parte : {};
-  const denaro = Number.isInteger(p.denaro) && p.denaro >= 0 ? p.denaro : 0;
-  const proprieta = Array.isArray(p.proprieta)
-    ? [...new Set(p.proprieta.filter((i) => Number.isInteger(i) && i >= 0 && i < 40))].sort((a, b) => a - b)
-    : [];
-  const cartePrigione = Number.isInteger(p.cartePrigione) && p.cartePrigione >= 0 ? p.cartePrigione : 0;
-  return { denaro, proprieta, cartePrigione };
-}
 
 /**
  * Legge in modo rigoroso una metà di scambio ({denaro, proprieta, cartePrigione}).
@@ -193,36 +178,9 @@ function eseguiScambio(stato, scambio, ctx) {
   N.addebita(stato, ctx, da.id, null, interessi(chiede.proprieta), { motivo: 'interesseScambio' });
 }
 
-/**
- * Applica uno scambio già accettato su una copia dello stato.
- *
- * @param {object} stato     StatoPartita (non mutato)
- * @param {object} scambio   come in stato.scambio
- * @param {object} [contesto] { ora }
- * @returns {{stato: object, eventi: object[]} | {errore: object}}
- */
-function applicaScambio(stato, scambio, contesto = {}) {
-  if (!stato || !scambio) return errore('SCAMBIO_NON_TROVATO');
-  const nuovo = N.normalizzaStato(structuredClone(stato));
-  const sc = {
-    ...scambio,
-    offre: normalizzaParte(scambio.offre),
-    chiede: normalizzaParte(scambio.chiede),
-  };
-  const possessi = verificaPossessi(nuovo, sc);
-  if (possessi) return possessi;
-  const ctx = N.creaContesto(contesto);
-  eseguiScambio(nuovo, sc, ctx);
-  N.saldaDebiti(nuovo, ctx);
-  N.appendiLog(nuovo, ctx.eventi);
-  return { stato: nuovo, eventi: ctx.eventi };
-}
-
 module.exports = {
-  normalizzaParte,
   leggiParte,
   verificaPossessi,
   validaProposta,
   eseguiScambio,
-  applicaScambio,
 };

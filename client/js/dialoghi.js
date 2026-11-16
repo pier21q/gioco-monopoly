@@ -29,7 +29,6 @@
 import { CASELLE, GRUPPI } from '/dati/tabellone.js';
 
 const CAUZIONE = 50;
-const FASI_GESTIONE = ['daLanciare', 'mossa', 'daDecidereAcquisto'];
 
 // ===========================================================================
 // Utilità generiche
@@ -230,63 +229,15 @@ export function liquidabile(p, id) {
 }
 
 // ===========================================================================
-// Regole lato client (riproducono la tabella §2.4 per spiegare i pulsanti)
+// Azioni ammesse: le calcola il server (motore.azioniDisponibili) e le manda
+// nello stato pubblico in `azioni`, così le regole non sono ricopiate qui.
 // ===========================================================================
 
-/** Replica di motore.azioniDisponibili: i tipi ammessi adesso per `id`. */
+/** I tipi di azione che `id` può eseguire adesso, secondo il server. */
 export function azioniAmmesse(p, id) {
-  const out = new Set();
   const g = giocatoreDa(p, id);
-  if (!p || !g || g.fallito) return out;
-  const { fase } = p;
-  if (fase === 'lobby' || fase === 'finePartita') return out;
-  const mio = p.turno && p.turno.giocatoreId === id;
-
-  if (fase === 'daLanciare' && mio) {
-    out.add('lanciaDadi');
-    if (g.inPrigione) {
-      out.add('pagaCauzione');
-      if (g.cartePrigione > 0) out.add('usaCartaPrigione');
-    }
-  }
-  if (fase === 'mossa' && mio) out.add('finisciTurno');
-  if (fase === 'daDecidereAcquisto' && mio) {
-    out.add('compra');
-    out.add('rifiutaAcquisto');
-  }
-  if (FASI_GESTIONE.includes(fase) && mio) {
-    ['costruisci', 'vendiCasa', 'ipoteca', 'disipoteca'].forEach((a) => out.add(a));
-  }
-  if (fase === 'asta' && p.asta) {
-    const partecipa = (p.asta.partecipanti || []).includes(id);
-    const passato = (p.asta.passati || []).includes(id);
-    if (partecipa && !passato) {
-      out.add('offertaAsta');
-      if (p.asta.migliorOfferenteId !== id) out.add('passaAsta');
-    }
-    if (partecipa) {
-      out.add('vendiCasa');
-      out.add('ipoteca');
-    }
-  }
-  if (fase === 'debito' && p.debito && p.debito.giocatoreId === id) {
-    out.add('vendiCasa');
-    out.add('ipoteca');
-    out.add('dichiaraBancarotta');
-  }
-  if (!p.scambio) {
-    if (fase !== 'asta') out.add('proponiScambio');
-  } else {
-    // Rifiuto e ritiro sono ammessi anche durante un'asta; l'accettazione no.
-    if (p.scambio.aId === id) {
-      if (fase !== 'asta') out.add('accettaScambio');
-      out.add('rifiutaScambio');
-    }
-    if (p.scambio.daId === id) out.add('rifiutaScambio');
-  }
-  // Uscita volontaria: sempre possibile a chi è ancora in gara.
-  out.add('abbandona');
-  return out;
+  if (!p || !g || g.fallito || !p.azioni || !Array.isArray(p.azioni[id])) return new Set();
+  return new Set(p.azioni[id]);
 }
 
 /**
@@ -386,10 +337,12 @@ export function motivoCostruisci(p, id, indice) {
   if (!possiedeGruppo(p, c.gruppo, id)) return `Ti serve tutto il gruppo ${nomeGruppo(c.gruppo).toLowerCase()}`;
   if (p.regole && p.regole.costruzione === 'sosta') {
     // Regola scelta dall'host: si costruisce solo sul colore su cui ci si è fermati in questo turno.
+    // Stessa regola di fermoSulGruppo in server/gioco/motore.js.
     const io = giocatoreDa(p, id);
     const qui = io ? CASELLE[io.posizione] : null;
-    const fermo = Boolean(qui) && qui.tipo === 'proprieta' && qui.gruppo === c.gruppo
-      && (p.fase !== 'daLanciare' || (p.turno && p.turno.doppiConsecutivi > 0));
+    const sosteDelTurno = (p.turno && Array.isArray(p.turno.soste)) ? p.turno.soste : [];
+    const fermo = sosteDelTurno.includes(c.gruppo) || (Boolean(qui) && qui.tipo === 'proprieta' && qui.gruppo === c.gruppo
+      && (p.fase !== 'daLanciare' || (p.turno && p.turno.doppiConsecutivi > 0)));
     if (!fermo) return `Costruisci qui solo nel turno in cui ti fermi sul gruppo ${nomeGruppo(c.gruppo).toLowerCase()}`;
   }
   const gruppo = indiciGruppo(c.gruppo).map((i) => statoProp(p, i));

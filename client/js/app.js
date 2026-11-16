@@ -393,6 +393,18 @@ export function toastPerEvento(evento, partita, mioId) {
       return suDiMe ? { testo: testo || `Passi dal Via: ritiri ${formattaEuro(d.importo)}`, livello: 'successo' } : null;
     case 'prigione':
       return { testo, livello: suDiMe ? 'avviso' : 'info' };
+    case 'avvisoInattivita':
+      // Solo a chi deve agire: gli altri lo vedono già nel turno che non avanza.
+      if (!Array.isArray(d.giocatori) || !d.giocatori.includes(mioId)) return null;
+      return {
+        testo: d.debito
+          ? `Hai ancora ${d.secondi || 30} secondi per saldare il debito, poi vieni dichiarato in bancarotta.`
+          : `Hai ancora ${d.secondi || 30} secondi per giocare, poi la partita va avanti senza aspettarti.`,
+        livello: 'errore',
+        durata: 8000,
+      };
+    case 'turnoSaltato':
+      return suDiMe && d.motivo === 'inattivo' ? { testo, livello: 'avviso', durata: 6000 } : null;
     case 'scambioProposto':
       return d.scambio?.aId === mioId
         ? { testo: `${nome(d.scambio.daId)} ti propone uno scambio`, livello: 'avviso', durata: 6000 }

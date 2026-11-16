@@ -6,6 +6,9 @@ services:
     name: gioco-monopoly
     runtime: node
     plan: free
+    # Si pubblica solo questo ramo (git push origin HEAD:pubblicazione): i push
+    # sul ramo di lavoro non ripubblicano e non interrompono le partite.
+    branch: pubblicazione
     buildCommand: npm install
     startCommand: npm start
     healthCheckPath: /salute

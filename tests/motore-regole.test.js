@@ -1,10 +1,10 @@
 'use strict';
 
 /**
- * server/gioco/test/motore.test.js
+ * tests/motore-regole.test.js
  *
  * Test delle regole del motore (fase 2). Esecuzione:
- *   node --test server/gioco/test/
+ *   node --test tests/motore-regole.test.js
  *
  * Tutti i lanci di dadi sono forzati con un generatore iniettato: `dadi(2, 5)`
  * produce esattamente un 2 e poi un 5. Gli stati di partenza vengono
@@ -14,11 +14,11 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 
-const motore = require('../motore');
-const scambi = require('../scambi');
-const bancarotta = require('../bancarotta');
-const CARTE = require('../carte');
-const TAB = require('../tabellone');
+const motore = require('../server/gioco/motore');
+const scambi = require('../server/gioco/scambi');
+const bancarotta = require('../server/gioco/bancarotta');
+const CARTE = require('../server/gioco/carte');
+const TAB = require('../server/gioco/tabellone');
 
 const ORA = () => 1763204073000;
 const A = 'anna0001';
@@ -663,10 +663,11 @@ test('scambi: validazioni', () => {
   // anche chi non è di turno può proporre
   assert.ok(ok(s, C, { tipo: 'proponiScambio', aId: A, chiede: { proprieta: [6] }, offre: { denaro: 200 } }).stato.scambio);
 
-  // Le funzioni esportate per i test non mutano lo stato.
+  // validaProposta non muta lo stato; lo scambio vero passa da applicaAzione.
   const v = scambi.validaProposta(s, A, { aId: B, offre: { proprieta: [6] } }, { ora: ORA });
   assert.equal(v.ok, true);
-  const app = scambi.applicaScambio(s, v.scambio, { ora: ORA });
+  const proposto = ok(s, A, { tipo: 'proponiScambio', aId: B, offre: { proprieta: [6] } }).stato;
+  const app = ok(proposto, B, { tipo: 'accettaScambio', scambioId: proposto.scambio.id });
   assert.equal(app.stato.proprieta['6'].proprietario, B);
   assert.equal(s.proprieta['6'].proprietario, A);
 });

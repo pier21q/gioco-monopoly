@@ -9,8 +9,9 @@
  *
  * Avvio: `npm start` (= node server/index.js). Variabili: PORT, HOST, PUBLIC_URL
  * (se PUBLIC_URL manca, il link della stanza usa l'host con cui il browser ha
- * raggiunto il server). Heartbeat: ping WebSocket ogni 30 s, chi non risponde
- * viene chiuso e segnato `connesso: false` senza essere eliminato.
+ * raggiunto il server), PROXY_FIDATO (intestazioni X-Forwarded-*), SALVATAGGIO
+ * (file delle partite, vedi salvataggio.js). Heartbeat: ping WebSocket ogni
+ * 30 s, chi non risponde viene chiuso e segnato `connesso: false`.
  * Esporta `avvia()` e `crea()` per i test; parte da solo se eseguito come main.
  */
 
@@ -21,6 +22,7 @@ const path = require('node:path');
 
 const P = require('./protocollo');
 const stanze = require('./stanze');
+const salvataggio = require('./salvataggio');
 const pacchetto = require('../package.json');
 
 // `ws` è l'unica dipendenza: se manca (npm install non eseguito) il server
@@ -209,17 +211,45 @@ function linkStanza(publicUrl, codice) {
 const REGEX_HOST = /^(?:[a-z0-9.-]{1,253}|\[[0-9a-f:.]{2,45}\])(?::\d{1,5})?$/i;
 
 /**
+ * Il server sta dietro un proxy di cui ci si può fidare per le intestazioni
+ * X-Forwarded-*? Sì con PROXY_FIDATO=1, e su Render (che imposta RENDER) salvo
+ * PROXY_FIDATO=0. Senza proxy quelle intestazioni le scrive il client: si ignorano.
+ */
+function proxyFidato() {
+  if (process.env.PROXY_FIDATO === '1') return true;
+  if (process.env.PROXY_FIDATO === '0') return false;
+  return Boolean(process.env.RENDER);
+}
+
+/**
+ * Indirizzo del client, per i limiti per indirizzo. Dietro un proxy fidato è
+ * il primo di X-Forwarded-For: il proxy lo aggiunge in coda a quelli inviati
+ * dal client, quindi un client può inventarne altri davanti. È un limite di
+ * buona volontà, non una protezione assoluta (vedi README, "Limiti").
+ */
+function ipDi(req, fidato = proxyFidato()) {
+  const intestazioni = (req && req.headers) || {};
+  if (fidato) {
+    const primo = String(intestazioni['x-forwarded-for'] || '').split(',')[0].trim();
+    if (primo) return primo.toLowerCase();
+  }
+  const diretto = req && req.socket && req.socket.remoteAddress;
+  return diretto ? String(diretto).replace(/^::ffff:/, '').toLowerCase() : 'sconosciuto';
+}
+
+/**
  * Base del link condiviso. Ordine: PUBLIC_URL configurato → host con cui il
  * browser ha raggiunto il server (così un link aperto da 192.168.1.10:3000 o
  * da un tunnel funziona anche per gli altri) → http://localhost:porta.
+ * X-Forwarded-Host/Proto contano solo dietro un proxy fidato.
  */
-function baseLink(configurato, req, portaLocale) {
+function baseLink(configurato, req, portaLocale, fidato = proxyFidato()) {
   if (configurato) return configurato;
   const intestazioni = (req && req.headers) || {};
-  const inoltrato = String(intestazioni['x-forwarded-host'] || '').split(',')[0].trim();
+  const inoltrato = fidato ? String(intestazioni['x-forwarded-host'] || '').split(',')[0].trim() : '';
   const host = inoltrato || String(intestazioni.host || '').trim();
   if (host && REGEX_HOST.test(host)) {
-    const proto = String(intestazioni['x-forwarded-proto'] || '').split(',')[0].trim().toLowerCase();
+    const proto = fidato ? String(intestazioni['x-forwarded-proto'] || '').split(',')[0].trim().toLowerCase() : '';
     const cifrato = proto === 'https' || Boolean(req.socket && req.socket.encrypted);
     return `${cifrato ? 'https' : 'http'}://${host.toLowerCase()}`;
   }
@@ -230,10 +260,10 @@ function baseLink(configurato, req, portaLocale) {
  * Controllo dell'origine dell'handshake WebSocket: un sito terzo non deve
  * poter usare i propri visitatori per aprire connessioni verso questo server.
  * Passano le richieste senza `Origin` (client non browser, test) e quelle la
- * cui origine coincide con l'host della richiesta, con `X-Forwarded-Host`
- * (proxy/tunnel) o con PUBLIC_URL. `ORIGINE_LIBERA=1` disattiva il controllo.
+ * cui origine coincide con l'host della richiesta, con PUBLIC_URL o, dietro un
+ * proxy fidato, con `X-Forwarded-Host`. `ORIGINE_LIBERA=1` disattiva il controllo.
  */
-function origineAmmessa(req, configurato) {
+function origineAmmessa(req, configurato, fidato = proxyFidato()) {
   if (process.env.ORIGINE_LIBERA === '1') return true;
   const intestazioni = (req && req.headers) || {};
   const origine = intestazioni.origin;
@@ -245,7 +275,7 @@ function origineAmmessa(req, configurato) {
     return false;
   }
   const ammessi = new Set();
-  for (const nome of ['host', 'x-forwarded-host']) {
+  for (const nome of fidato ? ['host', 'x-forwarded-host'] : ['host']) {
     for (const h of String(intestazioni[nome] || '').split(',')) {
       if (h.trim()) ammessi.add(h.trim().toLowerCase());
     }
@@ -290,9 +320,9 @@ function extraErrore(errore, rif) {
 /**
  * Collega i gestori di protocollo a un socket. `ctx` è lo stato per connessione.
  * @param {import('ws').WebSocket} socket
- * @param {{publicUrl: string, random: Function, ora: Function}} opzioni
+ * @param {{publicUrl: string, random: Function, ora: Function, ip?: string}} opzioni
  */
-function collegaSocket(socket, { publicUrl, random, ora }) {
+function collegaSocket(socket, { publicUrl, random, ora, ip = null }) {
   const ctx = {
     stanza: null,
     giocatoreId: null,
@@ -329,16 +359,21 @@ function collegaSocket(socket, { publicUrl, random, ora }) {
   const gestori = {
     creaStanza(m) {
       if (inStanza()) return inviaErrore(socket, 'GIA_IN_STANZA', { rif: m.rif });
-      if (stanze.tutte().length >= P.LIMITI.MAX_STANZE || ctx.stanzeCreate >= P.LIMITI.MAX_STANZE_PER_SOCKET) {
+      const troppeMie = ctx.stanzeCreate >= P.LIMITI.MAX_STANZE_PER_SOCKET
+        || (ip && stanze.aperteDa(ip) >= P.LIMITI.MAX_STANZE_PER_IP);
+      if (troppeMie) {
         return inviaErrore(socket, 'TROPPE_STANZE', {
           rif: m.rif,
-          ...(ctx.stanzeCreate >= P.LIMITI.MAX_STANZE_PER_SOCKET
-            ? { messaggio: 'Hai già creato diverse stanze: usa una di quelle o riprova più tardi' }
-            : {}),
+          messaggio: 'Hai già creato diverse stanze: usa una di quelle o riprova più tardi',
         });
       }
+      // Registro pieno: si fa posto chiudendo la stanza vuota più vecchia; se
+      // tutte hanno qualcuno dentro, si rifiuta.
+      if (stanze.tutte().length >= P.LIMITI.MAX_STANZE && !stanze.liberaPosto()) {
+        return inviaErrore(socket, 'TROPPE_STANZE', { rif: m.rif });
+      }
       ctx.stanzeCreate += 1;
-      const stanza = stanze.crea({ ora, random });
+      const stanza = stanze.crea({ ora, random, ip });
       return invia(socket, { tipo: 'stanzaCreata', codice: stanza.codice, link: linkStanza(publicUrl, stanza.codice) });
     },
 
@@ -524,25 +559,42 @@ function avviaHeartbeat(wss, intervallo = P.LIMITI.HEARTBEAT_MS) {
  * @param {{publicUrl?: string, random?: Function, ora?: Function, heartbeatMs?: number}} [opzioni]
  */
 function crea(opzioni = {}) {
-  const random = opzioni.random || Math.random;
+  const random = opzioni.random || stanze.casualeSicuro;
   const ora = opzioni.ora || Date.now;
   const configurato = opzioni.publicUrl || process.env.PUBLIC_URL || null;
+  const fidato = opzioni.proxyFidato ?? proxyFidato();
+  const maxPerIp = opzioni.maxConnessioniPerIp ?? P.LIMITI.MAX_CONNESSIONI_PER_IP;
   const server = http.createServer(gestoreHttp);
   let wss = null;
   let heartbeat = null;
+  /** Connessioni WebSocket aperte per indirizzo. */
+  const connessioni = new Map();
 
   if (WebSocketServer) {
     wss = new WebSocketServer({
       server,
       path: '/ws',
       maxPayload: P.LIMITI.FRAME_MAX_BYTE,
-      verifyClient: (info) => origineAmmessa(info.req, configurato),
+      verifyClient: (info, rispondiVerifica) => {
+        if (!origineAmmessa(info.req, configurato, fidato)) return rispondiVerifica(false, 403, 'Origine non ammessa');
+        if ((connessioni.get(ipDi(info.req, fidato)) || 0) >= maxPerIp) {
+          return rispondiVerifica(false, 429, 'Troppe connessioni da questo indirizzo');
+        }
+        return rispondiVerifica(true);
+      },
     });
     wss.on('connection', (socket, req) => {
+      const ip = ipDi(req, fidato);
+      connessioni.set(ip, (connessioni.get(ip) || 0) + 1);
+      socket.once('close', () => {
+        const n = (connessioni.get(ip) || 1) - 1;
+        if (n > 0) connessioni.set(ip, n);
+        else connessioni.delete(ip);
+      });
       try {
         const indirizzo = server.address();
         const porta = indirizzo && typeof indirizzo === 'object' ? indirizzo.port : null;
-        collegaSocket(socket, { publicUrl: baseLink(configurato, req, porta), random, ora });
+        collegaSocket(socket, { publicUrl: baseLink(configurato, req, porta, fidato), random, ora, ip });
       } catch (e) {
         console.error('[ws] errore nel collegamento di un socket', e);
         try { socket.close(1011, 'Errore interno'); } catch { /* ignora */ }
@@ -583,13 +635,14 @@ function avvia({ port = Number(process.env.PORT) || 3000, host = process.env.HOS
   });
 }
 
-/** Chiusura ordinata su SIGINT/SIGTERM: avvisa i client e libera la porta. */
-function arrestoOrdinato(server, wss) {
+/** Chiusura ordinata su SIGINT/SIGTERM: salva le partite, avvisa i client e libera la porta. */
+function arrestoOrdinato(server, wss, salvataggioAttivo = null) {
   let inCorso = false;
   const arresta = (segnale) => {
     if (inCorso) process.exit(1);
     inCorso = true;
     console.log(`\n${segnale}: chiusura del server…`);
+    if (salvataggioAttivo) salvataggioAttivo.salvaOra();
     if (wss) for (const s of wss.clients) { try { s.close(1001, 'Server in arresto'); } catch { /* ignora */ } }
     server.close(() => process.exit(0));
     setTimeout(() => process.exit(0), 3000).unref();
@@ -604,13 +657,35 @@ if (require.main === module) {
   process.on('uncaughtException', (e) => console.error('[server] eccezione non gestita', e));
   process.on('unhandledRejection', (e) => console.error('[server] promise rifiutata non gestita', e));
 
+  // Partite salvate su file: sopravvivono a un riavvio del server su questo
+  // computer (non su Render gratuito, dove il disco si azzera).
+  const fileSalvataggio = salvataggio.percorsoDaAmbiente(process.env.SALVATAGGIO, path.resolve(__dirname, '..'));
+  let salvataggioAttivo = null;
+  if (fileSalvataggio) {
+    try {
+      const ripristinate = salvataggio.carica(fileSalvataggio, stanze);
+      if (ripristinate > 0) console.log(`Partite ripristinate dal salvataggio: ${ripristinate}`);
+    } catch (e) {
+      console.error(`Salvataggio illeggibile (${fileSalvataggio}): si riparte senza partite.`, e.message);
+    }
+    salvataggioAttivo = salvataggio.avvia(fileSalvataggio, stanze);
+  }
+
   avvia()
     .then(({ server, porta, url, wss }) => {
-      arrestoOrdinato(server, wss);
+      arrestoOrdinato(server, wss, salvataggioAttivo);
+      const host = process.env.HOST || '0.0.0.0';
+      const suTutteLeReti = host === '0.0.0.0' || host === '::';
       console.log(`Monopoly online v${pacchetto.version} in ascolto sulla porta ${porta}`);
       console.log(`Su questo computer:        http://localhost:${porta}`);
+      if (fileSalvataggio) console.log(`Partite salvate in:        ${fileSalvataggio}`);
       if (process.env.PUBLIC_URL) {
         console.log(`Indirizzo pubblico (PUBLIC_URL): ${url}`);
+      } else if (!suTutteLeReti) {
+        const locale = ['127.0.0.1', 'localhost', '::1'].includes(host);
+        console.log(locale
+          ? `HOST=${host}: il gioco è raggiungibile solo da questo computer.`
+          : `HOST=${host}: il gioco è raggiungibile solo da http://${host}:${porta}`);
       } else {
         const rete = indirizziDiRete();
         for (const ip of rete) console.log(`Amici sulla stessa rete:   http://${ip}:${porta}`);
@@ -646,6 +721,8 @@ module.exports = {
   baseLink,
   linkStanza,
   origineAmmessa,
+  proxyFidato,
+  ipDi,
   indirizziDiRete,
   RADICE_CLIENT,
   MIME,

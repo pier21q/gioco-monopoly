@@ -124,15 +124,19 @@ test('scambio di carte "Uscite gratis di prigione": la carta cambia proprietario
   assert.deepEqual([giocatore(r.stato, A).denaro, giocatore(r.stato, B).denaro], [1550, 1450]);
 });
 
-test('scambi.js: validaProposta normalizza e applicaScambio non muta lo stato in ingresso', () => {
+test('scambi.js: validaProposta normalizza; proposta e accettazione non mutano lo stato in ingresso', () => {
   const s = s0();
   const v = scambi.validaProposta(s, A, { aId: B, offre: { proprieta: [3, 1, 1] } }, { ora: H.ORA_FISSA });
   assert.equal(v.ok, true);
   assert.deepEqual(v.scambio.offre.proprieta, [1, 3], 'proprietà ordinate e senza doppioni');
   const prima = JSON.stringify(s);
-  const r = scambi.applicaScambio(s, v.scambio, { ora: H.ORA_FISSA });
+  const proposto = H.esegui(s, A, { tipo: 'proponiScambio', aId: B, offre: { proprieta: [3, 1, 1] } }).stato;
+  assert.equal(JSON.stringify(s), prima, 'proponiScambio non deve mutare lo stato ricevuto');
+  const dopoProposta = JSON.stringify(proposto);
+  const r = H.esegui(proposto, B, { tipo: 'accettaScambio', scambioId: proposto.scambio.id });
   assert.equal(voce(r.stato, 1).proprietario, B);
-  assert.equal(JSON.stringify(s), prima, 'applicaScambio non deve mutare lo stato ricevuto');
+  assert.equal(voce(r.stato, 3).proprietario, B);
+  assert.equal(JSON.stringify(proposto), dopoProposta, 'accettaScambio non deve mutare lo stato ricevuto');
 });
 
 // ---------------------------------------------------------------------------

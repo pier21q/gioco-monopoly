@@ -20,3 +20,6 @@ coverage/
 .vscode/
 .idea/
 *.swp
+
+# Partite salvate dal server (contengono i token di sessione)
+.partite/
