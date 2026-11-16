@@ -882,3 +882,225 @@
 @media print {
   .tab__comandi { display: none; }
 }
+
+/* ==========================================================================
+ * Animazioni e dettagli
+ * ======================================================================== */
+
+/* Ingresso: il tabellone arriva sul tavolo ruotando; pedine e case compaiono dopo. */
+.tab--intro .tab__camera {
+  transform: translate3d(0, calc(var(--lato) * -0.2), 0) scale(0.5) rotateX(12deg) rotateZ(-150deg);
+  transition: none;
+}
+.tab--intro-via { --camera-durata: 1700ms; --camera-curva: cubic-bezier(0.2, 0.8, 0.2, 1); }
+.tab__pedine, .tab__edifici, .tab__centro-dritto { transition: opacity 500ms; }
+.tab--intro .tab__pedine, .tab--intro .tab__edifici,
+.tab--intro-via .tab__pedine, .tab--intro-via .tab__edifici { opacity: 0; }
+.tab--intro .tab__centro-dritto { opacity: 0; }
+
+/* Riflesso della luce sul cartone lucido. */
+.tab__griglia::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(118deg, rgba(255, 255, 255, 0.2) 0%, transparent 26%, transparent 68%, rgba(8, 30, 24, 0.1) 100%);
+  transform: translateZ(0.5px);
+  pointer-events: none;
+}
+
+/* Al centro, dietro i mazzi, il profilo di una città: è un gioco di case e alberghi. */
+.tab__centro-dritto::before {
+  content: "";
+  position: absolute;
+  left: 4%;
+  right: 4%;
+  bottom: calc(var(--u) * 0.55);
+  height: calc(var(--u) * 2.5);
+  background: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 400 100' preserveAspectRatio='xMidYMax meet'%3E%3Cg fill='%2314231e' fill-opacity='.09'%3E%3Cpath d='M0 100V72h14V58h12v14h8V44h20v28h6V60h14v40zM74 100V38h10V26h14v12h8v62zM106 100V64h16V50h10v50zM132 100V30h8V14h4V4h2v10h4v16h8v70zM160 100V56h18v-8h12v52zM190 100V40h22v60zM212 100V66h10V54h16v46zM238 100V22h24v78zM262 100V60h12v-8h10v48zM284 100V46h8V34h12v12h6v54zM310 100V70h14V58h12v42zM336 100V36h18v64zM354 100V62h10V50h14v12h8V44h14v56z'/%3E%3C/g%3E%3Cg fill='%23f7f0dc' fill-opacity='.5'%3E%3Cpath d='M38 50h4v5h-4zm8 0h4v5h-4zm-8 10h4v5h-4zm8 0h4v5h-4zM80 44h4v5h-4zm10 0h4v5h-4zm-10 12h4v5h-4zm10 0h4v5h-4zm-10 12h4v5h-4zm10 0h4v5h-4zM196 48h4v5h-4zm8 0h4v5h-4zm-8 12h4v5h-4zm8 0h4v5h-4zM244 30h4v5h-4zm10 0h4v5h-4zm-10 12h4v5h-4zm10 0h4v5h-4zm-10 12h4v5h-4zm10 0h4v5h-4zM342 44h4v5h-4zm0 12h4v5h-4zm0 12h4v5h-4zM136 38h3v4h-3zm6 0h3v4h-3zm6 0h3v4h-3zm-12 12h3v4h-3zm6 0h3v4h-3zm6 0h3v4h-3z'/%3E%3C/g%3E%3C/svg%3E") center bottom / contain no-repeat;
+  pointer-events: none;
+}
+
+/* Le caselle si sollevano appena sotto il puntatore, come una carta presa in mano. */
+.casella { transform-style: preserve-3d; }
+.casella__faccia { transition: background-color 120ms, transform 160ms cubic-bezier(0.2, 0.8, 0.3, 1), box-shadow 160ms; }
+@media (hover: hover) {
+  .casella:hover .casella__faccia {
+    transform: translate(-50%, -50%) rotate(var(--verso, 0deg)) translateZ(calc(var(--u) * 0.1));
+    box-shadow: inset 0 0 0 calc(var(--u) * 0.012) var(--tab-linea), 0 0 calc(var(--u) * 0.2) rgba(8, 30, 24, 0.5);
+  }
+}
+
+/* Proprietà appena comprata: un lampo dorato e la linguetta che sale dal bordo. */
+.casella.appena-comprata .casella__faccia { animation: casella-comprata 1300ms ease-out; }
+.casella.appena-comprata .casella__proprietario { animation: linguetta-sale 520ms cubic-bezier(0.3, 1.5, 0.5, 1) both; }
+@keyframes casella-comprata {
+  0%   { box-shadow: inset 0 0 0 calc(var(--u) * 0.5) rgba(255, 201, 60, 0.9), 0 0 calc(var(--u) * 0.8) rgba(255, 201, 60, 0.9); }
+  100% { box-shadow: inset 0 0 0 0 rgba(255, 201, 60, 0), 0 0 0 rgba(255, 201, 60, 0); }
+}
+@keyframes linguetta-sale {
+  from { transform: translateY(100%); }
+}
+
+/* Dadi: arrivano lanciati dal bordo, rimbalzano e si fermano. */
+@keyframes dado-lancio {
+  0%   { translate: calc(var(--u) * -3.2) calc(var(--u) * 2.6) calc(var(--u) * 2.2); }
+  38%  { translate: calc(var(--u) * -0.9) calc(var(--u) * 0.7) 0; }
+  56%  { translate: calc(var(--u) * -0.35) calc(var(--u) * 0.25) calc(var(--u) * 0.75); }
+  74%  { translate: 0 0 0; }
+  86%  { translate: 0 0 calc(var(--u) * 0.2); }
+  100% { translate: 0 0 0; }
+}
+.tab-dadi.in-lancio .dado + .dado { animation-name: dado-lancio-2; animation-delay: 30ms; }
+@keyframes dado-lancio-2 {
+  0%   { translate: calc(var(--u) * -3.6) calc(var(--u) * 1.6) calc(var(--u) * 2.6); }
+  42%  { translate: calc(var(--u) * -0.6) calc(var(--u) * 0.2) 0; }
+  60%  { translate: calc(var(--u) * -0.2) calc(var(--u) * 0.05) calc(var(--u) * 0.6); }
+  78%  { translate: 0 0 0; }
+  89%  { translate: 0 0 calc(var(--u) * 0.15); }
+  100% { translate: 0 0 0; }
+}
+.tab-dadi.doppio .dado__faccia { box-shadow: inset 0 0 0 1px rgba(60, 45, 20, 0.35), inset 0 0 calc(var(--s) * 0.3) rgba(200, 16, 46, 0.35); }
+.tab-dadi__totale { animation: totale-entra 320ms cubic-bezier(0.3, 1.6, 0.5, 1); }
+@keyframes totale-entra {
+  from { transform: translateX(-50%) scale(0.3); opacity: 0; }
+}
+
+/* Pedina: salto ad arco con schiacciata, e un'onda sul piano quando arriva. */
+.pedina__figura { transform-origin: 50% 100%; }
+@keyframes pedina-salto {
+  0%   { transform: scale(1.08, 0.9); }
+  40%  { transform: translateY(calc(var(--u) * -0.45)) scale(0.95, 1.08); }
+  85%  { transform: scale(1.1, 0.88); }
+  100% { transform: none; }
+}
+.pedina.atterra .pedina__figura { animation: pedina-atterra 520ms cubic-bezier(0.3, 1.4, 0.5, 1); }
+@keyframes pedina-atterra {
+  0%  { transform: scale(1.25, 0.72); }
+  45% { transform: scale(0.92, 1.12); }
+}
+.pedina::after {
+  content: "";
+  position: absolute;
+  left: calc(var(--u) * -0.3);
+  top: calc(var(--u) * -0.3);
+  width: calc(var(--u) * 0.6);
+  height: calc(var(--u) * 0.6);
+  border-radius: 50%;
+  border: calc(var(--u) * 0.05) solid var(--colore-giocatore, #fff);
+  opacity: 0;
+  pointer-events: none;
+}
+.pedina.atterra::after { animation: pedina-onda 650ms ease-out; }
+@keyframes pedina-onda {
+  0%   { transform: scale(0.4); opacity: 0.95; }
+  100% { transform: scale(2.6); opacity: 0; }
+}
+
+/* In prigione: la pedina cade nella cella e le sbarre tremano. */
+.pedina.arrestata .pedina__figura { animation: pedina-arrestata 620ms cubic-bezier(0.3, 0, 0.3, 1.3); }
+@keyframes pedina-arrestata {
+  0%  { transform: translateY(calc(var(--u) * -2.4)); opacity: 0; }
+  60% { transform: translateY(0) scale(1.2, 0.75); opacity: 1; }
+}
+.casella.sbattuta .prigione__cella { animation: cella-trema 600ms; }
+@keyframes cella-trema {
+  0%, 100% { transform: none; }
+  15% { transform: translate(-4%, 2%) rotate(-3deg); }
+  35% { transform: translate(4%, -2%) rotate(3deg); }
+  55% { transform: translate(-3%, 1%) rotate(-2deg); }
+  75% { transform: translate(2%, 0) rotate(1deg); }
+}
+
+/* Denaro che entra o esce: l'importo sale sopra la pedina e svanisce. */
+.volo {
+  position: absolute;
+  width: 0;
+  height: 0;
+  transform-style: preserve-3d;
+}
+.volo__testo {
+  position: absolute;
+  left: 0;
+  bottom: calc(var(--u) * 1);
+  width: max-content;
+  padding: calc(var(--u) * 0.07) calc(var(--u) * 0.2);
+  border: calc(var(--u) * 0.03) solid currentColor;
+  border-radius: 999px;
+  background: #0b2a22;
+  box-shadow: 0 calc(var(--u) * 0.08) calc(var(--u) * 0.2) rgba(0, 0, 0, 0.4);
+  font-family: var(--tab-font-titolo);
+  font-size: calc(var(--u) * 0.34);
+  font-weight: 800;
+  line-height: 1;
+  white-space: nowrap;
+  color: #fff;
+  /* Ancorata al punto della pedina, in piedi verso chi guarda e centrata. */
+  transform-origin: 0 100%;
+  transform: rotateZ(calc(-1 * var(--giro))) rotateX(calc(-1 * var(--tilt))) translateX(-50%);
+  opacity: 0;
+  animation: volo-sale 1700ms cubic-bezier(0.2, 0.8, 0.3, 1) both;
+}
+.volo--entra .volo__testo { color: #8ef0a8; }
+.volo--esce .volo__testo { color: #ffb0a6; }
+@keyframes volo-sale {
+  0%   { opacity: 0; translate: 0 0 0; scale: 0.5; }
+  15%  { opacity: 1; scale: 1.15; }
+  25%  { scale: 1; }
+  75%  { opacity: 1; }
+  100% { opacity: 0; translate: 0 0 calc(var(--u) * 1.3); }
+}
+
+/* Carta pescata: si stacca dal mazzo girandosi. */
+@keyframes carta-pescata {
+  0%   { opacity: 0; transform: translateZ(0) rotateX(0deg) rotateY(180deg) scale(0.35); }
+  55%  { opacity: 1; transform: translateZ(calc(var(--u) * 1.2)) rotateX(calc(-0.6 * var(--tilt))) rotateY(0deg) scale(1.08); }
+}
+.tab-carta.pescata { animation-duration: 640ms; }
+
+/* Cambio di turno: il nome al centro entra con un piccolo rimbalzo. */
+.tab-turno.cambio { animation: turno-cambia 620ms cubic-bezier(0.3, 1.5, 0.5, 1); }
+@keyframes turno-cambia {
+  0%  { transform: translateY(calc(var(--u) * -0.5)) scale(0.7); opacity: 0; }
+  60% { opacity: 1; }
+}
+.pedina.di-turno .pedina__figura { animation: pedina-respira 2.4s ease-in-out infinite; }
+.pedina.di-turno .pedina__corpo.salto .pedina__figura { animation: pedina-salto var(--durata-salto, 200ms) ease-out; }
+.pedina.di-turno.atterra .pedina__figura { animation: pedina-atterra 520ms cubic-bezier(0.3, 1.4, 0.5, 1); }
+@keyframes pedina-respira {
+  50% { transform: translateY(calc(var(--u) * -0.07)) scale(1.03); }
+}
+
+/* I mazzi "respirano" appena: sono carte vive, non un disegno. */
+.tab-mazzo .glifo { animation: glifo-dondola 5s ease-in-out infinite; display: inline-block; }
+.tab-mazzo--imprevisti .glifo { animation-delay: -2.5s; }
+@keyframes glifo-dondola {
+  50% { transform: rotate(8deg) scale(1.06); }
+}
+
+/* Fine partita: coriandoli. */
+.tab__festa {
+  position: absolute;
+  inset: 0;
+  z-index: 6;
+  overflow: hidden;
+  pointer-events: none;
+}
+.tab__festa i {
+  position: absolute;
+  top: -4%;
+  width: 0.6rem;
+  height: 0.9rem;
+  border-radius: 2px;
+  animation: coriandolo 3.4s linear both;
+}
+.tab__festa i:nth-child(3n) { width: 0.45rem; height: 0.45rem; border-radius: 50%; }
+.tab__festa i:nth-child(4n) { width: 0.35rem; height: 1.1rem; }
+@keyframes coriandolo {
+  0%   { transform: translate3d(0, 0, 0) rotate(0deg); opacity: 1; }
+  85%  { opacity: 1; }
+  100% { transform: translate3d(var(--deriva, 0), 110vh, 0) rotate(var(--giri, 720deg)); opacity: 0; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .pedina.di-turno .pedina__figura, .tab-mazzo .glifo { animation: none; }
+}

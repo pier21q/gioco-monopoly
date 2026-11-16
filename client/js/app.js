@@ -487,6 +487,25 @@ async function avvia() {
   const movimentoRidotto = globalThis.matchMedia?.('(prefers-reduced-motion: reduce)');
 
   // ----- Toast -------------------------------------------------------------
+  // I messaggi sugli eventi di gioco arrivano dal server prima del nuovo stato:
+  // li teniamo da parte e li mostriamo quando dadi e pedina si sono fermati,
+  // così "paga l'affitto" non compare mentre la pedina sta ancora camminando.
+  let toastInCoda = [];
+  let timerToast = null;
+  function accodaToast(t) {
+    toastInCoda.push(t);
+    clearTimeout(timerToast);
+    timerToast = setTimeout(svuotaToast, 250); // nessuno stato in arrivo: mostrali comunque
+  }
+  function svuotaToast() {
+    clearTimeout(timerToast);
+    const coda = toastInCoda;
+    toastInCoda = [];
+    if (!coda.length) return;
+    const attesa = typeof tabellone?.attesa === 'function' ? tabellone.attesa() : 0;
+    setTimeout(() => coda.forEach((t) => mostraToast(t.testo, { ...t, silenzioso: true })), attesa);
+  }
+
   function mostraToast(testo, opzioni = {}) {
     if (!testo) return;
     if (typeof dialoghi?.toast === 'function') {
@@ -692,6 +711,7 @@ async function avvia() {
         const parziale = { partita };
         if (s.lobby.inAttesa || s.lobby.ripresa) parziale.lobby = { ...s.lobby, inAttesa: false, ripresa: false };
         store.setState(parziale);
+        queueMicrotask(svuotaToast); // dopo il ridisegno, che fa partire le animazioni
         return;
       }
 
@@ -703,7 +723,7 @@ async function avvia() {
         const t = toastPerEvento(evento, s.partita, s.io?.giocatoreId);
         // Tutti gli eventi finiscono anche in una regione viva (cronaca in
         // partita, elenco giocatori in sala): il toast è solo visivo.
-        if (t) mostraToast(t.testo, { ...t, silenzioso: true });
+        if (t) accodaToast(t);
         return;
       }
 
@@ -795,6 +815,7 @@ async function avvia() {
   }
 
   let precedente = null;
+  let timerPannelli = null;
   function disegna() {
     const stato = store.getState();
     const prima = precedente;
@@ -852,7 +873,25 @@ async function avvia() {
       if (typeof tabellone?.seleziona === 'function' && (!prima || prima.selezione !== stato.selezione)) {
         chiama(() => tabellone.seleziona(stato.selezione), 'tabellone.seleziona');
       }
-      if (pannelli) chiama(() => pannelli.render(el.pannelli, stato, dispatch), 'pannelli.render');
+      if (pannelli) {
+        // Pannelli e finestre (acquisto, affitto, denaro) aspettano che dadi e
+        // pedina si fermino: mostrano sempre lo stato più recente.
+        const attesa = typeof tabellone?.attesa === 'function' ? tabellone.attesa() : 0;
+        clearTimeout(timerPannelli);
+        if (attesa > 40) {
+          el.pannelli.classList.add('pn-attesa');
+          timerPannelli = setTimeout(() => {
+            el.pannelli.classList.remove('pn-attesa');
+            const ora = store.getState();
+            if (vistaCorrente !== 'lobby' && ora.partita) {
+              chiama(() => pannelli.render(el.pannelli, ora, dispatch), 'pannelli.render');
+            }
+          }, attesa);
+        } else {
+          el.pannelli.classList.remove('pn-attesa');
+          chiama(() => pannelli.render(el.pannelli, stato, dispatch), 'pannelli.render');
+        }
+      }
     }
 
     disegnaBarra(stato, vista);

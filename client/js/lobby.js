@@ -341,6 +341,7 @@ function costruisciIngresso(radice, stato, dispatch) {
 
   radice.append(
     el('div', { classe: 'lobby__intestazione' },
+      dadiEroe(),
       el('h1', { id: 'lobby-titolo', classe: 'lobby__titolo', tabindex: '-1', 'data-titolo-vista': true },
         'Monopoly online'),
       el('p', { classe: 'lobby__sottotitolo' },
@@ -589,6 +590,19 @@ function aggiornaSala(radice, stato) {
       : 'In attesa che l\'host avvii la partita…';
   }
   if (suggerimento.textContent !== testo) suggerimento.textContent = testo;
+}
+
+/** Due dadi che girano piano sopra il titolo: stessi cubi del tabellone (tabellone.css). */
+function dadiEroe() {
+  const dado = () => {
+    const cubo = el('span', { classe: 'dado__cubo' });
+    for (let n = 1; n <= 6; n += 1) {
+      cubo.append(el('span', { classe: `dado__faccia dado__faccia--${n}` },
+        Array.from({ length: n }, () => el('i'))));
+    }
+    return el('span', { classe: 'dado' }, cubo);
+  };
+  return el('div', { classe: 'eroe-dadi', 'aria-hidden': 'true' }, dado(), dado());
 }
 
 const CHIAVE_REGOLA = 'monopoly.regola-costruzione';

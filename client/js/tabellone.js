@@ -28,6 +28,8 @@
  * quel caso si usano `stato.partita` e `stato.selezione`.
  */
 
+import { suoni, attivi as suoniAttivi, imposta as impostaSuoni } from '/js/suoni.js';
+
 const RAPPORTO_ANGOLO = 1.6;            // lato dell'angolo / lato corto di una casella
 const UNITA_TOTALI = 2 * RAPPORTO_ANGOLO + 9;
 const NUMERO_CASELLE = 40;
@@ -62,6 +64,7 @@ const ICONE_CAMERA = {
   destra: SVG('<path d="M20 4v6h-6"/><path d="M19.4 10A8 8 0 1 0 18 17.5"/>'),
   alto: SVG('<rect x="4" y="4" width="16" height="16" rx="1.5"/><rect x="8.5" y="8.5" width="7" height="7"/>'),
   zoom: SVG('<circle cx="10.5" cy="10.5" r="6.5"/><path d="m15.5 15.5 5 5M10.5 7.8v5.4M7.8 10.5h5.4"/>'),
+  suono: SVG('<path d="M4 9.5v5h3.5l4.5 4v-13l-4.5 4z" class="pieno"/><path d="M15.5 9a4.2 4.2 0 0 1 0 6M18 6.5a8 8 0 0 1 0 11"/>'),
   segui: SVG('<circle cx="12" cy="12" r="3.2" class="pieno"/><path d="M12 2.5v4M12 17.5v4M2.5 12h4M17.5 12h4"/><circle cx="12" cy="12" r="7.2"/>'),
 };
 const CHIAVE_CAMERA = 'monopoly.camera';
@@ -133,6 +136,8 @@ export function render(radice, stato, opzioni = {}) {
     focoIndice: 0,
     ascoltatori: [],
     camera: leggiCamera(),
+    fineAnimazione: 0,            // istante (performance.now) in cui dadi e pedine si fermano
+    festa: false,
     lato: 0,                      // lato del tabellone in px
     osservatore: null,
   };
@@ -165,6 +170,22 @@ export function aggiorna(stato) {
   applica(ist, partita, { iniziale: false });
 }
 
+/**
+ * Millisecondi che mancano alla fine delle animazioni in corso (lancio dei
+ * dadi e cammino delle pedine). Chi mostra le conseguenze di una mossa
+ * (finestra d'acquisto, messaggi, denaro) aspetta questo tempo, così non
+ * arrivano prima della pedina.
+ */
+export function attesa() {
+  const ist = corrente;
+  if (!ist) return 0;
+  return Math.max(0, Math.round(ist.fineAnimazione - performance.now()));
+}
+
+function prolungaAttesa(ist, ms) {
+  ist.fineAnimazione = Math.max(ist.fineAnimazione, performance.now() + ms);
+}
+
 /** Evidenzia una casella (o nessuna con null) senza emettere eventi. */
 export function seleziona(indice) {
   const ist = corrente;
@@ -179,6 +200,9 @@ export function distruggi() {
   if (!ist) return;
   ist.animazioni.forEach((token) => { token.annullato = true; });
   clearTimeout(ist.timerDadi);
+  clearTimeout(ist.timerCarta);
+  clearTimeout(ist.timerCamera);
+  clearTimeout(ist.timerCentro);
   ist.ascoltatori.forEach(([el, tipo, fn]) => el.removeEventListener(tipo, fn));
   if (ist.osservatore) ist.osservatore.disconnect();
   if (ist.el.tab && ist.el.tab.parentNode === ist.radice) ist.radice.removeChild(ist.el.tab);
@@ -316,6 +340,18 @@ function costruisci(ist) {
 
   applicaCamera(ist);
   misura(ist);
+  if (animazioniAttive(ist) && document.visibilityState === 'visible') {
+    // Ingresso: il tabellone arriva sul tavolo ruotando, poi compaiono pedine e case.
+    // (Con un timer e non con requestAnimationFrame, che in una scheda in secondo
+    // piano non scatta e lascerebbe il tabellone invisibile.)
+    tab.classList.add('tab--intro');
+    void tab.offsetWidth;
+    setTimeout(() => {
+      tab.classList.add('tab--intro-via');
+      tab.classList.remove('tab--intro');
+      setTimeout(() => tab.classList.remove('tab--intro-via'), 1900);
+    }, 40);
+  }
   if (typeof ResizeObserver === 'function') {
     ist.osservatore = new ResizeObserver(() => misura(ist));
     ist.osservatore.observe(radice);
@@ -552,14 +588,29 @@ function applica(ist, partita, { iniziale }) {
   const ctx = { partita, giocatori, perId };
 
   const lanciati = aggiornaDadi(ist, ctx, iniziale);
+  if (lanciati) prolungaAttesa(ist, DURATA_DADI);
   aggiornaPedine(ist, ctx, iniziale, lanciati ? DURATA_DADI : 0);
+  if (!iniziale) mostraMovimentiDenaro(ist, ctx);
+  if (partita.fase === 'finePartita' && !ist.festa) {
+    ist.festa = true;
+    if (!iniziale) festeggia(ist);
+  }
   aggiornaCaselle(ist, ctx);
-  aggiornaCentro(ist, ctx);
+  // Il testo al centro ("Decide se comprare…") non anticipa dove arriverà la pedina.
+  const daAspettare = iniziale ? 0 : attesa();
+  clearTimeout(ist.timerCentro);
+  if (daAspettare > 40) {
+    ist.timerCentro = setTimeout(() => {
+      if (corrente === ist && ist.prec === partita) aggiornaCentro(ist, ctx);
+    }, daAspettare);
+  } else {
+    aggiornaCentro(ist, ctx);
+  }
   aggiornaCarta(ist, ctx, iniziale);
   disegnaSelezione(ist);
   ist.prec = partita;
   seguiTurno(ist, ctx, lanciati ? DURATA_DADI : 0);
-  if (iniziale) requestAnimationFrame(() => misura(ist)); // i pannelli arrivano dopo il tabellone
+  if (iniziale) setTimeout(() => misura(ist), 0); // i pannelli arrivano dopo il tabellone
 }
 
 function animazioniAttive(ist) {
@@ -605,6 +656,12 @@ function aggiornaCaselle(ist, { partita, perId, giocatori }) {
         } else {
           b.style.removeProperty('--proprietario');
         }
+        if (prop && ist.prec && animazioniAttive(ist)) {
+          b.classList.remove('appena-comprata');
+          void b.offsetWidth; // riavvia l'animazione
+          b.classList.add('appena-comprata');
+          setTimeout(() => b.classList.remove('appena-comprata'), 1400);
+        }
         b.classList.toggle('posseduta', Boolean(prop));
         b.classList.toggle('mia', Boolean(prop && prop.id === ist.mioId));
       }
@@ -624,6 +681,7 @@ function aggiornaCaselle(ist, { partita, perId, giocatori }) {
       b.classList.toggle('con-albergo', case_ >= 5);
       b.classList.toggle('con-case', case_ > 0 && case_ < 5);
       const cresciuto = b.dataset.caseVisti !== undefined && Number(b.dataset.caseVisti) < case_;
+      if (cresciuto && ist.prec) suoni.costruisci();
       disegnaEdifici(ist, i, case_, cresciuto);
       b.dataset.caseVisti = String(case_);
     }
@@ -885,6 +943,7 @@ function aggiornaPedine(ist, { partita, giocatori, perId }, iniziale_, ritardo) 
       return;
     }
     const percorso = calcolaPercorso(da, a, gPrec, g);
+    if (g.inPrigione && !gPrec.inPrigione) arresta(ist, pedina, ritardo);
     avviaPercorso(ist, g.id, pedina, percorso, finale, ritardo);
   });
 }
@@ -915,6 +974,8 @@ async function avviaPercorso(ist, id, pedina, intermedie, finale, ritardo) {
 
   const tappe = intermedie.length + 1;
   const passo = Math.max(PASSO_MIN, Math.min(PASSO_MAX, DURATA_MAX_PERCORSO / tappe));
+  // Chi aspetta la fine del movimento (finestre, messaggi) conta anche l'atterraggio.
+  prolungaAttesa(ist, (ritardo || 0) + tappe * passo + 220);
   pedina.classList.add('in-cammino');
   try {
     if (ritardo) await attendi(ritardo);
@@ -922,18 +983,105 @@ async function avviaPercorso(ist, id, pedina, intermedie, finale, ritardo) {
       if (token.annullato || corrente !== ist) return;
       posiziona(pedina, centroCasella(indice), passo * 0.9);
       saltella(pedina, passo);
+      suoni.passo();
       await attendi(passo);
     }
     if (token.annullato || corrente !== ist) return;
     posiziona(pedina, token.finale, passo * 0.9);
     saltella(pedina, passo);
     await attendi(passo);
+    if (token.annullato || corrente !== ist) return;
+    atterra(pedina);
   } finally {
     if (ist.animazioni.get(id) === token) {
       ist.animazioni.delete(id);
       pedina.classList.remove('in-cammino');
     }
   }
+}
+
+/** Arrivo sulla casella: la pedina si schiaccia un attimo e parte un'onda sul piano. */
+function atterra(pedina) {
+  pedina.classList.remove('atterra');
+  void pedina.offsetWidth;
+  pedina.classList.add('atterra');
+  suoni.atterra();
+  setTimeout(() => pedina.classList.remove('atterra'), 700);
+}
+
+/** "In prigione!": la pedina cade nella cella e le sbarre tremano. */
+function arresta(ist, pedina, ritardo) {
+  prolungaAttesa(ist, (ritardo || 0) + 700);
+  setTimeout(() => {
+    if (corrente !== ist) return;
+    const cella = ist.pulsanti[10];
+    pedina.classList.remove('arrestata');
+    cella.classList.remove('sbattuta');
+    void pedina.offsetWidth;
+    pedina.classList.add('arrestata');
+    cella.classList.add('sbattuta');
+    suoni.prigione();
+    setTimeout(() => {
+      pedina.classList.remove('arrestata');
+      cella.classList.remove('sbattuta');
+    }, 900);
+  }, (ritardo || 0) + 120);
+}
+
+/** Per ogni giocatore il cui denaro è cambiato, un importo che sale sopra la pedina. */
+function mostraMovimentiDenaro(ist, { giocatori }) {
+  if (!ist.prec || !animazioniAttive(ist)) return;
+  const prima = new Map((ist.prec.giocatori || []).map((g) => [g.id, g]));
+  const cambi = [];
+  for (const g of giocatori) {
+    const p = prima.get(g.id);
+    if (!p || g.fallito) continue;
+    const delta = (Number(g.denaro) || 0) - (Number(p.denaro) || 0);
+    if (delta !== 0) cambi.push({ g, delta });
+  }
+  if (!cambi.length) return;
+  const ritardo = attesa();
+  setTimeout(() => {
+    if (corrente !== ist) return;
+    let suonato = false;
+    cambi.forEach(({ g, delta }, k) => {
+      const pedina = ist.pedine.get(g.id);
+      if (!pedina) return;
+      const volo = el('span', `volo ${delta > 0 ? 'volo--entra' : 'volo--esce'}`);
+      volo.style.left = pedina.style.left;
+      volo.style.top = pedina.style.top;
+      const testo = el('span', 'volo__testo', `${delta > 0 ? '+' : '−'}${euro(Math.abs(delta))}`);
+      testo.style.animationDelay = `${k * 120}ms`;
+      volo.appendChild(testo);
+      ist.el.strato.appendChild(volo);
+      setTimeout(() => volo.remove(), 1900 + k * 120);
+      // Un solo suono per aggiornamento: quello che riguarda me, altrimenti il primo.
+      if (!suonato && (g.id === ist.mioId || cambi.every((c) => c.g.id !== ist.mioId))) {
+        suonato = true;
+        if (delta > 0) suoni.moneta(); else suoni.paga();
+      }
+    });
+  }, ritardo);
+}
+
+/** Fine partita: coriandoli sopra il tabellone. */
+function festeggia(ist) {
+  const festa = el('div', 'tab__festa');
+  festa.setAttribute('aria-hidden', 'true');
+  const colori = ['#e03a30', '#f7d84a', '#2fa84f', '#1b56c4', '#f29a2e', '#d84a9c', '#9bd4f0', '#f7f0dc'];
+  for (let k = 0; k < 90; k += 1) {
+    const c = el('i');
+    c.style.left = `${Math.random() * 100}%`;
+    c.style.background = colori[k % colori.length];
+    c.style.animationDelay = `${Math.random() * 1.8}s`;
+    c.style.animationDuration = `${2.6 + Math.random() * 2.2}s`;
+    c.style.setProperty('--deriva', `${Math.round(Math.random() * 160 - 80)}px`);
+    c.style.setProperty('--giri', `${Math.round(360 + Math.random() * 720)}deg`);
+    festa.appendChild(c);
+  }
+  ist.el.tab.appendChild(festa);
+  suoni.vittoria();
+  setTimeout(() => festa.remove(), 7000);
 }
 
 function posiziona(pedina, punto, durata) {
@@ -1002,6 +1150,7 @@ function aggiornaDadi(ist, { partita, perId }, iniziale_) {
   zona.classList.remove('in-lancio', 'doppio');
   void zona.offsetWidth;
   zona.classList.add('in-lancio');
+  suoni.dadi();
   ist.el.totale.textContent = '';
   // I cubi rotolano (due giri completi) fino a mostrare il valore; il totale arriva a fine lancio.
   mostraDado(ist.el.dadi[0], dadi[0], 2);
@@ -1023,6 +1172,8 @@ function aggiornaCarta(ist, { partita, perId }, iniziale_) {
   }
   if (!mostra) {
     carta.hidden = true;
+    clearTimeout(ist.timerCarta);
+    ist.cartaInArrivo = false;
     ist.el.mazzoP.classList.remove('svuotato');
     ist.el.mazzoI.classList.remove('svuotato');
     ist.chiaveCarta = null;
@@ -1031,8 +1182,23 @@ function aggiornaCarta(ist, { partita, perId }, iniziale_) {
   const dati = mostra.dati;
   const mazzo = dati.mazzo === 'imprevisti' ? 'imprevisti' : 'probabilita';
   const chiave = `${mostra.t}|${dati.carta.id || ''}|${mostra.giocatoreId}`;
-  if (chiave === ist.chiaveCarta && !carta.hidden) return;
+  if (chiave === ist.chiaveCarta && (!carta.hidden || ist.cartaInArrivo)) return;
   ist.chiaveCarta = chiave;
+  // La carta si gira quando la pedina è arrivata sulla casella, non prima.
+  const ritardo = iniziale_ ? 0 : attesa();
+  clearTimeout(ist.timerCarta);
+  if (ritardo > 0) {
+    ist.cartaInArrivo = true;
+    carta.hidden = true;
+    ist.timerCarta = setTimeout(() => {
+      ist.cartaInArrivo = false;
+      if (corrente === ist && ist.chiaveCarta === chiave) rivela();
+    }, ritardo);
+    return;
+  }
+  rivela();
+
+  function rivela() {
 
   carta.dataset.mazzo = mazzo;
   ist.el.cartaGlifo.textContent = mazzo === 'probabilita' ? '?' : '!';
@@ -1048,6 +1214,8 @@ function aggiornaCarta(ist, { partita, perId }, iniziale_) {
   if (!iniziale_ && animazioniAttive(ist)) {
     void carta.offsetWidth;
     carta.classList.add('pescata');
+    suoni.carta();
+  }
   }
 }
 
@@ -1073,6 +1241,16 @@ function aggiornaCentro(ist, { partita, perId }) {
     impostaSegno(e.turnoSegno, null);
     e.turnoFase.textContent = '';
   }
+  // Cambio di turno: il nome al centro fa un piccolo ingresso, e a chi tocca arriva un suono.
+  const chiaveTurno = `${turnoId}|${partita.turno ? partita.turno.numero : ''}`;
+  if (ist.turnoMostrato !== undefined && ist.turnoMostrato !== chiaveTurno && animazioniAttive(ist)) {
+    const blocco = e.turnoNome.closest('.tab-turno');
+    blocco.classList.remove('cambio');
+    void blocco.offsetWidth;
+    blocco.classList.add('cambio');
+    if (mio) suoni.turno();
+  }
+  ist.turnoMostrato = chiaveTurno;
   const n = partita.turno && partita.turno.numero;
   e.turnoNumero.textContent = n ? `Turno ${n}` : '';
   e.codice.textContent = partita.codice ? `Stanza ${partita.codice}` : '';
@@ -1249,6 +1427,12 @@ function creaComandiCamera(ist) {
     applicaCamera(ist);
     if (ist.camera.segui && ist.prec) seguiTurno(ist, contestoDi(ist.prec), 0);
   }, true);
+  const audio = pulsante('suono', ICONE_CAMERA.suono, 'Suoni', () => {
+    impostaSuoni(!suoniAttivi());
+    audio.setAttribute('aria-pressed', String(suoniAttivi()));
+    if (suoniAttivi()) suoni.moneta();
+  }, true);
+  audio.setAttribute('aria-pressed', String(suoniAttivi()));
   return barra;
 }
 
@@ -1315,6 +1499,8 @@ function misura(ist) {
   else tab.style.setProperty('--su', `${Math.round(lato * -0.035)}px`);
   tab.classList.toggle('tab--piccolo', lato / UNITA_TOTALI < 34 && !zoomAttivo(ist));
   applicaCamera(ist);
+  // Da vicino, dopo un cambio di misura, si torna sulla pedina di turno.
+  if (zoomAttivo(ist) && !ist.trascinato) centraSuTurno(ist);
 }
 
 function applicaCamera(ist) {

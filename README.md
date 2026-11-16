@@ -208,8 +208,13 @@ Il tabellone è un oggetto 3D fatto con le trasformazioni CSS, senza librerie:
 piano inclinato, pedine, case e alberghi in piedi, dadi a cubo. I pulsanti in
 alto a sinistra girano il tabellone di un lato, avvicinano il lato davanti (su
 telefono è già così, e si scorre trascinando di lato), passano alla vista
-dall'alto e accendono o spengono l'inseguimento della pedina di turno. Le
-scelte restano salvate nel browser.
+dall'alto, accendono o spengono l'inseguimento della pedina di turno e i suoni.
+Le scelte restano salvate nel browser.
+
+Le conseguenze di un lancio (finestra d'acquisto, messaggi, denaro, carta
+pescata) compaiono solo quando i dadi si sono fermati e la pedina è arrivata
+sulla casella. I suoni (dadi, passi, monete, carte) sono sintetizzati nel
+browser da `client/js/suoni.js`: non ci sono file audio.
 
 ## Struttura delle cartelle
 
@@ -239,7 +244,8 @@ client/               pagine servite al browser, senza build
     app.js            avvio, stato locale, smistamento dei messaggi
     rete.js           WebSocket con riconnessione automatica
     lobby.js          schermata iniziale e sala d'attesa
-    tabellone.js      tabellone 3D, camera, pedine, dadi
+    tabellone.js      tabellone 3D, camera, pedine, dadi, animazioni
+    suoni.js          suoni sintetizzati (Web Audio), senza file audio
     pannelli.js       giocatori, azioni del turno, cronaca
     dialoghi.js       finestre di dialogo (acquisto, asta, scambio, debito…) e notifiche
 tests/                test del server, delle stanze e di integrazione

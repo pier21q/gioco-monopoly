@@ -236,3 +236,91 @@ h1, h2, h3,
   border: 1px solid rgb(247 240 220 / 0.18);
   border-left-width: 5px;
 }
+
+/* --- Dadi sopra il titolo (ingresso) -------------------------------------- */
+
+.eroe-dadi {
+  --u: 4.25rem;
+  --tab-via: var(--ceralacca);
+  display: flex;
+  justify-content: center;
+  gap: 2.25rem;
+  height: 5.5rem;
+  margin-bottom: var(--spazio-5);
+  perspective: 38rem;
+}
+.eroe-dadi .dado {
+  transform: none;
+  filter: drop-shadow(0 1.1rem 0.9rem rgb(0 0 0 / 0.45));
+}
+.eroe-dadi .dado::after {
+  display: none;
+}
+.eroe-dadi .dado__cubo {
+  transition: none;
+  animation: eroe-gira 11s linear infinite;
+}
+.eroe-dadi .dado + .dado .dado__cubo {
+  animation-duration: 14s;
+  animation-direction: reverse;
+}
+@keyframes eroe-gira {
+  from { transform: rotateX(-24deg) rotateY(0deg) rotateZ(8deg); }
+  to   { transform: rotateX(-24deg) rotateY(360deg) rotateZ(8deg); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .eroe-dadi .dado__cubo { animation: none; transform: rotateX(-24deg) rotateY(-34deg) rotateZ(8deg); }
+}
+
+/* --- Mentre dadi e pedina si muovono -------------------------------------- */
+
+/* I comandi del turno aspettano la fine del movimento: niente clic a vuoto. */
+.pn-attesa .pn-turno button {
+  pointer-events: none;
+}
+.pn-attesa .pn-turno .btn--primario {
+  filter: saturate(0.6) brightness(0.9);
+}
+
+/* Il pulsante principale del proprio turno: un riflesso che passa ogni tanto. */
+.pn-turno .btn--primario {
+  position: relative;
+  overflow: hidden;
+}
+.pn-turno .btn--primario:not(:disabled):not([aria-disabled="true"])::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: -40%;
+  width: 30%;
+  background: linear-gradient(100deg, transparent, rgb(255 255 255 / 0.55), transparent);
+  transform: skewX(-18deg);
+  animation: riflesso 3.6s ease-in-out infinite;
+  pointer-events: none;
+}
+@keyframes riflesso {
+  0%, 62% { left: -40%; }
+  100%    { left: 130%; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .pn-turno .btn--primario::after { display: none; }
+}
+
+/* --- Messaggi a comparsa --------------------------------------------------- */
+
+/* In alto, sotto la barra: in basso coprirebbero il lato del tabellone più
+   vicino, cioè proprio dove si sta giocando. */
+#toast,
+body:has(#pannelli.pannelli-pronti:not([hidden])) #toast {
+  top: calc(var(--altezza-barra) + var(--spazio-2) + env(safe-area-inset-top));
+  bottom: auto;
+  flex-direction: column;
+}
+@keyframes toast-entra {
+  from { opacity: 0; transform: translateY(-12px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+.toast--uscita {
+  transform: translateY(-8px);
+}
