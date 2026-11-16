@@ -29,6 +29,17 @@ const LIMITI = Object.freeze({
   HEARTBEAT_MS: 30 * 1000,
   // Anti-flood: messaggi al secondo per socket prima di scartarli.
   MESSAGGI_AL_SECONDO_MAX: 30,
+  // Tetto alle stanze aperte contemporaneamente (creaStanza → TROPPE_STANZE).
+  MAX_STANZE: 200,
+  // Eventi di log inclusi in ogni `stato` di aggiornamento; il log completo
+  // (fino a LOG_MAX) arriva solo con `entrato`/`riconnetti`.
+  LOG_BREVE: 30,
+});
+
+/** Codici di chiusura WebSocket usati dal server (oltre a quelli standard). */
+const CHIUSURE = Object.freeze({
+  SOSTITUITO: 4001,       // lo stesso giocatore si è connesso da un'altra scheda
+  STANZA_CHIUSA: 4002,    // la stanza è stata eliminata (inattività o fine partita)
 });
 
 /** Alfabeto dei codici stanza: niente I, O, 0, 1 per evitare ambiguità a voce. */
@@ -96,6 +107,7 @@ const ERRORI = Object.freeze({
   TOKEN_NON_VALIDO: 'Sessione non valida o scaduta',
   SOLO_IN_LOBBY: 'Operazione possibile solo prima dell\'inizio della partita',
   TROPPI_MESSAGGI: 'Stai inviando troppi messaggi: rallenta',
+  TROPPE_STANZE: 'Il server ha raggiunto il numero massimo di stanze aperte: riprova più tardi',
   ERRORE_INTERNO: 'Errore interno del server: riprova',
 
   // Motore
@@ -150,6 +162,14 @@ function normalizzaNome(valore) {
   const nome = valore.replace(/[\u0000-\u001f\u007f]/g, '').replace(/\s+/g, ' ').trim();
   if (nome.length < LIMITI.NOME_MIN || nome.length > LIMITI.NOME_MAX) return null;
   return nome;
+}
+
+/**
+ * Chiave di confronto per l'unicità dei nomi in una stanza: minuscolo e senza
+ * segni diacritici, così "Anna", "ANNA" e "Ánna" contano come lo stesso nome.
+ */
+function chiaveNome(nome) {
+  return String(nome).normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase();
 }
 
 /** '#D62828' → '#d62828'; non valido → null. */
@@ -339,6 +359,7 @@ function analizza(testo) {
 
 module.exports = {
   LIMITI,
+  CHIUSURE,
   ALFABETO_CODICE,
   REGEX_CODICE,
   REGEX_COLORE,
@@ -350,6 +371,7 @@ module.exports = {
   ERRORI,
   normalizzaCodice,
   normalizzaNome,
+  chiaveNome,
   normalizzaColore,
   normalizzaToken,
   errore,

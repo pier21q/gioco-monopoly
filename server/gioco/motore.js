@@ -46,6 +46,7 @@ const AZIONI = Object.freeze([
   'usaCartaPrigione',
   'finisciTurno',
   'dichiaraBancarotta',
+  'abbandona',
 ]);
 
 const FASI = Object.freeze([
@@ -301,6 +302,9 @@ function verificaPermesso(stato, g, tipo) {
       }
       if (stato.debito.giocatoreId !== g.id) return errore('NON_DEBITORE');
       return null;
+    case 'abbandona':
+      // Bancarotta volontaria: ammessa a ogni giocatore in gioco, in qualunque fase.
+      return null;
     default:
       return errore('AZIONE_NON_VALIDA', `Azione sconosciuta: ${tipo}`);
   }
@@ -392,8 +396,9 @@ function risolviProprieta(stato, g, ctx, c, opz) {
   if (voce.proprietario === g.id) return;
   const owner = trova(stato, voce.proprietario);
   if (voce.ipotecata) {
-    emetti(ctx, 'pagamento', g.id, `${c.nome} è ipotecata: ${g.nome} non paga l'affitto a ${owner.nome}`,
-      { daId: g.id, aId: owner.id, importo: 0, motivo: 'affitto' });
+    // Affitto non dovuto: stesso tipo 'affitto' con importo 0 e il motivo (INTERFACCE.md §6).
+    emetti(ctx, 'affitto', g.id, `${c.nome} è ipotecata: ${g.nome} non paga l'affitto a ${owner.nome}`,
+      { daId: g.id, aId: owner.id, casella: c.indice, importo: 0, ipotecata: true });
     return;
   }
   let dadi;
@@ -821,6 +826,27 @@ const GESTORI = {
   /** Bancarotta del debitore: beni al creditore o alla banca (all'asta). */
   dichiaraBancarotta(stato, g, azione, ctx) {
     bancarotta.liquidaInterno(stato, g.id, stato.debito.creditoreId, ctx);
+    return undefined;
+  },
+
+  /**
+   * Abbandono volontario: bancarotta verso il creditore del proprio debito
+   * aperto (se c'è) altrimenti verso la banca. Se partecipa a un'asta ne esce;
+   * se era il miglior offerente l'asta riparte da zero fra gli altri.
+   */
+  abbandona(stato, g, azione, ctx) {
+    const creditoreId = stato.debito && stato.debito.giocatoreId === g.id ? stato.debito.creditoreId : null;
+    const a = stato.asta;
+    if (a && a.partecipanti.includes(g.id)) {
+      if (!a.passati.includes(g.id)) a.passati.push(g.id);
+      if (a.migliorOfferenteId === g.id) {
+        a.migliorOfferenteId = null;
+        a.offertaMassima = 0;
+      }
+    }
+    emetti(ctx, 'abbandono', g.id, `${g.nome} abbandona la partita`, { creditoreId: creditoreId ?? null });
+    bancarotta.liquidaInterno(stato, g.id, creditoreId ?? null, ctx);
+    if (stato.asta) N.verificaChiusuraAsta(stato, ctx);
     return undefined;
   },
 };

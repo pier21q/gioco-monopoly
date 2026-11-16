@@ -19,10 +19,47 @@ const registro = new Map(); // codice → Stanza
 
 const TEMPI = Object.freeze({
   RIMOZIONE_LOBBY_DISCONNESSO_MS: 60 * 1000,
+  // In partita: dopo questa tolleranza un disconnesso che blocca il gioco
+  // viene fatto avanzare dal motore (turno passato, asta passata, scambio annullato).
+  TOLLERANZA_DISCONNESSIONE_MS: 45 * 1000,
+  // Un debitore disconnesso da così a lungo viene dichiarato in bancarotta d'ufficio.
+  BANCAROTTA_DISCONNESSO_MS: 3 * 60 * 1000,
   STANZA_VUOTA_MS: 10 * 60 * 1000,
   STANZA_INATTIVA_MS: 2 * 60 * 60 * 1000,
   FINE_PARTITA_MS: 30 * 60 * 1000,
 });
+
+// ---------------------------------------------------------------------------
+// Timer per giocatore (lobby, tolleranza, bancarotta d'ufficio)
+// ---------------------------------------------------------------------------
+
+/** Annulla i timer di un giocatore (o di tutti, senza giocatoreId). */
+function annullaTimer(stanza, giocatoreId) {
+  if (!stanza || !stanza.timer) return;
+  for (const [chiave, t] of [...stanza.timer]) {
+    if (giocatoreId === undefined || chiave.startsWith(`${giocatoreId}|`)) {
+      clearTimeout(t);
+      stanza.timer.delete(chiave);
+    }
+  }
+}
+
+/** Programma `fn` dopo `ms`; il timer non tiene vivo il processo (test, arresto). */
+function programmaTimer(stanza, giocatoreId, nome, ms, fn) {
+  const chiave = `${giocatoreId}|${nome}`;
+  if (stanza.timer.has(chiave)) clearTimeout(stanza.timer.get(chiave));
+  const t = setTimeout(() => {
+    stanza.timer.delete(chiave);
+    if (stanza.chiusa) return;
+    try {
+      fn();
+    } catch (e) {
+      console.error('[stanze] errore nel timer', nome, stanza.codice, e);
+    }
+  }, ms);
+  if (typeof t.unref === 'function') t.unref();
+  stanza.timer.set(chiave, t);
+}
 
 // ---------------------------------------------------------------------------
 // Generatori
@@ -113,6 +150,7 @@ function crea({ ora = Date.now, random = Math.random } = {}) {
     aggiornataIl: t,
     vuotaDal: t,
     giocatori: new Map(),
+    timer: new Map(),
     stato: null,
   };
   sincronizzaLobby(stanza, [], t);
@@ -145,8 +183,8 @@ function entra(stanza, { nome, colore, socket, ora = Date.now }) {
 
   const nomeOk = P.normalizzaNome(nome);
   if (!nomeOk) return errore('NOME_NON_VALIDO');
-  const nomiUsati = [...stanza.giocatori.values()].map((g) => g.nome.toLowerCase());
-  if (nomiUsati.includes(nomeOk.toLowerCase())) return errore('NOME_OCCUPATO');
+  const nomiUsati = [...stanza.giocatori.values()].map((g) => P.chiaveNome(g.nome));
+  if (nomiUsati.includes(P.chiaveNome(nomeOk))) return errore('NOME_OCCUPATO');
 
   let coloreOk = null;
   if (colore) {
@@ -184,8 +222,11 @@ function riconnetti(codice, token, socket, { ora = Date.now } = {}) {
 
   const t = ora();
   if (giocatore.socket && giocatore.socket !== socket && typeof giocatore.socket.close === 'function') {
-    try { giocatore.socket.close(4000, 'Sostituito da una nuova connessione'); } catch { /* ignora */ }
+    // Codice dedicato: il client lo riconosce e NON prova a riconnettersi (altrimenti
+    // due schede dello stesso browser si butterebbero fuori a vicenda in loop).
+    try { giocatore.socket.close(P.CHIUSURE.SOSTITUITO, 'Sostituito da una nuova connessione'); } catch { /* ignora */ }
   }
+  annullaTimer(stanza, giocatore.id);
   giocatore.socket = socket || null;
   giocatore.connesso = true;
   giocatore.disconnessoIl = null;
@@ -203,6 +244,7 @@ function esci(stanza, giocatoreId, { ora = Date.now } = {}) {
   if (stanza.stato.fase !== 'lobby') return errore('SOLO_IN_LOBBY');
   const g = stanza.giocatori.get(giocatoreId);
   stanza.giocatori.delete(giocatoreId);
+  annullaTimer(stanza, giocatoreId);
   const t = ora();
   if (stanza.hostId === giocatoreId) {
     const primo = stanza.giocatori.values().next().value;
@@ -220,8 +262,14 @@ function esci(stanza, giocatoreId, { ora = Date.now } = {}) {
   return { eventi, chiusa: false };
 }
 
-/** Il socket si è chiuso: il giocatore resta, marcato come disconnesso. */
-function disconnetti(stanza, giocatoreId, { ora = Date.now } = {}) {
+/**
+ * Il socket si è chiuso: il giocatore resta, marcato come disconnesso.
+ * In lobby viene rimosso dopo RIMOZIONE_LOBBY_DISCONNESSO_MS; in partita,
+ * dopo TOLLERANZA_DISCONNESSIONE_MS, il motore fa avanzare il gioco se lo
+ * stava bloccando e, se è un debitore, dopo BANCAROTTA_DISCONNESSO_MS viene
+ * dichiarato in bancarotta d'ufficio (azione `abbandona` eseguita per lui).
+ */
+function disconnetti(stanza, giocatoreId, { ora = Date.now, random = Math.random } = {}) {
   if (!stanza || !stanza.giocatori.has(giocatoreId)) return { eventi: [] };
   const g = stanza.giocatori.get(giocatoreId);
   const t = ora();
@@ -230,9 +278,55 @@ function disconnetti(stanza, giocatoreId, { ora = Date.now } = {}) {
   g.disconnessoIl = t;
   if ([...stanza.giocatori.values()].every((x) => !x.connesso)) stanza.vuotaDal = t;
   const eventi = [evento('connessione', giocatoreId, `${g.nome} ha perso la connessione`, { giocatoreId, connesso: false }, t)];
-  if (stanza.stato.fase === 'lobby') sincronizzaLobby(stanza, eventi, t);
-  else sincronizzaConnessione(stanza, giocatoreId, false, eventi, t);
+  if (stanza.stato.fase === 'lobby') {
+    sincronizzaLobby(stanza, eventi, t);
+    programmaTimer(stanza, giocatoreId, 'lobby', TEMPI.RIMOZIONE_LOBBY_DISCONNESSO_MS, () => {
+      const reg = stanza.giocatori.get(giocatoreId);
+      if (!reg || reg.connesso || stanza.stato.fase !== 'lobby') return;
+      const esito = esci(stanza, giocatoreId, { ora });
+      if (!esito.errore && !esito.chiusa) diffondiAggiornamento(stanza, esito.eventi);
+    });
+  } else {
+    sincronizzaConnessione(stanza, giocatoreId, false, eventi, t);
+    programmaTimer(stanza, giocatoreId, 'tolleranza', TEMPI.TOLLERANZA_DISCONNESSIONE_MS,
+      () => sbloccaDisconnesso(stanza, giocatoreId, { ora, random }));
+    programmaTimer(stanza, giocatoreId, 'bancarotta', TEMPI.BANCAROTTA_DISCONNESSO_MS,
+      () => bancarottaDisconnesso(stanza, giocatoreId, { ora, random }));
+  }
   return { eventi };
+}
+
+/** Scaduta la tolleranza: se il disconnesso blocca la partita, il motore la fa avanzare. */
+function sbloccaDisconnesso(stanza, giocatoreId, { ora, random }) {
+  const g = stanza.giocatori.get(giocatoreId);
+  if (!g || g.connesso) return;
+  const stato = stanza.stato;
+  if (stato.fase === 'lobby' || stato.fase === 'finePartita') return;
+  let esito;
+  try {
+    esito = motore.gestisciDisconnessione(stato, giocatoreId, { random, ora });
+  } catch (e) {
+    console.error('[stanze] gestisciDisconnessione ha lanciato', stanza.codice, e);
+    return;
+  }
+  if (!esito || !esito.eventi || esito.eventi.length === 0) return;
+  for (const x of esito.stato.giocatori) {
+    const reg = stanza.giocatori.get(x.id);
+    if (reg) x.connesso = reg.connesso;
+  }
+  stanza.stato = esito.stato;
+  stanza.aggiornataIl = ora();
+  diffondiAggiornamento(stanza, esito.eventi);
+}
+
+/** Debitore assente da troppo: bancarotta d'ufficio tramite l'azione `abbandona`. */
+function bancarottaDisconnesso(stanza, giocatoreId, { ora, random }) {
+  const g = stanza.giocatori.get(giocatoreId);
+  if (!g || g.connesso) return;
+  const stato = stanza.stato;
+  if (stato.fase !== 'debito' || !stato.debito || stato.debito.giocatoreId !== giocatoreId) return;
+  const esito = applica(stanza, giocatoreId, { tipo: 'abbandona' }, { random, ora });
+  if (!esito.errore) diffondiAggiornamento(stanza, esito.eventi);
 }
 
 /** Avvia la partita (solo host, almeno 2 giocatori connessi). */
@@ -310,9 +404,17 @@ function applica(stanza, giocatoreId, azione, { random = Math.random, ora = Date
   return { eventi: Array.isArray(esito.eventi) ? esito.eventi : [] };
 }
 
-/** Lo stato come va inviato ai client (senza mazzi). */
-function statoPerClient(stanza) {
-  return motore.statoPubblico(stanza.stato);
+/**
+ * Lo stato come va inviato ai client (senza mazzi). Di norma il log è
+ * accorciato agli ultimi LOG_BREVE eventi; con `completo: true` (ingresso e
+ * riconnessione) arriva tutto, così il client ricostruisce la cronaca.
+ */
+function statoPerClient(stanza, { completo = false } = {}) {
+  const stato = motore.statoPubblico(stanza.stato);
+  if (!completo && Array.isArray(stato.log) && stato.log.length > P.LIMITI.LOG_BREVE) {
+    stato.log = stato.log.slice(-P.LIMITI.LOG_BREVE);
+  }
+  return stato;
 }
 
 /** Invia un messaggio (oggetto) a tutti i socket aperti della stanza. */
@@ -361,23 +463,41 @@ function pulisci({ ora = Date.now } = {}) {
       t - stanza.aggiornataIl > TEMPI.STANZA_INATTIVA_MS ||
       (stanza.stato.fase === 'finePartita' && t - stanza.aggiornataIl > TEMPI.FINE_PARTITA_MS);
     if (daRimuovere) {
-      registro.delete(stanza.codice);
-      stanza.chiusa = true;
-      // Avvisa chi è ancora collegato (stanza inattiva o partita finita da tempo).
-      broadcast(stanza, P.errore('STANZA_INESISTENTE', { messaggio: 'La stanza è stata chiusa per inattività' }));
-      for (const g of stanza.giocatori.values()) g.socket = null;
+      chiudiStanza(stanza, 'La stanza è stata chiusa per inattività');
       rimosse += 1;
     }
   }
   return rimosse;
 }
 
+/** Elimina una stanza: avvisa e chiude i socket ancora collegati (codice 4002). */
+function chiudiStanza(stanza, messaggio) {
+  registro.delete(stanza.codice);
+  stanza.chiusa = true;
+  annullaTimer(stanza);
+  broadcast(stanza, P.errore('STANZA_INESISTENTE', { messaggio }));
+  for (const g of stanza.giocatori.values()) {
+    const s = g.socket;
+    g.socket = null;
+    if (s && typeof s.close === 'function') {
+      try { s.close(P.CHIUSURE.STANZA_CHIUSA, 'Stanza chiusa'); } catch { /* ignora */ }
+    }
+  }
+}
+
 function rimuovi(codice) {
-  return registro.delete(P.normalizzaCodice(codice));
+  const stanza = registro.get(P.normalizzaCodice(codice));
+  if (!stanza) return false;
+  chiudiStanza(stanza, 'La stanza è stata chiusa');
+  return true;
 }
 
 /** Svuota il registro (per i test). */
 function azzera() {
+  for (const stanza of registro.values()) {
+    annullaTimer(stanza);
+    stanza.chiusa = true;
+  }
   registro.clear();
 }
 
@@ -398,6 +518,8 @@ module.exports = {
   statoPerClient,
   broadcast,
   diffondiAggiornamento,
+  sbloccaDisconnesso,
+  bancarottaDisconnesso,
   pulisci,
   rimuovi,
   azzera,

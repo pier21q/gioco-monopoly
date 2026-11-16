@@ -57,21 +57,21 @@ const MOLTIPLICATORI_SOCIETA = [4, 10];
 function proprieta(indice, nome, gruppo, prezzo, affitti, costoCasa) {
   return {
     indice, tipo: 'proprieta', nome, gruppo, prezzo,
-    affitti, costoCasa, importoTassa: null, ipoteca: prezzo / 2,
+    affitti: Object.freeze(affitti.slice()), costoCasa, importoTassa: null, ipoteca: prezzo / 2,
   };
 }
 
 function stazione(indice, nome) {
   return {
     indice, tipo: 'stazione', nome, gruppo: 'stazione', prezzo: 200,
-    affitti: AFFITTI_STAZIONE.slice(), costoCasa: null, importoTassa: null, ipoteca: 100,
+    affitti: Object.freeze(AFFITTI_STAZIONE.slice()), costoCasa: null, importoTassa: null, ipoteca: 100,
   };
 }
 
 function societa(indice, nome) {
   return {
     indice, tipo: 'societa', nome, gruppo: 'societa', prezzo: 150,
-    affitti: MOLTIPLICATORI_SOCIETA.slice(), costoCasa: null, importoTassa: null, ipoteca: 75,
+    affitti: Object.freeze(MOLTIPLICATORI_SOCIETA.slice()), costoCasa: null, importoTassa: null, ipoteca: 75,
   };
 }
 
@@ -136,8 +136,13 @@ const CASELLE = [
   proprieta(39, 'Parco della Vittoria', 'blu', 400, [50, 200, 600, 1400, 1700, 2000], 200),
 ];
 
+// Congelamento profondo: nessun consumatore può alterare per errore i dati
+// condivisi fra tutte le stanze (gli array `affitti` sono già congelati).
 CASELLE.forEach(Object.freeze);
 Object.freeze(CASELLE);
+Object.values(GRUPPI).forEach(Object.freeze);
+Object.freeze(AFFITTI_STAZIONE);
+Object.freeze(MOLTIPLICATORI_SOCIETA);
 
 // ---------------------------------------------------------------------------
 // Piccole utilità di sola lettura sul tabellone.
