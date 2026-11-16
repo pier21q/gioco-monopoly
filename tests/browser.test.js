@@ -175,7 +175,7 @@ async function apriScheda(cdp, { larghezza, altezza, telefono = false }) {
         if (ultimo && !String(ultimo).startsWith('errore:')) return ultimo;
         await pausa(100);
       }
-      throw new Error(`${cosa}: non è successo in ${millisecondi} ms a ${larghezza}px (ultimo valore: ${JSON.stringify(ultimo)}; errori: ${errori.join(' | ') || 'nessuno'})`);
+      throw new Error(`${cosa}: non è successo in ${millisecondi} ms a ${larghezza}px (ultimo valore: ${JSON.stringify(ultimo)}; errori: ${errori.join(' | ') || 'nessuno'}; pagina: ${await scheda.diagnosi()})`);
     },
     /**
      * Clic vero del mouse al centro dell'elemento, che deve essere visibile e
@@ -205,9 +205,33 @@ async function apriScheda(cdp, { larghezza, altezza, telefono = false }) {
       await invia('Input.dispatchMouseEvent', { type: 'mousePressed', x: p.x, y: p.y, button: 'left', clickCount: 1 });
       await invia('Input.dispatchMouseEvent', { type: 'mouseReleased', x: p.x, y: p.y, button: 'left', clickCount: 1 });
     },
+    /** Scrive in un campo e controlla che il testo ci sia davvero (riprova se il clic è andato a vuoto). */
     async scrivi(selettore, testo) {
-      await scheda.clicca(selettore);
-      await invia('Input.insertText', { text: testo });
+      let valore = null;
+      for (let tentativo = 0; tentativo < 4; tentativo += 1) {
+        await scheda.clicca(selettore);
+        await invia('Input.insertText', { text: testo });
+        valore = await scheda.valuta(`document.querySelector(${JSON.stringify(selettore)}).value`);
+        if (valore === testo) return;
+        await scheda.valuta(`document.querySelector(${JSON.stringify(selettore)}).value = ''`);
+        await pausa(200);
+      }
+      assert.equal(valore, testo, `a ${larghezza}px non riesco a scrivere in ${selettore}`);
+    },
+    /** Com'è messa la pagina adesso: va in coda ai messaggi d'errore, per capire cosa è andato storto. */
+    async diagnosi() {
+      try {
+        return JSON.stringify(await scheda.valuta(`(() => ({
+          vista: document.querySelector('#app').dataset.vista + '/' + (document.querySelector('#lobby').dataset.vista || ''),
+          connessione: document.querySelector('#connessione').dataset.stato,
+          erroreLobby: (document.querySelector('#lobby-errore') || {}).textContent || '',
+          nome: (document.querySelector('#lobby-nome') || {}).value,
+          toast: [...document.querySelectorAll('#toast .toast__testo')].map((n) => n.textContent),
+          finestra: (document.querySelector('dialog[open] .dlg__titolo') || {}).textContent || null,
+        }))()`));
+      } catch (e) {
+        return `diagnosi non riuscita: ${e.message}`;
+      }
     },
   };
   return scheda;
@@ -273,8 +297,12 @@ test('browser: una partita a due schede, a 1280 e a 375 pixel, senza errori Java
     const bruno = await apriScheda(cdp, { larghezza: 375, altezza: 812, telefono: true });
 
     // Anna crea la stanza.
+    // Quando la connessione passa a "Connesso" la barra in alto può cambiare
+    // altezza (su un telefono l'indicatore si accorcia) e la pagina si sposta:
+    // si comincia a cliccare solo dopo.
+    const PRONTA = 'Boolean(document.querySelector("#lobby-nome")) && document.querySelector("#connessione").dataset.stato === "connesso"';
     await anna.vai(base);
-    await anna.aspetta('Boolean(document.querySelector("#lobby-nome"))', 'modulo d\'ingresso di Anna');
+    await anna.aspetta(PRONTA, 'modulo d\'ingresso di Anna');
     assert.equal(await anna.valuta('document.activeElement === document.body'), true,
       'al primo caricamento il focus resta sulla pagina: il primo Tab porta a "Salta al contenuto"');
     await anna.scrivi('#lobby-nome', 'Anna');
@@ -284,10 +312,11 @@ test('browser: una partita a due schede, a 1280 e a 375 pixel, senza errori Java
 
     // Bruno entra dal link, sul "telefono".
     await bruno.vai(`${base}/?stanza=${codice}`);
-    await bruno.aspetta('Boolean(document.querySelector("#lobby-nome"))', 'modulo d\'ingresso di Bruno');
+    await bruno.aspetta(PRONTA, 'modulo d\'ingresso di Bruno');
     assert.equal(await bruno.valuta('document.querySelector("#lobby-codice").value'), codice, 'il codice arriva dal link');
     await bruno.scrivi('#lobby-nome', 'Bruno');
     await bruno.clicca('button[data-azione="entra"]');
+    await bruno.aspetta('document.querySelector("#lobby").dataset.vista === "sala"', 'Bruno nella sala d\'attesa');
     await anna.aspetta('document.querySelectorAll("#sala-giocatori .sala__giocatore").length === 2', 'Bruno nella sala d\'attesa di Anna');
     const salaStretta = await bruno.valuta(MISURE);
     assert.ok(salaStretta.larga <= salaStretta.finestra + 1, `sala d'attesa a 375px: niente scorrimento di lato (${salaStretta.larga}px)`);
