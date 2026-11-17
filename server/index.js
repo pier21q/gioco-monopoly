@@ -664,6 +664,20 @@ function collegaSocket(socket, { publicUrl, random, ora, ip = null, chiaveAdmin 
       return undefined;
     },
 
+    prendoTempo() {
+      // Nessuna risposta se non serve: vale solo per chi è di turno in fase `mossa`.
+      if (!inStanza()) return undefined;
+      if (stanze.prendoTempo(ctx.stanza, ctx.giocatoreId, { ora, random })) stanze.diffondiAggiornamento(ctx.stanza, []);
+      return undefined;
+    },
+
+    tempoScambio(m) {
+      if (!inStanza()) return inviaErrore(socket, 'NON_IN_STANZA', { rif: m.rif });
+      const esito = stanze.prendiTempoScambio(ctx.stanza, ctx.giocatoreId, m.scambioId, { ora, random });
+      if (esito.errore) return inviaErrore(socket, esito.errore.codice, extraErrore(esito.errore, m.rif));
+      return stanze.diffondiAggiornamento(ctx.stanza, esito.eventi);
+    },
+
     chiudiStanza(m) {
       if (!inStanza()) return inviaErrore(socket, 'NON_IN_STANZA', { rif: m.rif });
       if (!stanze.puoComandare(ctx.stanza, ctx.giocatoreId)) return inviaErrore(socket, 'NON_ADMIN', { rif: m.rif });

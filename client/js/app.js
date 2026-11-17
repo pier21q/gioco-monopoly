@@ -33,7 +33,8 @@ export const AZIONI_GIOCO = Object.freeze([
 /** Messaggi di protocollo inviati così come sono (§3.2). */
 export const MESSAGGI_PROTOCOLLO = Object.freeze([
   'creaStanza', 'entraStanza', 'avviaPartita', 'riconnetti', 'esciStanza',
-  'chiudiStanza', 'cacciaGiocatore', 'cediAdmin', 'lasciaAdmin', 'impostaRegole',
+  'chiudiStanza', 'cacciaGiocatore', 'cediAdmin', 'lasciaAdmin', 'impostaRegole', 'prendoTempo',
+  'tempoScambio',
 ]);
 
 /** Dove il browser ricorda la chiave del link da admin. */
@@ -500,6 +501,11 @@ export function toastPerEvento(evento, partita, mioId) {
       return d.scambio?.aId === mioId
         ? { testo: `${nome(d.scambio.daId)} ti propone uno scambio`, livello: 'avviso', durata: 6000 }
         : null;
+    case 'tempoScambio':
+      // Lo vede chi ha fatto la proposta: il conto alla rovescia si è allungato.
+      return partita && partita.scambio && partita.scambio.daId === mioId && d.scambioId === partita.scambio.id
+        ? { testo: `${nome(evento.giocatoreId)} prende altri 30 secondi per rispondere`, livello: 'info' }
+        : null;
     case 'scambioRifiutato':
       return d.scambio && (d.scambio.daId === mioId || d.scambio.aId === mioId) ? { testo, livello: 'info' } : null;
     case 'debito':
@@ -846,6 +852,7 @@ async function avvia() {
         // di questo browser, che le finestre usano per il conto alla rovescia.
         const adesso = Date.now();
         if (nuova.scadenza && Number.isFinite(nuova.scadenza.traMs)) nuova.scadenza.alle = adesso + nuova.scadenza.traMs;
+        if (nuova.scadenzaScambio && Number.isFinite(nuova.scadenzaScambio.traMs)) nuova.scadenzaScambio.alle = adesso + nuova.scadenzaScambio.traMs;
         if (Number.isFinite(nuova.chiusuraTraMs)) {
           nuova.chiusuraAlle = adesso + nuova.chiusuraTraMs;
           nuova.chiusuraDurataMs = Math.max(nuova.chiusuraTraMs, s.partita?.chiusuraDurataMs || 0);

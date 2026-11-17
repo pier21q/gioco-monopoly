@@ -479,5 +479,26 @@ test('pannelli.tempoFineTurno: il conto alla rovescia per finire il turno, per t
   assert.deepEqual(pn.tempoFineTurno(p, A), { alle: 1000, durataMs: 15000, etichetta: 'Il turno finisce da solo tra' });
   assert.equal(pn.tempoFineTurno(p, B).etichetta, 'Il turno di Anna finisce tra');
   assert.equal(pn.tempoFineTurno({ ...p, fase: 'daLanciare' }, A), null, 'prima di lanciare non c’è');
-  assert.equal(pn.tempoFineTurno({ ...p, scambio: { id: 'x' } }, A), null, 'con uno scambio in attesa vale il tempo lungo');
+  assert.ok(pn.tempoFineTurno({ ...p, scambio: { id: 'x' } }, A), 'una proposta di scambio non ferma il turno');
+});
+
+test('dialoghi: chiedere tempo per decidere e prendere tempo su una proposta', { skip: SALTA }, async () => {
+  const d = await C.carica('dialoghi.js');
+  const { A, B } = H.ID;
+  const p = motore.statoPubblico(H.turnoDi(H.nuovaPartita(2), A, 'mossa'));
+  p.scadenza = { traMs: 15000, durataMs: 15000, giocatori: [A] };
+  assert.equal(d.serveTempo(p, A, 'gestione'), true, 'aprire la gestione chiede il minuto');
+  assert.equal(d.serveTempo(p, A, 'dettaglioCasella'), true);
+  assert.equal(d.serveTempo(p, A, 'scambio', { nuovo: true }), true);
+  assert.equal(d.serveTempo(p, A, 'scambio'), false, 'guardare una proposta non conta');
+  assert.equal(d.serveTempo(p, A, 'regole'), false);
+  assert.equal(d.serveTempo(p, B, 'gestione'), false, 'solo chi è di turno');
+  assert.equal(d.serveTempo({ ...p, fase: 'daLanciare' }, A, 'gestione'), false);
+  assert.equal(d.serveTempo({ ...p, scadenza: { ...p.scadenza, durataMs: 60000 } }, A, 'gestione'), false, 'già lungo');
+
+  assert.equal(d.formattaSecondi(45), '45 s');
+  assert.equal(d.formattaSecondi(90), '1:30');
+  assert.equal(d.formattaSecondi(150), '2:30');
+  assert.equal(d.motivoTempoScambio({ scadenzaScambio: { durataMs: 90000, massimoMs: 150000 } }), null);
+  assert.match(d.motivoTempoScambio({ scadenzaScambio: { durataMs: 150000, massimoMs: 150000 } }), /al massimo 2:30/);
 });

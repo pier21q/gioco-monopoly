@@ -319,13 +319,12 @@ function azionePrincipale(p, mio) {
 
 /**
  * Il timer per finire il turno (fase `mossa`, scadenza mandata dal server),
- * visibile a tutti: null se non c'è o se è quello lungo (scambio in attesa).
+ * visibile a tutti: null se non c'è.
  * @returns {{alle: number, durataMs: number, etichetta: string} | null}
  */
 export function tempoFineTurno(p, mio) {
   const sc = p && p.scadenza;
   if (!p || p.fase !== 'mossa' || !sc || !Number.isFinite(sc.alle) || !p.turno) return null;
-  if (p.scambio) return null;
   const diTurno = giocatoreDa(p, p.turno.giocatoreId);
   if (!diTurno) return null;
   const etichetta = diTurno.id === mio ? 'Il turno finisce da solo tra' : `Il turno di ${diTurno.nome} finisce tra`;
@@ -347,6 +346,7 @@ function monta(radice) {
   const dadi = el('div', { class: 'pn-dadi', role: 'img' });
   const mioDenaro = el('p', { class: 'pn-turno__denaro' });
   const tempoTurno = el('div', { class: 'pn-turno__tempo', hidden: true });
+  const proposta = el('div', { class: 'pn-proposta', hidden: true });
   const avvisi = el('div', { class: 'pn-avvisi' });
 
   const pulsanti = new Map();
@@ -369,6 +369,7 @@ function monta(radice) {
       dadi),
     mioDenaro,
     tempoTurno,
+    proposta,
     avvisi,
     maniglia,
     azioni);
@@ -394,7 +395,7 @@ function monta(radice) {
   radice.classList.add('pannelli-pronti');
 
   ui = {
-    radice, nodo, turno, titolo, guida, dadi, mioDenaro, tempoTurno, avvisi, azioni, maniglia, pulsanti,
+    radice, nodo, turno, titolo, guida, dadi, mioDenaro, tempoTurno, proposta, avvisi, azioni, maniglia, pulsanti,
     schede, tab: { giocatori: tabG, cronaca: tabC }, sezioni: { giocatori: sezGiocatori, cronaca: sezCronaca },
     elencoGiocatori, cronaca, schedaAttiva: 'giocatori', firmaAvvisi: '', firmeGiocatori: new Map(),
     // La cronaca segue la partita finché l'utente non la scorre all'indietro.
@@ -676,6 +677,7 @@ function disegnaTurno(p, mio) {
     ui.tempoTurno.hidden = !tempo;
   }
 
+  disegnaProposta(p, mio);
   disegnaAvvisi(p, mio);
 
   // Pulsanti
@@ -693,13 +695,69 @@ function disegnaTurno(p, mio) {
   ui.turno.classList.toggle('pn-turno--con-principale', !!principale);
 }
 
+/** Proposte di scambio che questo giocatore ha nascosto (per id). */
+const proposteNascoste = new Set();
+/** L'ultima partita disegnata: i pulsanti Nascondi/Mostra ridisegnano con questa, non con quella della closure. */
+let ultimaVista = { p: null, mio: null };
+
+function ridisegnaProposta(focusSu) {
+  const { p, mio } = ultimaVista;
+  if (!p) return;
+  disegnaProposta(p, mio);
+  disegnaAvvisi(p, mio);
+  const dest = document.querySelector(`#pannelli [data-chiave="${focusSu}"]`);
+  if (dest) dest.focus();
+}
+
+/** La proposta in attesa si vede (non è nascosta e la partita non è finita)? */
+export function propostaVisibile(p) {
+  return !!(p && p.scambio && p.fase !== 'finePartita' && !proposteNascoste.has(p.scambio.id));
+}
+
+/**
+ * La scheda della proposta di scambio nel pannello del turno: la vedono tutti
+ * e non ferma niente. Si ridisegna a ogni stato (testo, pulsanti, tempo), ma
+ * il pulsante che aveva il focus lo riprende.
+ */
+function disegnaProposta(p, mio) {
+  ultimaVista = { p, mio };
+  if (!p.scambio) proposteNascoste.clear();
+  const visibile = propostaVisibile(p);
+  const sc = p.scadenzaScambio;
+  const firma = visibile
+    ? `${p.scambio.id}|${p.versione}|${sc && sc.alle}|${sc && sc.durataMs}|${(giocatoreDa(p, mio) || {}).denaro}`
+    : '';
+  if (ui.proposta.dataset.firma === firma) return;
+  ui.proposta.dataset.firma = firma;
+  const attivo = document.activeElement;
+  const chiaveAttiva = ui.proposta.contains(attivo) && attivo.dataset ? attivo.dataset.chiave : null;
+  const scheda = visibile ? dialoghi.schedaProposta(p, mio, {
+    invia: (azione) => dispatchCorrente && dispatchCorrente(azione),
+    nascondi: () => {
+      proposteNascoste.add(p.scambio.id);
+      ridisegnaProposta('avv-scambio');
+    },
+  }) : null;
+  ui.proposta.replaceChildren(...(scheda ? [scheda] : []));
+  ui.proposta.hidden = !scheda;
+  if (chiaveAttiva) {
+    const dest = ui.proposta.querySelector(`[data-chiave="${chiaveAttiva}"]`);
+    if (dest) dest.focus();
+  }
+}
+
 function disegnaAvvisi(p, mio) {
   const voci = [];
   const s = p.scambio;
-  if (s && p.fase !== 'finePartita') {
-    if (s.aId === mio) voci.push(['scambio', 'info', `${nomeDi(p, s.daId)} ti propone uno scambio`, 'Vedi la proposta', () => dialoghi.apri('scambio', {}, dispatchCorrente)]);
-    else if (s.daId === mio) voci.push(['scambio', 'neutro', `Hai proposto uno scambio ${dialoghi.aChi(nomeDi(p, s.aId))}`, 'Vedi o ritira', () => dialoghi.apri('scambio', {}, dispatchCorrente)]);
-    else voci.push(['scambio', 'neutro', `Scambio in attesa tra ${nomeDi(p, s.daId)} e ${nomeDi(p, s.aId)}`, 'Vedi', () => dialoghi.apri('scambio', {}, dispatchCorrente)]);
+  // Proposta nascosta: resta una riga per farla ricomparire.
+  if (s && p.fase !== 'finePartita' && !propostaVisibile(p)) {
+    const mostra = () => {
+      proposteNascoste.delete(s.id);
+      ridisegnaProposta('proposta-nascondi');
+    };
+    if (s.aId === mio) voci.push(['scambio', 'info', `${nomeDi(p, s.daId)} ti propone uno scambio`, 'Mostra', mostra]);
+    else if (s.daId === mio) voci.push(['scambio', 'info', `Hai proposto uno scambio ${dialoghi.aChi(nomeDi(p, s.aId))}`, 'Mostra', mostra]);
+    else voci.push(['scambio', 'neutro', `Scambio in attesa tra ${nomeDi(p, s.daId)} e ${nomeDi(p, s.aId)}`, 'Mostra', mostra]);
   }
   if (p.fase === 'asta' && p.asta) {
     const partecipo = p.asta.partecipanti.includes(mio) && !p.asta.passati.includes(mio);
@@ -1027,7 +1085,7 @@ function dialogoRichiesto(p, mio) {
   if (p.fase === 'daDecidereAcquisto' && p.turno.giocatoreId === mio) {
     return { chiave: `acquisto|${p.turno.numero}|${p.turno.doppiConsecutivi}|${io.posizione}`, tipo: 'acquisto', forte: true };
   }
-  if (p.scambio && p.scambio.aId === mio) return { chiave: `scambio|${p.scambio.id}`, tipo: 'scambio', forte: false };
+  // La proposta di scambio non apre più una finestra: è una scheda nel pannello.
   // Lancio iniziale: la finestra si apre una volta a inizio partita e a ogni spareggio in cui tocca a me.
   if (p.fase === 'ordine' && p.ordine) {
     const mioSpareggio = p.ordine.giro > 1 && p.turno.giocatoreId === mio;

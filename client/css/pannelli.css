@@ -1299,6 +1299,116 @@
   100% { transform: none; }
 }
 
+/* Proposta di scambio nel pannello del turno: la vedono tutti, si può nascondere */
+.pn-proposta[hidden] {
+  display: none;
+}
+
+.proposta {
+  display: grid;
+  gap: var(--spazio-2, 0.5rem);
+  padding: var(--spazio-2, 0.5rem) var(--spazio-3, 0.75rem) var(--spazio-3, 0.75rem);
+  border: 1px solid var(--pn-bordo);
+  border-left: 4px solid var(--pn-info);
+  border-radius: var(--pn-raggio-m);
+  background: var(--pn-info-tenue);
+}
+
+.proposta--mia {
+  border-left-color: var(--pn-primario);
+}
+
+.proposta__testa {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--spazio-2, 0.5rem);
+}
+
+.proposta__titolo {
+  margin: 0;
+  font-family: var(--pn-titoli);
+  font-size: var(--testo-m, 1rem);
+  line-height: 1.25;
+}
+
+.proposta__nascondi {
+  flex: none;
+  min-height: 2.25rem;
+  padding: 0 var(--spazio-2, 0.5rem);
+  border: 0;
+  border-radius: var(--pn-raggio-m);
+  background: transparent;
+  color: var(--pn-tenue);
+  font: inherit;
+  font-size: var(--testo-s, 0.875rem);
+  text-decoration: underline;
+  cursor: pointer;
+}
+
+.proposta__nascondi:hover {
+  color: var(--pn-testo);
+}
+
+.proposta__nascondi:focus-visible {
+  outline: 3px solid var(--pn-focus);
+  outline-offset: 1px;
+}
+
+.proposta .tempo {
+  padding-block: var(--spazio-1, 0.25rem);
+  background: var(--pn-superficie);
+}
+
+.proposta .tempo__numero {
+  font-size: var(--testo-m, 1rem);
+}
+
+.proposta__lati {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--spazio-3, 0.75rem);
+}
+
+.proposta__lato h4 {
+  margin: 0 0 0.15rem;
+  color: var(--pn-tenue);
+  font-size: var(--testo-s, 0.875rem);
+  font-weight: 700;
+}
+
+.proposta .voce-scambio {
+  font-size: var(--testo-s, 0.875rem);
+}
+
+.proposta .voce-scambio--denaro {
+  font-size: var(--testo-m, 1rem);
+}
+
+.proposta .riquadro {
+  margin: 0;
+}
+
+.proposta__azioni {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--spazio-2, 0.5rem);
+}
+
+.proposta__azioni .azione {
+  flex: 1 1 8rem;
+}
+
+.proposta__azioni .btn {
+  width: 100%;
+}
+
+/* «Prendi tempo» su una riga sua, sotto Rifiuta e Accetta. */
+.proposta__azioni .azione:has([data-chiave="proposta-tempo"]) {
+  flex-basis: 100%;
+  order: 1;
+}
+
 /* Conto alla rovescia (asta, fine del turno, chiusura della stanza a partita finita) */
 .pn-turno__tempo[hidden] {
   display: none;

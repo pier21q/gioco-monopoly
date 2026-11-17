@@ -383,19 +383,26 @@ Cose che funzionano in modo diverso dal gioco da tavolo:
   vince chi è rimasto solo. Il conto parte solo se c'è almeno un altro
   giocatore collegato che aspetta, e si azzera appena l'assente rientra: se
   cade la rete a tutti, nessuno perde niente.
-- Una proposta di scambio a cui non arriva risposta decade dopo 90 secondi,
-  perché finché è in attesa nessun altro può proporne.
+- Una proposta di scambio non ferma la partita: compare nel pannello del turno
+  di tutti (ognuno può nasconderla e farla ricomparire con «Mostra»), con il
+  conto alla rovescia. Chi la riceve risponde da lì, chi l'ha fatta può
+  ritirarla. Senza risposta decade dopo 90 secondi; chi la riceve può premere
+  «Prendi tempo (+30 s)» anche più volte, ma l'attesa non supera 2 minuti e
+  mezzo in tutto. Finché è in attesa nessun altro può proporne.
 - Se chi ha l'offerta più alta in un'asta abbandona, l'asta riparte da zero e
   chi aveva passato davanti a quell'offerta torna a poter offrire.
 - Anche chi resta collegato ma non gioca ha un tempo massimo: 3 minuti per il
   proprio turno (poi rinuncia all'acquisto o salta il turno), 15 secondi per
   finire il turno dopo aver lanciato i dadi (il conto alla rovescia si vede nel
-  pannello, a tutti; ogni mossa lo fa ripartire, e mentre si aspetta la
-  risposta a uno scambio valgono i 3 minuti), 30 secondi per
+  pannello, a tutti, e ogni mossa lo fa ripartire), che diventano un minuto
+  quando si sta decidendo: aprire la gestione (costruire, vendere, ipotecare,
+  riscattare), una nuova proposta di scambio o il dettaglio di una casella,
+  oppure fare una di queste mosse; 30 secondi per
   rispondere in un'asta (poi passa: è il timer che si vede nella finestra),
   un minuto per lanciare i dadi chiesti dalla carta della società (poi li
   lancia il gioco e il turno passa), 5 minuti per saldare un debito (poi
-  bancarotta). Trenta secondi prima compare un avviso, tranne che in asta. Riconnettersi non fa
+  bancarotta). Trenta secondi prima compare un avviso, tranne in asta e a fine
+  turno, dove il conto alla rovescia si vede già. Riconnettersi non fa
   ripartire il tempo; qualunque mossa sì. Dopo due giri interi di turni saltati
   senza che nessuno giochi, la partita smette di avanzare da sola e aspetta.
 

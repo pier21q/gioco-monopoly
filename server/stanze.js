@@ -40,6 +40,10 @@ const TEMPI = Object.freeze({
   ABBANDONO_DISCONNESSO_MS: 5 * 60 * 1000,
   // Una proposta di scambio a cui nessuno risponde scade da sola.
   SCAMBIO_MS: 90 * 1000,
+  // Chi la riceve può chiedere altri 30 secondi, anche più volte, ma una
+  // proposta non resta in attesa più di 2 minuti e mezzo in tutto.
+  SCAMBIO_PROROGA_MS: 30 * 1000,
+  SCAMBIO_MASSIMO_MS: 150 * 1000,
   // Sala d'attesa con un solo giocatore in cui non succede nulla.
   LOBBY_SOLITARIA_MS: 30 * 60 * 1000,
   STANZA_VUOTA_MS: 10 * 60 * 1000,
@@ -52,9 +56,12 @@ const TEMPI = Object.freeze({
   // Giocatori connessi che non agiscono: dopo questi tempi la partita va avanti da sola.
   INATTIVITA_TURNO_MS: 3 * 60 * 1000,
   // Dadi già lanciati (fase `mossa`): resta solo da finire il turno, e i client
-  // mostrano il conto alla rovescia. Ogni mossa (costruire, ipotecare…) lo fa
-  // ripartire; con uno scambio in attesa vale il tempo normale del turno.
+  // mostrano il conto alla rovescia. Ogni mossa lo fa ripartire.
   INATTIVITA_FINE_TURNO_MS: 15 * 1000,
+  // ...ma chi sta decidendo (ha aperto la gestione, la proposta di scambio o il
+  // dettaglio di una casella, oppure ha già costruito, ipotecato, scambiato in
+  // questo turno) ha un minuto. Le proposte di scambio non fermano il turno.
+  INATTIVITA_DECISIONE_MS: 60 * 1000,
   // Timer dell'asta: riparte a ogni offerta o passo e i client lo mostrano
   // nella finestra; allo scadere chi non ha ancora passato passa.
   INATTIVITA_ASTA_MS: 30 * 1000,
@@ -581,8 +588,35 @@ function sorvegliaScambio(stanza, { ora = Date.now, random = casualeSicuro } = {
   if (id && stanza.scambioInAttesa === id && stanza.timer.has(chiave)) return;
   annullaTimer(stanza, ID_SCAMBIO);
   stanza.scambioInAttesa = id;
+  stanza.scambioIniziatoIl = id ? ora() : null;
+  stanza.scambioScadeIl = id ? ora() + TEMPI.SCAMBIO_MS : null;
   if (!id) return;
   programmaTimer(stanza, ID_SCAMBIO, 'scadenza', TEMPI.SCAMBIO_MS, () => scadutoScambio(stanza, id, { ora, random }));
+}
+
+/**
+ * Chi riceve la proposta chiede altri SCAMBIO_PROROGA_MS per pensarci: si può
+ * ripetere finché l'attesa totale non arriva a SCAMBIO_MASSIMO_MS.
+ * Ritorna { ok: true } o { errore }.
+ */
+function prendiTempoScambio(stanza, giocatoreId, scambioId, { ora = Date.now, random = casualeSicuro } = {}) {
+  const stato = stanza && stanza.stato;
+  const sc = stato && stato.scambio;
+  if (!sc || sc.id !== scambioId || stanza.scambioInAttesa !== sc.id || !stanza.scambioScadeIl) {
+    return errore('SCAMBIO_NON_TROVATO', { motivo: 'La proposta non è più in attesa' });
+  }
+  if (sc.aId !== giocatoreId) return errore('NON_DESTINATARIO', { motivo: 'Può prendere tempo solo chi ha ricevuto la proposta' });
+  const limite = stanza.scambioIniziatoIl + TEMPI.SCAMBIO_MASSIMO_MS;
+  const nuova = Math.min(stanza.scambioScadeIl + TEMPI.SCAMBIO_PROROGA_MS, limite);
+  if (nuova <= stanza.scambioScadeIl) {
+    return errore('TEMPO_ESAURITO', { motivo: `Una proposta resta in attesa al massimo ${Math.round(TEMPI.SCAMBIO_MASSIMO_MS / 1000)} secondi` });
+  }
+  stanza.scambioScadeIl = nuova;
+  annullaTimer(stanza, ID_SCAMBIO);
+  programmaTimer(stanza, ID_SCAMBIO, 'scadenza', Math.max(0, nuova - ora()), () => scadutoScambio(stanza, sc.id, { ora, random }));
+  const g = stanza.giocatori.get(giocatoreId);
+  const testo = `${(g && g.nome) || 'Un giocatore'} prende tempo per rispondere allo scambio`;
+  return { ok: true, eventi: [evento('tempoScambio', giocatoreId, testo, { scambioId: sc.id }, ora())] };
 }
 
 /** Nessuna risposta entro SCAMBIO_MS: la proposta decade (evento `scambioRifiutato`). */
@@ -637,9 +671,23 @@ function sbloccaDisconnesso(stanza, giocatoreId, { ora = Date.now, random = casu
 // Inattività dei giocatori connessi
 // ---------------------------------------------------------------------------
 
-function durataInattivita(stato) {
+/** Azioni di chi è di turno che contano come «sta decidendo» (tempo lungo in `mossa`). */
+const AZIONI_DECISIONE = new Set(['costruisci', 'vendiCasa', 'ipoteca', 'disipoteca', 'proponiScambio', 'accettaScambio', 'rifiutaScambio']);
+
+/** Chiave del turno in cui il giocatore di turno ha chiesto tempo per decidere. */
+function chiaveDecisione(stato) {
+  return stato && stato.turno && stato.turno.giocatoreId ? `${stato.turno.numero}|${stato.turno.giocatoreId}` : null;
+}
+
+function staDecidendo(stanza) {
+  const k = chiaveDecisione(stanza.stato);
+  return !!k && stanza.decisione === k;
+}
+
+function durataInattivita(stanza) {
+  const stato = stanza.stato;
   const fase = stato.fase;
-  if (fase === 'mossa') return stato.scambio ? TEMPI.INATTIVITA_TURNO_MS : TEMPI.INATTIVITA_FINE_TURNO_MS;
+  if (fase === 'mossa') return staDecidendo(stanza) ? TEMPI.INATTIVITA_DECISIONE_MS : TEMPI.INATTIVITA_FINE_TURNO_MS;
   if (fase === 'asta') return TEMPI.INATTIVITA_ASTA_MS;
   if (fase === 'ordine' || fase === 'lancioAffitto') return TEMPI.INATTIVITA_ORDINE_MS;
   if (fase === 'debito') return TEMPI.INATTIVITA_DEBITO_MS;
@@ -665,15 +713,16 @@ function programmaInattivita(stanza, { ora = Date.now, random = casualeSicuro } 
     return;
   }
   const chiave = stanza.progresso;
-  const durata = durataInattivita(stato);
-  // Riparte anche se cambia la durata a parità di progresso: uno scambio che
-  // scade da solo non è una mossa, ma riporta la fase `mossa` ai 15 secondi.
+  const durata = durataInattivita(stanza);
+  // Riparte anche se cambia la durata a parità di progresso: chi apre la
+  // gestione per decidere passa dai 15 secondi al minuto (una volta sola: un
+  // secondo «prendoTempo» non cambia la durata e non fa ripartire niente).
   if (stanza.inattivita && stanza.inattivita.chiave === chiave && stanza.inattivita.durata === durata) return;
   annullaTimer(stanza, ID_STANZA);
   stanza.inattivita = { chiave, scadeIl: ora() + durata, durata, giocatori: daAspettare };
-  // Il preavviso serve dove il tempo non si vede: nell'asta c'è il conto alla
-  // rovescia nella finestra, e comunque dura meno del preavviso.
-  if (durata > TEMPI.PREAVVISO_INATTIVITA_MS) {
+  // Il preavviso serve dove il tempo non si vede: nell'asta e per finire il
+  // turno (fase `mossa`) c'è già il conto alla rovescia.
+  if (durata > TEMPI.PREAVVISO_INATTIVITA_MS && stato.fase !== 'mossa') {
     programmaTimer(stanza, ID_STANZA, 'preavviso', durata - TEMPI.PREAVVISO_INATTIVITA_MS,
       () => preavvisaInattivita(stanza, chiave, { ora }));
   }
@@ -852,6 +901,9 @@ function applica(stanza, giocatoreId, azione, { random = casualeSicuro, ora = Da
     if (reg) g.connesso = reg.connesso;
   }
   aggiornaHost(stanza, esito.stato);
+  if (azione && AZIONI_DECISIONE.has(azione.tipo) && stanza.stato.turno && stanza.stato.turno.giocatoreId === giocatoreId) {
+    stanza.decisione = chiaveDecisione(stanza.stato);
+  }
   stanza.stato = esito.stato;
   stanza.aggiornataIl = typeof esito.stato.aggiornataIl === 'number' ? esito.stato.aggiornataIl : ora();
   stanza.progresso += 1;
@@ -875,6 +927,15 @@ function statoPerClient(stanza, { completo = false, ora = Date.now } = {}) {
   const i = stanza.inattivita;
   if (i && stato.fase !== 'lobby' && stato.fase !== 'finePartita') {
     stato.scadenza = { traMs: resta(i.scadeIl, i.durata), durataMs: i.durata, giocatori: i.giocatori.slice() };
+  }
+  if (stato.scambio && stanza.scambioInAttesa === stato.scambio.id && stanza.scambioScadeIl) {
+    const durata = stanza.scambioScadeIl - (stanza.scambioIniziatoIl || stanza.scambioScadeIl - TEMPI.SCAMBIO_MS);
+    stato.scadenzaScambio = {
+      traMs: resta(stanza.scambioScadeIl, durata),
+      durataMs: durata,
+      massimoMs: TEMPI.SCAMBIO_MASSIMO_MS,
+      prorogaMs: TEMPI.SCAMBIO_PROROGA_MS,
+    };
   }
   if (stato.fase === 'finePartita' && stanza.finitaIl) {
     stato.chiusuraTraMs = resta(stanza.finitaIl + TEMPI.FINE_PARTITA_MS, TEMPI.FINE_PARTITA_MS);
@@ -1002,6 +1063,22 @@ function cediAdmin(stanza, chiId, giocatoreId, { ora = Date.now } = {}) {
     return e;
   }
   return { eventi: passaAdmin(stanza, giocatoreId, `${da ? da.nome : 'L\'admin'} cede l'admin ${N.aChi(a.nome)}`, ora()) };
+}
+
+/**
+ * Il giocatore di turno ha aperto una finestra per decidere (gestione,
+ * proposta di scambio, dettaglio di una casella): in fase `mossa` il tempo per
+ * finire il turno passa da 15 secondi a un minuto. Vale una volta per turno e
+ * non è una mossa: non azzera i turni saltati. Ritorna true se il tempo è
+ * cambiato (allora va diffuso lo stato, con la nuova `scadenza`).
+ */
+function prendoTempo(stanza, giocatoreId, { ora = Date.now, random = casualeSicuro } = {}) {
+  const stato = stanza && stanza.stato;
+  if (!stato || stanza.chiusa || stato.fase !== 'mossa' || !stato.turno || stato.turno.giocatoreId !== giocatoreId) return false;
+  if (staDecidendo(stanza)) return false;
+  stanza.decisione = chiaveDecisione(stato);
+  programmaInattivita(stanza, { ora, random });
+  return true;
 }
 
 /**
@@ -1232,6 +1309,8 @@ module.exports = {
   rendiAdmin,
   cediAdmin,
   lasciaAdmin,
+  prendoTempo,
+  prendiTempoScambio,
   impostaRegole,
   puoComandare,
   caccia,

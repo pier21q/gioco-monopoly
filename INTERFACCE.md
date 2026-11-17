@@ -396,6 +396,7 @@ Il client può ignorarli; `statoPubblico` li lascia (non sono segreti).
 | Campo | Tipo | Note |
 |---|---|---|
 | `scadenza` | `{ traMs, durataMs, giocatori }` | il timer d'inattività in corso (§3.4): fra quanti millisecondi **dall'invio** scade, quanto dura in tutto e chi deve agire. Assente in `lobby`, a partita finita e quando il timer è fermo. Il client lo usa per il conto alla rovescia dell'asta e per quello della fine del turno (fase `mossa`, nel pannello) |
+| `scadenzaScambio` | `{ traMs, durataMs, massimoMs, prorogaMs }` | solo con una proposta di scambio in attesa: fra quanto scade, quanto dura in tutto finora (90 s più i «prendi tempo»), il massimo (150 s) e quanto aggiunge ogni «prendi tempo» (30 s) (§3.4) |
 | `chiusuraTraMs` | `number` | solo in `finePartita`: fra quanti millisecondi la stanza si chiude da sola (§3.4) |
 
 Sono durate e non orari perché l'orologio del browser non è quello del server:
@@ -724,15 +725,21 @@ Esempi:
    (`stanze.programmaInattivita`) per chi è collegato ma non agisce
    (`motore.chiDeveAgire`): 3 minuti per il turno
    (`INATTIVITA_TURNO_MS`), 15 s in fase `mossa` per finire il turno
-   (`INATTIVITA_FINE_TURNO_MS`; con uno scambio in attesa vale
-   `INATTIVITA_TURNO_MS`, e il timer riparte anche quando cambia solo la
-   durata, per esempio quando lo scambio scade), 30 s in asta (`INATTIVITA_ASTA_MS`), 60 s per i
+   (`INATTIVITA_FINE_TURNO_MS`), che diventano 60 s
+   (`INATTIVITA_DECISIONE_MS`) se in quel turno chi gioca sta decidendo:
+   ha mandato `prendoTempo` (il client lo manda aprendo gestione, dettaglio
+   di una casella o una nuova proposta di scambio; `stanze.prendoTempo`) o ha
+   fatto `costruisci`, `vendiCasa`, `ipoteca`, `disipoteca` o un'azione di
+   scambio (`stanza.decisione` = `numeroTurno|giocatoreId`). Il timer riparte
+   anche quando cambia solo la durata, a parità di progresso; un secondo
+   `prendoTempo` non cambia niente. Le proposte di scambio non allungano il
+   turno di nessuno. 30 s in asta (`INATTIVITA_ASTA_MS`), 60 s per i
    dadi del lancio iniziale o dell'affitto di una società
    (`INATTIVITA_ORDINE_MS`), 5 minuti per un debito (`INATTIVITA_DEBITO_MS`).
    Il tempo che resta viaggia nello stato (`scadenza`, §1.9 quater). 30 s
    prima arriva a tutti un `evento` `avvisoInattivita`
    (`dati: { giocatori, secondi, debito }`, non entra nel log), tranne che in
-   asta, dove il conto alla rovescia è nella finestra. Allo scadere: debito → `abbandona` per il debitore (`motivo: 'debito'`); altrimenti
+   asta e in `mossa`, dove il conto alla rovescia si vede già. Allo scadere: debito → `abbandona` per il debitore (`motivo: 'debito'`); altrimenti
    `motore.gestisciInattivita` per ognuno. Il timer riparte solo quando la
    partita va avanti (`stanza.progresso`), non a connessioni e riconnessioni;
    si ferma se nessuno in gara è collegato o dopo due giri interi di turni
@@ -740,7 +747,15 @@ Esempi:
 
    **Scambio in attesa.** Una proposta senza risposta decade dopo **90 s**
    (`SCAMBIO_MS`, `stanze.sorvegliaScambio` → `motore.scadeScambio`): finché
-   è in attesa nessun altro può proporne.
+   è in attesa nessun altro può proporne, ma la partita va avanti (il turno
+   può passare e la proposta resta). Il destinatario può mandare
+   `{ tipo: 'tempoScambio', scambioId }` (`stanze.prendiTempoScambio`): +30 s
+   (`SCAMBIO_PROROGA_MS`) ogni volta, fino a 150 s in tutto dalla proposta
+   (`SCAMBIO_MASSIMO_MS`), poi errore `TEMPO_ESAURITO`; solo il destinatario
+   (`NON_DESTINATARIO`), solo sulla proposta in attesa (`SCAMBIO_NON_TROVATO`).
+   A tutti va un `evento` `tempoScambio` (`dati: { scambioId }`, non entra nel
+   log) e lo stato con la nuova `scadenzaScambio`. Nel client la proposta è
+   una scheda nel pannello del turno, non più una finestra che si apre da sola.
 3. Una stanza viene eliminata (`stanze.pulisci`) quando nessuno ci è mai
    entrato da 2 minuti, ha tutti i giocatori scollegati da 10 minuti
    (`STANZA_VUOTA_MS`), è una sala d'attesa con un solo giocatore ferma da 30
@@ -1338,8 +1353,9 @@ apre, prima di `riconnetti`.
 | `chiudiStanza` | — | a tutti `errore STANZA_INESISTENTE` ("chiusa dall'admin" / "dall'host") e chiusura 4002 | Solo l'host o l'admin della stanza (`stanze.puoComandare`, altrimenti `NON_ADMIN`). |
 | `cacciaGiocatore` | `giocatoreId` | al giocatore `errore CACCIATO` e chiusura **4003**; agli altri `evento` + `stato` | Solo l'host o l'admin (`NON_ADMIN`); non se stessi (`GIOCATORE_NON_VALIDO`), mai l'admin (`NON_ADMIN`). In lobby: `esci`. In partita: `abbandona` per lui (bancarotta verso la banca), token cambiato, `connesso: false`. |
 | `cediAdmin` | `giocatoreId` | a tutti `evento admin` («X cede l'admin a Y») + `stato` con i nuovi `adminId`/`hostId` | Solo l'admin (`NON_ADMIN`); verso un altro giocatore della stanza, ancora in gara se la partita è iniziata (`GIOCATORE_NON_VALIDO`). Chi riceve diventa admin e host (`stanze.cediAdmin`). |
-
 | `lasciaAdmin` | — | al mittente `{ tipo: 'admin', ok: false }`; se era l'admin della stanza, a tutti `evento admin` (`dati: { giocatoreId: null, precedenteId }`) + `stato` con `adminId: null` | «Esci da admin su questo browser»: la connessione non è più admin e la stanza resta senza admin; chi esce resta host (`stanze.lasciaAdmin`). Il client cancella `localStorage['monopoly.admin']`. |
+| `prendoTempo` | — | nessuna risposta; se è servito, a tutti `stato` con la nuova `scadenza` | Chi è di turno in fase `mossa` apre una finestra per decidere: i 15 s per finire il turno diventano 60 s, una volta per turno (`stanze.prendoTempo`, §3.4). Negli altri casi viene ignorato. |
+| `tempoScambio` | `scambioId` | a tutti `evento tempoScambio` + `stato` con la nuova `scadenzaScambio`; errori `SCAMBIO_NON_TROVATO`, `NON_DESTINATARIO`, `TEMPO_ESAURITO` | «Prendi tempo (+30 s)» sulla proposta ricevuta: fino a 150 s in tutto (`stanze.prendiTempoScambio`, §3.4). |
 
 In partita, se l'host (che non sia l'admin) fa bancarotta o viene tolto, il
 ruolo passa al primo giocatore ancora in gara (`stanze.aggiornaHost`, anche in

@@ -773,6 +773,21 @@ export function chiudiTutti() {
  * @param {(azione: object) => void} dispatch
  * @returns {{ chiudi: () => void, aggiorna: () => void }}
  */
+/** Finestre in cui si decide qualcosa: aprirle allunga il tempo per finire il turno. */
+const DIALOGHI_DECISIONE = new Set(['gestione', 'dettaglioCasella', 'scambio']);
+
+/**
+ * Va chiesto più tempo al server? Sì se apro una finestra in cui si decide
+ * (gestione, dettaglio di una casella, nuova proposta di scambio) mentre tocca
+ * a me e ho già lanciato i dadi, e il tempo non è già quello lungo.
+ */
+export function serveTempo(p, mio, tipo, dati = {}) {
+  if (!p || !DIALOGHI_DECISIONE.has(tipo)) return false;
+  if (tipo === 'scambio' && !(dati && dati.nuovo)) return false;
+  if (p.fase !== 'mossa' || !p.turno || p.turno.giocatoreId !== mio) return false;
+  return !(p.scadenza && p.scadenza.durataMs > 15000);
+}
+
 export function apri(tipo, dati = {}, dispatch) {
   const def = TIPI[tipo];
   if (!def) {
@@ -780,6 +795,7 @@ export function apri(tipo, dati = {}, dispatch) {
     return { chiudi() {}, aggiorna() {} };
   }
   if (typeof dispatch === 'function') ultimoDispatch = dispatch;
+  if (serveTempo(partitaDi(ultimoStato), mioIdDi(ultimoStato), tipo, dati) && ultimoDispatch) ultimoDispatch({ tipo: 'prendoTempo' });
   const daRipristinare = corrente ? corrente.focusPrecedente : document.activeElement;
   if (corrente) corrente.chiudi({ silenzioso: true });
 
@@ -956,6 +972,12 @@ function avviso(testo, livello = 'info') {
   return el('p', { class: `riquadro riquadro--${livello}`, text: testo });
 }
 
+/** 45 → «45 s», 90 → «1:30». */
+export function formattaSecondi(secondi) {
+  if (secondi < 60) return `${secondi} s`;
+  return `${Math.floor(secondi / 60)}:${String(secondi % 60).padStart(2, '0')}`;
+}
+
 /**
  * Conto alla rovescia fino a `alle` (ora di questo browser, in millisecondi):
  * una barra che si svuota e i secondi che restano. Si aggiorna da solo e si
@@ -971,7 +993,7 @@ export function contoAllaRovescia(alle, durataMs, etichetta) {
   const aggiornaTempo = () => {
     const resta = Math.max(0, alle - Date.now());
     const secondi = Math.ceil(resta / 1000);
-    numero.textContent = `${secondi} s`;
+    numero.textContent = formattaSecondi(secondi);
     riempimento.style.transform = `scaleX(${durataMs > 0 ? Math.min(1, resta / durataMs) : 0})`;
     box.classList.toggle('tempo--poco', secondi <= 10);
   };
@@ -1395,6 +1417,75 @@ function elencoLato(p, lato, vuoto) {
   }
   if (!voci.length) voci.push(el('li', { class: 'voce-scambio voce-scambio--vuota', text: vuoto }));
   return el('ul', { class: 'lato-scambio__voci' }, voci);
+}
+
+/**
+ * Perché «Prendi tempo» è spento (null se si può premere): la proposta resta
+ * in attesa al massimo `massimoMs` in tutto, compresi i 30 secondi chiesti.
+ */
+export function motivoTempoScambio(p) {
+  const sc = p && p.scadenzaScambio;
+  if (!sc || !Number.isFinite(sc.durataMs)) return 'Il tempo della proposta non è disponibile';
+  if (Number.isFinite(sc.massimoMs) && sc.durataMs >= sc.massimoMs) {
+    return `Hai già preso tutto il tempo: una proposta resta in attesa al massimo ${formattaSecondi(Math.round(sc.massimoMs / 1000))}`;
+  }
+  return null;
+}
+
+/**
+ * La proposta di scambio in attesa come scheda nel pannello del turno: la
+ * vedono tutti, non ferma la partita e ognuno può nasconderla. Chi la riceve
+ * risponde da qui, chi l'ha fatta può ritirarla.
+ * @param {{invia: (azione: object) => void, nascondi: () => void}} azioni
+ */
+export function schedaProposta(p, mio, { invia, nascondi }) {
+  const s = p && p.scambio;
+  if (!s) return null;
+  const da = nomeDi(p, s.daId);
+  const a = nomeDi(p, s.aId);
+  let titolo = `${da} propone uno scambio ${aChi(a)}`;
+  if (s.aId === mio) titolo = `${da} ti propone uno scambio`;
+  else if (s.daId === mio) titolo = `La tua proposta ${aChi(a)}`;
+  const daEtichetta = s.daId === mio ? 'Tu dai' : `${da} dà`;
+  const aEtichetta = s.aId === mio ? 'Tu dai' : `${a} dà`;
+  const sc = p.scadenzaScambio;
+  const tempo = sc && Number.isFinite(sc.alle)
+    ? contoAllaRovescia(sc.alle, sc.durataMs, s.aId === mio ? 'Rispondi entro' : 'Scade tra')
+    : null;
+  const parti = [
+    el('div', { class: 'proposta__testa' },
+      el('h3', { class: 'proposta__titolo', text: titolo }),
+      el('button', {
+        type: 'button', class: 'proposta__nascondi', dataset: { chiave: 'proposta-nascondi' },
+        'aria-label': 'Nascondi la proposta', onclick: nascondi,
+      }, 'Nascondi')),
+    tempo,
+    el('div', { class: 'proposta__lati' },
+      el('section', { class: 'proposta__lato', 'aria-label': daEtichetta }, el('h4', { text: daEtichetta }), elencoLato(p, s.offre, 'Niente')),
+      el('section', { class: 'proposta__lato', 'aria-label': aEtichetta }, el('h4', { text: aEtichetta }), elencoLato(p, s.chiede, 'Niente'))),
+  ];
+  if (s.aId === mio) {
+    const io = giocatoreDa(p, mio);
+    const interessi = interessiRicevuti(p, s.offre.proprieta);
+    if (interessi) parti.push(avviso(`Accettando paghi subito ${euro(interessi)} di interessi alla banca per le proprietà ipotecate.`, 'avviso'));
+    parti.push(el('div', { class: 'proposta__azioni' },
+      pulsante({
+        testo: `Prendi tempo (+${Math.round(((sc && sc.prorogaMs) || 30000) / 1000)} s)`, chiave: 'proposta-tempo', classe: 'btn--piccolo',
+        motivo: motivoTempoScambio(p),
+        onclick: () => invia({ tipo: 'tempoScambio', scambioId: s.id }),
+      }),
+      pulsante({ testo: 'Rifiuta', chiave: 'proposta-rifiuta', classe: 'btn--piccolo', onclick: () => invia({ tipo: 'rifiutaScambio', scambioId: s.id }) }),
+      pulsante({
+        testo: 'Accetta', chiave: 'proposta-accetta', classe: 'btn--piccolo', primario: true,
+        motivo: motivoAzione(p, mio, 'accettaScambio') || (io && s.chiede.denaro > io.denaro ? `Ti chiede ${euro(s.chiede.denaro)} ma hai ${euro(io.denaro)}` : null),
+        onclick: () => invia({ tipo: 'accettaScambio', scambioId: s.id }),
+      })));
+  } else if (s.daId === mio) {
+    parti.push(el('div', { class: 'proposta__azioni' },
+      pulsante({ testo: 'Ritira la proposta', chiave: 'proposta-ritira', classe: 'btn--piccolo', pericolo: true, onclick: () => invia({ tipo: 'rifiutaScambio', scambioId: s.id }) })));
+  }
+  const coinvolto = s.aId === mio || s.daId === mio;
+  return el('section', { class: `proposta${coinvolto ? ' proposta--mia' : ''}`, 'aria-label': titolo }, parti.filter(Boolean));
 }
 
 /** Colonna di composizione: denaro, proprietà scambiabili, carte prigione. */

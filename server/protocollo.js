@@ -98,6 +98,8 @@ const MESSAGGI_CLIENT = Object.freeze([
   'cediAdmin',
   'lasciaAdmin',
   'impostaRegole',
+  'prendoTempo',
+  'tempoScambio',
 ]);
 
 const MESSAGGI_SERVER = Object.freeze([
@@ -138,6 +140,7 @@ const ERRORI = Object.freeze({
   NON_ADMIN: 'Solo l\'host della stanza o l\'admin possono farlo',
   CACCIATO: 'Sei stato tolto dalla stanza',
   REGOLE_DA_IMPOSTARE: 'Prima di avviare compila la finestra delle regole della partita',
+  TEMPO_ESAURITO: 'Una proposta di scambio resta in attesa al massimo 2 minuti e mezzo',
 
   // Motore: i codici stanno in server/gioco/errori.js, un posto solo.
   ...ERRORI_MOTORE,
@@ -349,6 +352,17 @@ const VALIDATORI = {
 
   lasciaAdmin() {
     return { ok: true, messaggio: { tipo: 'lasciaAdmin' } };
+  },
+
+  prendoTempo() {
+    return { ok: true, messaggio: { tipo: 'prendoTempo' } };
+  },
+
+  tempoScambio(m) {
+    if (typeof m.scambioId !== 'string' || m.scambioId.length === 0 || m.scambioId.length > 64) {
+      return rifiuta('MESSAGGIO_NON_VALIDO', 'Indica la proposta di scambio (scambioId)', { campo: 'scambioId' });
+    }
+    return { ok: true, messaggio: { tipo: 'tempoScambio', scambioId: m.scambioId } };
   },
 
   cediAdmin(m) {

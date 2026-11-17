@@ -351,29 +351,32 @@ test('fine partita: una partita finita ripristinata dal salvataggio viene chiusa
   }
 });
 
+/** Partita a due con chi è di turno già in fase `mossa` (dadi lanciati, nessun doppio). */
+function inMossa(ora, nomi = ['Anna', 'Bruno']) {
+  const { stanza, ids } = partita(ora, nomi);
+  const diTurno = stanza.stato.turno.giocatoreId;
+  const altri = ids.filter((id) => id !== diTurno);
+  stanza.stato = H.modifica(stanza.stato, (s) => {
+    s.fase = 'mossa'; s.turno.doppiConsecutivi = 0; giocatore(s, diTurno).posizione = 10;
+    s.proprieta['1'].proprietario = diTurno;
+    s.proprieta['3'].proprietario = altri[0];
+  });
+  stanza.progresso += 1;
+  stanze.programmaInattivita(stanza, { ora });
+  return { stanza, diTurno, altri };
+}
+
 test('fine del turno: lanciati i dadi restano 15 secondi, poi il turno passa da solo', (t) => {
   const { ora, avanti } = orologio(t);
-  const { stanza, ids } = partita(ora, ['Anna', 'Bruno']);
+  const { stanza, diTurno, altri } = inMossa(ora);
   try {
     assert.equal(T.INATTIVITA_FINE_TURNO_MS, 15 * SECONDO);
-    const diTurno = stanza.stato.turno.giocatoreId;
-    const altro = ids.find((id) => id !== diTurno);
-    const inMossa = (s) => { s.fase = 'mossa'; s.turno.doppiConsecutivi = 0; giocatore(s, diTurno).posizione = 10; };
-    stanza.stato = H.modifica(stanza.stato, inMossa);
-    stanza.progresso += 1;
-    stanze.programmaInattivita(stanza, { ora });
     assert.equal(stanze.statoPerClient(stanza, { ora }).scadenza.durataMs, 15 * SECONDO, 'i client ricevono i 15 secondi');
     assert.equal(stanza.timer.has('_stanza|preavviso'), false, 'nessun preavviso: il conto alla rovescia si vede');
-
-    // Ogni mossa fa ripartire il tempo.
-    avanti(10 * SECONDO);
-    stanza.stato = H.modifica(stanza.stato, (s) => { s.proprieta['1'].proprietario = diTurno; });
-    assert.equal(stanze.applica(stanza, diTurno, { tipo: 'ipoteca', casella: 1 }, { ora }).errore, undefined);
-    assert.equal(stanze.statoPerClient(stanza, { ora }).scadenza.traMs, 15 * SECONDO);
     avanti(14 * SECONDO);
     assert.equal(stanza.stato.turno.giocatoreId, diTurno, 'a 14 secondi il turno è ancora suo');
     avanti(SECONDO);
-    assert.equal(stanza.stato.turno.giocatoreId, altro, 'a 15 secondi il turno passa');
+    assert.equal(stanza.stato.turno.giocatoreId, altri[0], 'a 15 secondi il turno passa');
     const saltato = stanza.stato.log.find((e) => e.tipo === 'turnoSaltato');
     assert.match(saltato.testo, /^(Anna|Bruno) non ha finito il turno in tempo: il turno passa$/);
     assert.equal(stanza.stato.fase, 'daLanciare');
@@ -383,25 +386,109 @@ test('fine del turno: lanciati i dadi restano 15 secondi, poi il turno passa da 
   }
 });
 
-test('fine del turno: con uno scambio in attesa vale il tempo normale, poi tornano i 15 secondi', (t) => {
+test('fine del turno: chi apre la gestione o ipoteca ha un minuto, una volta sola per turno', (t) => {
   const { ora, avanti } = orologio(t);
-  const { stanza, ids } = partita(ora, ['Anna', 'Bruno']);
+  const { stanza, diTurno, altri } = inMossa(ora);
   try {
-    const diTurno = stanza.stato.turno.giocatoreId;
-    const altro = ids.find((id) => id !== diTurno);
-    stanza.stato = H.modifica(stanza.stato, (s) => {
-      s.fase = 'mossa'; s.turno.doppiConsecutivi = 0; giocatore(s, diTurno).posizione = 10;
-      s.proprieta['1'].proprietario = diTurno;
-    });
-    assert.equal(stanze.applica(stanza, diTurno, { tipo: 'proponiScambio', aId: altro, offre: { proprieta: [1] } }, { ora }).errore, undefined);
-    assert.equal(stanza.inattivita.durata, T.INATTIVITA_TURNO_MS, 'mentre aspetta la risposta non gli scade il turno');
-    avanti(T.SCAMBIO_MS);
-    assert.equal(stanza.stato.scambio, null, 'lo scambio è scaduto');
+    assert.equal(T.INATTIVITA_DECISIONE_MS, 60 * SECONDO);
+    avanti(10 * SECONDO);
+    assert.equal(stanze.prendoTempo(stanza, altri[0], { ora }), false, 'solo chi è di turno');
+    assert.equal(stanze.prendoTempo(stanza, diTurno, { ora }), true);
+    assert.deepEqual(pick(stanze.statoPerClient(stanza, { ora }).scadenza), { traMs: 60 * SECONDO, durataMs: 60 * SECONDO });
+    assert.equal(stanza.timer.has('_stanza|preavviso'), false, 'anche con il minuto niente preavviso: il tempo si vede');
+    avanti(30 * SECONDO);
+    assert.equal(stanze.prendoTempo(stanza, diTurno, { ora }), false, 'chiederlo di nuovo non allunga niente');
+    assert.equal(stanze.statoPerClient(stanza, { ora }).scadenza.traMs, 30 * SECONDO);
+    // Una decisione vera (ipoteca) fa ripartire il minuto.
+    assert.equal(stanze.applica(stanza, diTurno, { tipo: 'ipoteca', casella: 1 }, { ora }).errore, undefined);
+    assert.equal(stanze.statoPerClient(stanza, { ora }).scadenza.traMs, 60 * SECONDO);
+    avanti(59 * SECONDO);
     assert.equal(stanza.stato.turno.giocatoreId, diTurno);
-    assert.equal(stanza.inattivita.durata, 15 * SECONDO, 'scaduto lo scambio ripartono i 15 secondi');
-    avanti(15 * SECONDO);
-    assert.equal(stanza.stato.turno.giocatoreId, altro);
+    avanti(SECONDO);
+    assert.equal(stanza.stato.turno.giocatoreId, altri[0], 'scaduto il minuto il turno passa');
+    // Nel turno dopo si riparte dai 15 secondi.
+    stanza.stato = H.modifica(stanza.stato, (s) => { s.fase = 'mossa'; });
+    stanza.progresso += 1;
+    stanze.programmaInattivita(stanza, { ora });
+    assert.equal(stanza.inattivita.durata, 15 * SECONDO);
   } finally {
     stanze.azzera();
   }
+});
+
+test('fine del turno: anche un\'ipoteca senza aver aperto niente vale come decisione', (t) => {
+  const { ora } = orologio(t);
+  const { stanza, diTurno } = inMossa(ora);
+  try {
+    assert.equal(stanze.applica(stanza, diTurno, { tipo: 'ipoteca', casella: 1 }, { ora }).errore, undefined);
+    assert.equal(stanza.inattivita.durata, 60 * SECONDO);
+  } finally {
+    stanze.azzera();
+  }
+});
+
+test('proposta di scambio: non ferma il turno, scade dopo 90 secondi', (t) => {
+  const { ora, avanti } = orologio(t);
+  const { stanza, diTurno, altri } = inMossa(ora, ['Anna', 'Bruno', 'Carla']);
+  try {
+    // Un altro giocatore propone uno scambio a chi è di turno: il turno non aspetta.
+    assert.equal(stanze.applica(stanza, altri[0], { tipo: 'proponiScambio', aId: diTurno, offre: { proprieta: [3] } }, { ora }).errore, undefined);
+    assert.equal(stanza.inattivita.durata, 15 * SECONDO, 'la proposta non allunga il turno di nessuno');
+    assert.deepEqual(stanze.statoPerClient(stanza, { ora }).scadenzaScambio,
+      { traMs: 90 * SECONDO, durataMs: 90 * SECONDO, massimoMs: 150 * SECONDO, prorogaMs: 30 * SECONDO });
+    avanti(15 * SECONDO);
+    assert.notEqual(stanza.stato.turno.giocatoreId, diTurno, 'il turno è passato');
+    assert.ok(stanza.stato.scambio, 'la proposta resta anche a turno passato');
+    avanti(75 * SECONDO);
+    assert.equal(stanza.stato.scambio, null, 'a 90 secondi scade da sola');
+    assert.equal(stanze.statoPerClient(stanza, { ora }).scadenzaScambio, undefined);
+  } finally {
+    stanze.azzera();
+  }
+});
+
+test('proposta di scambio: «prendi tempo» dà 30 secondi in più, anche più volte, fino a 2:30 in tutto', (t) => {
+  const { ora, avanti } = orologio(t);
+  const { stanza, diTurno, altri } = inMossa(ora, ['Anna', 'Bruno', 'Carla']);
+  try {
+    const [chiRiceve, terzo] = altri;
+    assert.equal(stanze.applica(stanza, diTurno, { tipo: 'proponiScambio', aId: chiRiceve, offre: { proprieta: [1] } }, { ora }).errore, undefined);
+    const id = stanza.stato.scambio.id;
+    assert.equal(stanze.prendiTempoScambio(stanza, diTurno, id, { ora }).errore.codice, 'NON_DESTINATARIO', 'chi propone non prende tempo');
+    assert.equal(stanze.prendiTempoScambio(stanza, terzo, id, { ora }).errore.codice, 'NON_DESTINATARIO');
+    assert.equal(stanze.prendiTempoScambio(stanza, chiRiceve, 'altro', { ora }).errore.codice, 'SCAMBIO_NON_TROVATO');
+
+    avanti(80 * SECONDO);
+    const esito = stanze.prendiTempoScambio(stanza, chiRiceve, id, { ora });
+    assert.equal(esito.ok, true);
+    assert.equal(esito.eventi[0].tipo, 'tempoScambio');
+    assert.equal(stanze.statoPerClient(stanza, { ora }).scadenzaScambio.traMs, 40 * SECONDO, '10 secondi rimasti + 30');
+    // Il secondo clic porta l'attesa a 2:30 (90 + 30 + 30): il terzo non dà più niente.
+    assert.equal(stanze.prendiTempoScambio(stanza, chiRiceve, id, { ora }).ok, true);
+    let sc = stanze.statoPerClient(stanza, { ora }).scadenzaScambio;
+    assert.deepEqual([sc.durataMs, sc.traMs], [150 * SECONDO, 70 * SECONDO]);
+    assert.equal(stanze.prendiTempoScambio(stanza, chiRiceve, id, { ora }).errore.codice, 'TEMPO_ESAURITO');
+
+    avanti(69 * SECONDO);
+    assert.ok(stanza.stato.scambio, 'a 2:29 è ancora in attesa');
+    avanti(SECONDO);
+    assert.equal(stanza.stato.scambio, null, 'a 2:30 scade');
+    sc = stanze.statoPerClient(stanza, { ora }).scadenzaScambio;
+    assert.equal(sc, undefined);
+  } finally {
+    stanze.azzera();
+  }
+});
+
+/** Solo i tempi della scadenza (senza l'elenco dei giocatori). */
+function pick(sc) {
+  return { traMs: sc.traMs, durataMs: sc.durataMs };
+}
+
+test('protocollo: prendoTempo e tempoScambio', () => {
+  const P = require('../server/protocollo');
+  assert.deepEqual(P.analizza(JSON.stringify({ tipo: 'prendoTempo' })), { ok: true, messaggio: { tipo: 'prendoTempo' } });
+  assert.deepEqual(P.analizza(JSON.stringify({ tipo: 'tempoScambio', scambioId: 'sc1' })), { ok: true, messaggio: { tipo: 'tempoScambio', scambioId: 'sc1' } });
+  assert.equal(P.analizza(JSON.stringify({ tipo: 'tempoScambio' })).ok, false, 'serve l\'id della proposta');
+  assert.equal(P.analizza(JSON.stringify({ tipo: 'tempoScambio', scambioId: 7 })).ok, false);
 });
