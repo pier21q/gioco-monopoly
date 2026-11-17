@@ -321,7 +321,15 @@ test('asta: offerte crescenti, pareggio rifiutato, chiusura al miglior offerente
   assert.equal(r1.stato.fase, 'daDecidereAcquisto');
   let st = ok(r1.stato, A, { tipo: 'rifiutaAcquisto' }).stato;
   assert.equal(st.fase, 'asta');
-  assert.deepEqual(st.asta.partecipanti, [A, B, C]);
+  assert.deepEqual(st.asta.partecipanti, [B, C], 'chi ha rinunciato non partecipa');
+  assert.equal(st.asta.esclusoId, A);
+  ko(st, A, { tipo: 'offertaAsta', importo: 10 }, 'GIOCATORE_NON_VALIDO');
+  ko(st, A, { tipo: 'passaAsta' }, 'GIOCATORE_NON_VALIDO');
+  // Chi passa senza offerte resta fuori, ma l'asta continua per l'altro.
+  const passato = ok(st, C, { tipo: 'passaAsta' }).stato;
+  assert.equal(passato.fase, 'asta');
+  ko(passato, C, { tipo: 'passaAsta' }, 'GIA_PASSATO');
+  ko(passato, C, { tipo: 'offertaAsta', importo: 100 }, 'GIA_PASSATO');
   ko(st, B, { tipo: 'offertaAsta', importo: '20' }, 'PARAMETRI_NON_VALIDI');
   ko(st, B, { tipo: 'offertaAsta', importo: 0 }, 'PARAMETRI_NON_VALIDI');
   st = ok(st, B, { tipo: 'offertaAsta', importo: 10 }).stato;
@@ -330,9 +338,6 @@ test('asta: offerte crescenti, pareggio rifiutato, chiusura al miglior offerente
   ko(st, A, { tipo: 'finisciTurno' }, 'FASE_ERRATA');
   ko(st, A, { tipo: 'proponiScambio', aId: B, offre: { denaro: 1 } }, 'FASE_ERRATA');
   st = ok(st, C, { tipo: 'offertaAsta', importo: 15 }).stato;
-  st = ok(st, A, { tipo: 'passaAsta' }).stato;
-  ko(st, A, { tipo: 'passaAsta' }, 'GIA_PASSATO');
-  ko(st, A, { tipo: 'offertaAsta', importo: 100 }, 'GIA_PASSATO');
   ko(st, B, { tipo: 'offertaAsta', importo: 2000 }, 'FONDI_INSUFFICIENTI');
   const fine = ok(st, B, { tipo: 'passaAsta' });
   st = fine.stato;
@@ -350,7 +355,6 @@ test('asta: senza offerte la casella resta alla banca; i disconnessi partono pas
   let st = ok(s, A, { tipo: 'lanciaDadi' }, 1, 2).stato;
   st = ok(st, A, { tipo: 'rifiutaAcquisto' }).stato;
   assert.deepEqual(st.asta.passati, [C]);
-  st = ok(st, A, { tipo: 'passaAsta' }).stato;
   const r = ok(st, B, { tipo: 'passaAsta' });
   assert.equal(r.stato.proprieta['3'].proprietario, null);
   assert.equal(r.stato.fase, 'mossa');
@@ -594,8 +598,14 @@ test('carte: stazione più vicina (affitto doppio) e società più vicina (dadi 
   assert.equal(gioc(r.stato, A).denaro, 1700);
   assert.equal(r.stato.fase, 'daDecidereAcquisto');
 
-  r = pesca('I04', (s) => assegna(s, 12, B), [3, 4]); // nuovo lancio 3 + 4 = 7 → 70 €
+  r = pesca('I04', (s) => assegna(s, 12, B));
   assert.equal(gioc(r.stato, A).posizione, 12);
+  assert.equal(r.stato.fase, 'lancioAffitto', 'i dadi dell\'affitto li lancia il giocatore');
+  assert.deepEqual(motore.azioniDisponibili(r.stato, A).sort(), ['abbandona', 'lanciaDadi', 'proponiScambio']);
+  ko(r.stato, A, { tipo: 'finisciTurno' }, 'FASE_ERRATA');
+  ko(r.stato, B, { tipo: 'lanciaDadi' }, 'NON_IL_TUO_TURNO');
+  r = ok(r.stato, A, { tipo: 'lanciaDadi' }, 3, 4); // 3 + 4 = 7 → 70 €
+  assert.equal(r.stato.fase, 'mossa');
   assert.equal(gioc(r.stato, A).denaro, 1430);
   assert.equal(gioc(r.stato, B).denaro, 1570);
   assert.deepEqual(r.stato.dadi, [3, 4]);
@@ -724,11 +734,10 @@ test('gestisciDisconnessione: passa il turno o l\'asta di chi è disconnesso', (
   const s2 = nuova(3);
   let st = ok(s2, A, { tipo: 'lanciaDadi' }, 1, 2).stato;
   st = ok(st, A, { tipo: 'rifiutaAcquisto' }).stato;
-  st = ok(st, A, { tipo: 'offertaAsta', importo: 5 }).stato;
-  st = ok(st, B, { tipo: 'passaAsta' }).stato;
+  st = ok(st, B, { tipo: 'offertaAsta', importo: 5 }).stato;
   gioc(st, C).connesso = false;
   const r2 = motore.gestisciDisconnessione(st, C, { ora: ORA });
-  assert.equal(r2.stato.proprieta['3'].proprietario, A);
+  assert.equal(r2.stato.proprieta['3'].proprietario, B);
   assert.equal(r2.stato.fase, 'mossa');
 });
 
@@ -789,6 +798,8 @@ test('partita lunga casuale: nessuna eccezione e invarianti rispettate', () => {
       ];
     } else if (st.fase === 'daDecidereAcquisto') {
       candidati = rng() < 0.7 ? [{ tipo: 'compra' }, { tipo: 'rifiutaAcquisto' }] : [{ tipo: 'rifiutaAcquisto' }];
+    } else if (st.fase === 'lancioAffitto') {
+      candidati = [{ tipo: 'lanciaDadi' }];
     } else if (st.fase === 'daLanciare') {
       candidati = rng() < 0.3 && mie.length
         ? [{ tipo: 'costruisci', casella: mie[Math.floor(rng() * mie.length)] }, { tipo: 'lanciaDadi' }]

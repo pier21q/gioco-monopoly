@@ -58,6 +58,7 @@ const FASI = Object.freeze([
   'daLanciare',
   'mossa',
   'daDecidereAcquisto',
+  'lancioAffitto',
   'asta',
   'debito',
   'finePartita',
@@ -151,6 +152,8 @@ function creaStatoLobby(o) {
     debito: null,
     debitiInAttesa: [],
     asteInAttesa: [],
+    // Carta "società più vicina": chi deve lanciare i dadi per l'affitto (fase 'lancioAffitto').
+    lancioAffitto: null,
     cartePrigioneDi: {},
     mazzi: { probabilita: [], imprevisti: [] },
     log: [],
@@ -312,6 +315,8 @@ function descriviFase(stato) {
     case 'mossa': return `${diTurno} ha già lanciato i dadi e deve finire il turno`;
     case 'daDecidereAcquisto':
       return `${diTurno} deve decidere se comprare ${casella(trova(stato, stato.turno.giocatoreId).posizione).nome}`;
+    case 'lancioAffitto':
+      return `${diTurno} deve lanciare i dadi per l'affitto di ${casella((stato.lancioAffitto || {}).casella ?? trova(stato, stato.turno.giocatoreId).posizione).nome}`;
     case 'asta': return `è in corso l'asta per ${casella(stato.asta.casella).nome}`;
     case 'debito':
       return `${nomeDi(stato, stato.debito.giocatoreId)} deve prima saldare un debito di ${euro(stato.debito.importo)}`;
@@ -358,7 +363,7 @@ function verificaPermesso(stato, g, tipo) {
   }
   switch (tipo) {
     case 'lanciaDadi':
-      return richiediTurno(stato, g, tipo, ['daLanciare', 'ordine']);
+      return richiediTurno(stato, g, tipo, ['daLanciare', 'ordine', 'lancioAffitto']);
     case 'compra':
     case 'rifiutaAcquisto':
       return richiediTurno(stato, g, tipo, ['daDecidereAcquisto']);
@@ -515,6 +520,30 @@ function risolviCasella(stato, g, ctx, opz = {}) {
   }
 }
 
+/**
+ * Chi incassa l'affitto di `c` da `g`, oppure null se non è dovuto: casella
+ * della banca o sua, ipotecata, proprietario in prigione con la variante
+ * `affittoInPrigione` spenta (in questi ultimi due casi con l'evento che lo dice).
+ */
+function creditoreAffitto(stato, g, ctx, c) {
+  const voce = voceDi(stato, c.indice);
+  if (!voce || voce.proprietario === null || voce.proprietario === g.id) return null;
+  const owner = trova(stato, voce.proprietario);
+  if (!owner || owner.fallito) return null;
+  if (voce.ipotecata) {
+    // Affitto non dovuto: stesso tipo 'affitto' con importo 0 e il motivo (INTERFACCE.md §6).
+    emetti(ctx, 'affitto', g.id, `${c.nome} è ipotecata: ${g.nome} non paga l'affitto ${N.aChi(owner.nome)}`,
+      { daId: g.id, aId: owner.id, casella: c.indice, importo: 0, ipotecata: true });
+    return null;
+  }
+  if (owner.inPrigione && REG.valore(stato, 'affittoInPrigione') === false) {
+    emetti(ctx, 'affitto', g.id, `${owner.nome} è in prigione: ${g.nome} non paga l'affitto di ${c.nome}`,
+      { daId: g.id, aId: owner.id, casella: c.indice, importo: 0, inPrigione: true });
+    return null;
+  }
+  return owner;
+}
+
 /** Casella acquistabile: offerta d'acquisto se libera, affitto se di un altro. */
 function risolviProprieta(stato, g, ctx, c, opz) {
   const voce = voceDi(stato, c.indice);
@@ -522,32 +551,48 @@ function risolviProprieta(stato, g, ctx, c, opz) {
     N.impostaFase(stato, 'daDecidereAcquisto');
     return;
   }
-  if (voce.proprietario === g.id) return;
-  const owner = trova(stato, voce.proprietario);
-  if (voce.ipotecata) {
-    // Affitto non dovuto: stesso tipo 'affitto' con importo 0 e il motivo (INTERFACCE.md §6).
-    emetti(ctx, 'affitto', g.id, `${c.nome} è ipotecata: ${g.nome} non paga l'affitto ${N.aChi(owner.nome)}`,
-      { daId: g.id, aId: owner.id, casella: c.indice, importo: 0, ipotecata: true });
-    return;
-  }
-  if (owner.inPrigione && REG.valore(stato, 'affittoInPrigione') === false) {
-    emetti(ctx, 'affitto', g.id, `${owner.nome} è in prigione: ${g.nome} non paga l'affitto di ${c.nome}`,
-      { daId: g.id, aId: owner.id, casella: c.indice, importo: 0, inPrigione: true });
-    return;
-  }
-  let dadi;
+  const owner = creditoreAffitto(stato, g, ctx, c);
+  if (!owner) return;
   if (c.tipo === 'societa' && opz.moltiplicatoreDadi) {
-    dadi = [N.tiraDado(ctx), N.tiraDado(ctx)];
-    emetti(ctx, 'dadi', g.id, `${g.nome} lancia ${dadi[0]} e ${dadi[1]} per l'affitto della società`,
-      { dadi, doppio: dadi[0] === dadi[1], inPrigione: false, doppiConsecutivi: stato.turno.doppiConsecutivi, perAffitto: true });
-  } else if (c.tipo === 'societa') {
-    dadi = (stato.dadi || [0, 0]).slice();
+    // Carta "società più vicina": i dadi dell'affitto li lancia il giocatore
+    // (azione `lanciaDadi` in fase 'lancioAffitto'), non il gioco al posto suo.
+    stato.lancioAffitto = { giocatoreId: g.id, casella: c.indice, creditoreId: owner.id, moltiplicatore: opz.moltiplicatoreDadi };
+    N.impostaFase(stato, 'lancioAffitto');
+    emetti(ctx, 'affittoDaLanciare', g.id,
+      `${g.nome} deve lanciare i dadi: pagherà ${opz.moltiplicatoreDadi} volte il risultato ${N.aChi(owner.nome)} per ${c.nome}`,
+      { daId: g.id, aId: owner.id, casella: c.indice, moltiplicatore: opz.moltiplicatoreDadi });
+    return;
   }
+  const dadi = c.tipo === 'societa' ? (stato.dadi || [0, 0]).slice() : undefined;
   const { importo, moltiplicatore } = N.calcolaAffitto(stato, c.indice, {
     moltiplicatore: opz.moltiplicatoreStazione,
-    moltiplicatoreDadi: opz.moltiplicatoreDadi,
     dadi,
   });
+  N.addebita(stato, ctx, g.id, owner.id, importo, { motivo: 'affitto', casella: c.indice, moltiplicatore, dadi });
+}
+
+/**
+ * Il lancio chiesto dalla carta "società più vicina": i dadi restano sul
+ * tabellone, il doppio non conta e l'affitto è il totale per il moltiplicatore
+ * della carta. `motivo` ('disconnesso' | 'inattivo') quando lancia il gioco al
+ * posto del giocatore. Se nel frattempo la società ha cambiato mano (scambio,
+ * bancarotta del proprietario) si rifanno i conti con il proprietario di adesso.
+ */
+function lanciaPerAffitto(stato, g, ctx, motivo = null) {
+  const l = stato.lancioAffitto;
+  stato.lancioAffitto = null;
+  N.impostaFase(stato, N.faseDopoMossa(stato));
+  if (!l) return;
+  const dadi = [N.tiraDado(ctx), N.tiraDado(ctx)];
+  stato.dadi = dadi.slice();
+  const perche = { disconnesso: ' (è disconnesso: lancia il gioco)', inattivo: ' (non ha lanciato in tempo: lancia il gioco)' }[motivo] || '';
+  const dati = { dadi, doppio: dadi[0] === dadi[1], inPrigione: false, doppiConsecutivi: stato.turno.doppiConsecutivi, perAffitto: true };
+  if (motivo) dati.motivo = motivo;
+  emetti(ctx, 'dadi', g.id, `${g.nome} lancia ${dadi[0]} e ${dadi[1]} per l'affitto della società${perche}`, dati);
+  const c = casella(l.casella);
+  const owner = creditoreAffitto(stato, g, ctx, c);
+  if (!owner) return;
+  const { importo, moltiplicatore } = N.calcolaAffitto(stato, c.indice, { moltiplicatoreDadi: l.moltiplicatore, dadi });
   N.addebita(stato, ctx, g.id, owner.id, importo, { motivo: 'affitto', casella: c.indice, moltiplicatore, dadi });
 }
 
@@ -626,7 +671,10 @@ function applicaEffetto(stato, g, ctx, carta) {
 // Validazione dei parametri
 // ---------------------------------------------------------------------------
 
-/** Chi rinuncia all'acquisto apre l'asta; con la variante `aste: false` la casella resta alla banca. */
+/**
+ * Chi rinuncia all'acquisto apre l'asta fra gli altri (lui non partecipa); con
+ * la variante `aste: false` la casella resta alla banca.
+ */
 function rinunciaAllAcquisto(stato, g, ctx, motivo = null) {
   if (REG.valore(stato, 'aste') === false) {
     emetti(ctx, 'acquistoRifiutato', g.id,
@@ -635,7 +683,7 @@ function rinunciaAllAcquisto(stato, g, ctx, motivo = null) {
     N.impostaFase(stato, N.faseDopoMossa(stato));
     return;
   }
-  N.avviaAsta(stato, ctx, g.posizione, N.faseDopoMossa(stato));
+  N.avviaAsta(stato, ctx, g.posizione, N.faseDopoMossa(stato), { esclusoId: g.id });
 }
 
 /** Legge `azione.casella` e verifica che sia una casella acquistabile. */
@@ -674,6 +722,10 @@ const GESTORI = {
   lanciaDadi(stato, g, azione, ctx) {
     if (stato.fase === 'ordine') {
       ordine.lancia(stato, g, ctx);
+      return undefined;
+    }
+    if (stato.fase === 'lancioAffitto') {
+      lanciaPerAffitto(stato, g, ctx);
       return undefined;
     }
     const d1 = N.tiraDado(ctx);
@@ -741,7 +793,7 @@ const GESTORI = {
     return undefined;
   },
 
-  /** Rinuncia all'acquisto: la casella va all'asta tra tutti (o resta alla banca, se le aste sono spente). */
+  /** Rinuncia all'acquisto: la casella va all'asta tra gli altri (o resta alla banca, se le aste sono spente). */
   rifiutaAcquisto(stato, g, azione, ctx) {
     rinunciaAllAcquisto(stato, g, ctx);
     return undefined;
@@ -1104,6 +1156,7 @@ function applicaAzione(stato, giocatoreId, azione, contesto = {}) {
  *   - nel lancio iniziale (fase 'ordine') lancia i dadi al posto suo;
  *   - (solo se disconnesso) annulla lo scambio pendente che lo coinvolge;
  *   - se partecipa a un'asta e non è il miglior offerente, passa;
+ *   - se è di turno in 'lancioAffitto' il gioco lancia i dadi dell'affitto per lui;
  *   - se è di turno in 'daDecidereAcquisto' rinuncia (la casella va all'asta);
  *   - se è di turno in 'daLanciare' o 'mossa' il turno passa al prossimo.
  * Un debito aperto non viene toccato: la bancarotta d'ufficio la decide il
@@ -1140,6 +1193,8 @@ function sblocca(stato, giocatoreId, contesto, motivo) {
     N.verificaChiusuraAsta(nuovo, ctx);
   }
   if (nuovo.turno.giocatoreId === g.id) {
+    // Il lancio per l'affitto lo fa il gioco; poi il turno passa come sotto.
+    if (nuovo.fase === 'lancioAffitto') lanciaPerAffitto(nuovo, g, ctx, motivo);
     if (nuovo.fase === 'daDecidereAcquisto') {
       const conAsta = REG.valore(nuovo, 'aste') !== false;
       if (!disconnesso && conAsta) {
@@ -1148,7 +1203,11 @@ function sblocca(stato, giocatoreId, contesto, motivo) {
       }
       rinunciaAllAcquisto(nuovo, g, ctx, motivo);
     } else if (nuovo.fase === 'daLanciare' || nuovo.fase === 'mossa') {
-      emetti(ctx, 'turnoSaltato', g.id, `${g.nome} ${perche} e salta il turno`, { giocatoreId: g.id, motivo });
+      // In `mossa` i dadi li ha già lanciati: non salta nulla, il turno finisce.
+      const testo = nuovo.fase === 'mossa'
+        ? `${g.nome} ${disconnesso ? 'è disconnesso' : 'non ha finito il turno in tempo'}: il turno passa`
+        : `${g.nome} ${perche} e salta il turno`;
+      emetti(ctx, 'turnoSaltato', g.id, testo, { giocatoreId: g.id, motivo });
       N.passaTurno(nuovo, ctx);
     }
   }
@@ -1201,7 +1260,9 @@ function chiDeveAgire(stato) {
     const a = stato.asta;
     return a.partecipanti.filter((id) => !a.passati.includes(id) && id !== a.migliorOfferenteId);
   }
-  if (FASI_GESTIONE.includes(stato.fase) && stato.turno.giocatoreId) return [stato.turno.giocatoreId];
+  if ((FASI_GESTIONE.includes(stato.fase) || stato.fase === 'lancioAffitto') && stato.turno.giocatoreId) {
+    return [stato.turno.giocatoreId];
+  }
   return [];
 }
 

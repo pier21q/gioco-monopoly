@@ -239,6 +239,7 @@ function statoPulsante(def, p, mio) {
       return {
         motivo: base,
         dettaglio: !base && p.fase === 'ordine' ? 'chi fa di più comincia'
+          : !base && p.fase === 'lancioAffitto' ? 'per l’affitto della società'
           : !base && io.inPrigione ? 'tenta il doppio' : (!base && p.turno.doppiConsecutivi > 0 ? 'hai fatto un doppio' : null),
         onclick: () => inviaUnaVolta({ tipo: 'lanciaDadi' }),
       };
@@ -307,13 +308,28 @@ function azionePrincipale(p, mio) {
   if (!p.turno || p.turno.giocatoreId !== mio) return null;
   const io = giocatoreDa(p, mio);
   if (!io || io.fallito) return null;
-  if (p.fase === 'daLanciare' || p.fase === 'ordine') return 'lancia';
+  if (p.fase === 'daLanciare' || p.fase === 'ordine' || p.fase === 'lancioAffitto') return 'lancia';
   if (p.fase === 'mossa') return 'finisci';
   if (p.fase === 'daDecidereAcquisto') {
     const c = CASELLE[io.posizione];
     return c && c.prezzo && io.denaro >= c.prezzo ? 'compra' : 'asta';
   }
   return null;
+}
+
+/**
+ * Il timer per finire il turno (fase `mossa`, scadenza mandata dal server),
+ * visibile a tutti: null se non c'è o se è quello lungo (scambio in attesa).
+ * @returns {{alle: number, durataMs: number, etichetta: string} | null}
+ */
+export function tempoFineTurno(p, mio) {
+  const sc = p && p.scadenza;
+  if (!p || p.fase !== 'mossa' || !sc || !Number.isFinite(sc.alle) || !p.turno) return null;
+  if (p.scambio) return null;
+  const diTurno = giocatoreDa(p, p.turno.giocatoreId);
+  if (!diTurno) return null;
+  const etichetta = diTurno.id === mio ? 'Il turno finisce da solo tra' : `Il turno di ${diTurno.nome} finisce tra`;
+  return { alle: sc.alle, durataMs: sc.durataMs, etichetta };
 }
 
 // ---------------------------------------------------------------------------
@@ -330,6 +346,7 @@ function monta(radice) {
   const guida = el('p', { class: 'pn-turno__guida' });
   const dadi = el('div', { class: 'pn-dadi', role: 'img' });
   const mioDenaro = el('p', { class: 'pn-turno__denaro' });
+  const tempoTurno = el('div', { class: 'pn-turno__tempo', hidden: true });
   const avvisi = el('div', { class: 'pn-avvisi' });
 
   const pulsanti = new Map();
@@ -351,6 +368,7 @@ function monta(radice) {
       el('div', { class: 'pn-turno__intestazione' }, titolo, guida),
       dadi),
     mioDenaro,
+    tempoTurno,
     avvisi,
     maniglia,
     azioni);
@@ -376,7 +394,7 @@ function monta(radice) {
   radice.classList.add('pannelli-pronti');
 
   ui = {
-    radice, nodo, turno, titolo, guida, dadi, mioDenaro, avvisi, azioni, maniglia, pulsanti,
+    radice, nodo, turno, titolo, guida, dadi, mioDenaro, tempoTurno, avvisi, azioni, maniglia, pulsanti,
     schede, tab: { giocatori: tabG, cronaca: tabC }, sezioni: { giocatori: sezGiocatori, cronaca: sezCronaca },
     elencoGiocatori, cronaca, schedaAttiva: 'giocatori', firmaAvvisi: '', firmeGiocatori: new Map(),
     // La cronaca segue la partita finché l'utente non la scorre all'indietro.
@@ -541,6 +559,14 @@ function testoGuida(p, mio) {
       return mioTurno ? 'Costruisci, scambia o ipoteca se vuoi, poi finisci il turno.' : `${nome} può ancora costruire o scambiare, poi finisce il turno.`;
     case 'daDecidereAcquisto':
       return mioTurno ? `Sei su ${casella ? casella.nome : 'una proprietà libera'}: comprala o mettila all’asta.` : `${nome} decide se comprare ${casella ? casella.nome : 'la proprietà'}.`;
+    case 'lancioAffitto': {
+      const l = p.lancioAffitto || {};
+      const quanto = `${l.moltiplicatore || 10} volte il risultato`;
+      const societa = CASELLE[l.casella] ? CASELLE[l.casella].nome : 'la società';
+      return mioTurno
+        ? `La carta dice di lanciare i dadi: pagherai ${quanto} ${dialoghi.aChi(nomeDi(p, l.creditoreId))} per ${societa}.`
+        : `${nome} lancia i dadi per l’affitto di ${societa}: pagherà ${quanto} ${dialoghi.aChi(l.creditoreId === mio ? 'te' : nomeDi(p, l.creditoreId))}.`;
+    }
     case 'asta': {
       const a = p.asta;
       if (!a) return 'Asta in corso.';
@@ -608,7 +634,9 @@ function disegnaTurno(p, mio) {
   if (ui.dadi.dataset.firma !== firmaDadi) {
     ui.dadi.dataset.firma = firmaDadi;
     if (d) {
-      const doppio = d[0] === d[1];
+      // Il lancio per l'affitto di una società (carta) non conta come doppio.
+      const ultimo = [...(p.log || [])].reverse().find((e) => e && e.tipo === 'dadi');
+      const doppio = d[0] === d[1] && !(ultimo && ultimo.dati && ultimo.dati.perAffitto);
       ui.dadi.setAttribute('aria-label', `Ultimo lancio: ${d[0]} e ${d[1]}${doppio ? ', doppio' : ''}`);
       const prima = ui.dadi.dataset.valori;
       ui.dadi.dataset.valori = `${d[0]}-${d[1]}`;
@@ -637,6 +665,15 @@ function disegnaTurno(p, mio) {
       : [testoDenaro]));
     ui.mioDenaro.hidden = !io;
     if (io && !io.fallito) scorriImporto(ui.mioDenaro.querySelector('.importo'), 'io', io.denaro);
+  }
+
+  // Dadi già lanciati: il conto alla rovescia del server per finire il turno.
+  const tempo = tempoFineTurno(p, mio);
+  const firmaTempo = tempo ? `${p.versione}|${tempo.alle}|${tempo.etichetta}` : '';
+  if (ui.tempoTurno.dataset.firma !== firmaTempo) {
+    ui.tempoTurno.dataset.firma = firmaTempo;
+    ui.tempoTurno.replaceChildren(...(tempo ? [dialoghi.contoAllaRovescia(tempo.alle, tempo.durataMs, tempo.etichetta)] : []));
+    ui.tempoTurno.hidden = !tempo;
   }
 
   disegnaAvvisi(p, mio);
@@ -860,7 +897,14 @@ export function testoEvento(ev, p) {
     case 'connessione': return d.connesso ? `${chi} si è riconnesso` : `${chi} si è disconnesso`;
     case 'partitaIniziata': return `La partita comincia: ${d.denaroIniziale ? `${euro(d.denaroIniziale)} a testa` : 'buon divertimento'}${d.costruzione === 'sosta' ? '. Si costruisce solo sul colore su cui ci si ferma' : ''}`;
     case 'turno': return `Turno ${d.numero}: tocca ${dialoghi.aChi(chi)}`;
-    case 'dadi': return d.dadi ? `${chi} lancia ${d.dadi[0]} e ${d.dadi[1]}${d.doppio ? ' (doppio)' : ''}` : `${chi} lancia i dadi`;
+    case 'dadi':
+      if (d.dadi && d.perAffitto) {
+        const perche = { disconnesso: ' (è scollegato: lancia il gioco)', inattivo: ' (tempo scaduto: lancia il gioco)' }[d.motivo] || '';
+        return `${chi} lancia ${d.dadi[0]} e ${d.dadi[1]} per l’affitto della società${perche}`;
+      }
+      return d.dadi ? `${chi} lancia ${d.dadi[0]} e ${d.dadi[1]}${d.doppio ? ' (doppio)' : ''}` : `${chi} lancia i dadi`;
+    case 'affittoDaLanciare':
+      return `${chi} deve lanciare i dadi: pagherà ${d.moltiplicatore || 10} volte il risultato ${dialoghi.aChi(nomeDi(p, d.aId))} per ${nomeCasella(d.casella)}`;
     case 'lancioOrdine': return d.dadi ? `${chi} lancia ${d.dadi[0]} e ${d.dadi[1]}: ${d.totale}` : `${chi} lancia i dadi`;
     case 'spareggio': return `Spareggio tra ${(d.giocatori || []).map((id) => nomeDi(p, id)).join(', ')}`;
     case 'ordineDeciso': return `Comincia ${chi}`;
@@ -877,7 +921,10 @@ export function testoEvento(ev, p) {
     case 'pagamento': return `${nomeDi(p, d.daId)} paga ${euro(d.importo)} ${dialoghi.aChi(nomeDi(p, d.aId))}`;
     case 'prigione': return d.motivo === 'treDoppi' ? `${chi} fa tre doppi e finisce in prigione` : `${chi} va in prigione`;
     case 'uscitaPrigione': return `${chi} esce di prigione`;
-    case 'astaInizio': return `Si apre l’asta per ${nomeCasella(d.casella)}`;
+    case 'astaInizio':
+      return d.esclusoId
+        ? `Si apre l’asta per ${nomeCasella(d.casella)}: ${nomeDi(p, d.esclusoId)} ha rinunciato e non partecipa`
+        : `Si apre l’asta per ${nomeCasella(d.casella)}`;
     case 'astaOfferta': return `${chi} offre ${euro(d.importo)} per ${nomeCasella(d.casella)}`;
     case 'astaPasso': return `${chi} passa`;
     case 'astaFine': return d.vincitoreId ? `${nomeDi(p, d.vincitoreId)} vince l’asta per ${nomeCasella(d.casella)} con ${euro(d.importo)}` : `Nessuna offerta: ${nomeCasella(d.casella)} resta alla banca`;

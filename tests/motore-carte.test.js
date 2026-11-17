@@ -143,15 +143,22 @@ test('carte con più giocatori: compleanno (10 € da tutti) e presidente (50 �
   assert.deepEqual([soldiA(r), giocatore(r.stato, B).denaro], [1450, 1550], 'i falliti non ricevono nulla');
 });
 
-test('carte "più vicina": stazione con affitto doppio, società con nuovo lancio × 10', () => {
+test('carte "più vicina": stazione con affitto doppio, società con un lancio del giocatore × 10', () => {
   let r = pesca(H.assegna(H.nuovaPartita(), B, 25), 'I05');
   assert.equal(soldiA(r), 1450, 'I05: stazione di un avversario = doppio dell\'affitto (25 × 2 = 50 €)');
   assert.equal(giocatore(r.stato, B).denaro, 1550);
   r = pesca(H.assegna(H.nuovaPartita(), B, 25, 35), 'I06');
   assert.equal(soldiA(r), 1400, 'I06: con 2 stazioni dell\'avversario l\'affitto base è 50 € → doppio = 100 €');
-  r = pesca(H.assegna(H.nuovaPartita(), B, 28), 'I04', { extra: [3, 4] });
-  assert.equal(soldiA(r), 1430, 'I04: si tira di nuovo (3+4) e si pagano 10 × 7 = 70 €');
-  assert.deepEqual(r.stato.dadi, [1, 2], 'il lancio extra della società non cambia stato.dadi');
+  r = pesca(H.assegna(H.nuovaPartita(), B, 28), 'I04');
+  assert.equal(r.stato.fase, 'lancioAffitto', 'I04: i dadi dell\'affitto li lancia chi ha pescato, non il gioco');
+  assert.equal(soldiA(r), 1500, 'finché non lancia non paga nulla');
+  assert.deepEqual(r.stato.lancioAffitto, { giocatoreId: A, casella: 28, creditoreId: B, moltiplicatore: 10 });
+  assert.deepEqual(r.stato.dadi, [1, 2], 'sul tabellone restano i dadi del movimento');
+  assert.ok(r.eventi.some((e) => e.tipo === 'affittoDaLanciare'));
+  r = H.lancia(r.stato, A, 3, 4);
+  assert.equal(soldiA(r), 1430, 'I04: lancia 3+4 e paga 10 × 7 = 70 €');
+  assert.deepEqual(r.stato.dadi, [3, 4], 'i dadi lanciati per l\'affitto si vedono sul tabellone');
+  assert.equal(r.stato.lancioAffitto, null);
   const aff = r.eventi.find((e) => e.tipo === 'affitto');
   assert.deepEqual([aff.dati.dadi, aff.dati.moltiplicatore], [[3, 4], 10]);
   r = pesca(H.assegna(H.nuovaPartita(), A, 25), 'I05');

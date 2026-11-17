@@ -268,12 +268,15 @@ test('acquisto: sulla propria proprietà non si paga né si compra nulla', () =>
 // Asta
 // ---------------------------------------------------------------------------
 
-test('asta: rifiutare l\'acquisto apre un\'asta fra tutti i giocatori in gioco', () => {
+test('asta: rifiutare l\'acquisto apre un\'asta fra gli altri giocatori in gioco', () => {
   const r = H.esegui(daAcquisto(), A, { tipo: 'rifiutaAcquisto' });
   const a = r.stato.asta;
   assert.equal(r.stato.fase, 'asta');
   assert.equal(a.casella, 3);
-  assert.deepEqual(a.partecipanti, [A, B, C], 'Regola: partecipano tutti, anche chi ha rifiutato');
+  assert.deepEqual(a.partecipanti, [B, C], 'Regola: chi ha rinunciato all\'acquisto non partecipa');
+  assert.equal(a.esclusoId, A);
+  assert.equal(r.eventi[0].dati.esclusoId, A);
+  assert.match(r.eventi[0].testo, /Anna ha rinunciato e non partecipa/);
   assert.equal(a.offertaMassima, 0);
   assert.equal(a.migliorOfferenteId, null);
   assert.deepEqual(a.passati, []);
@@ -286,17 +289,19 @@ test('asta: offerte, rilanci e vittoria dell\'ultimo rimasto', () => {
   s = H.esegui(s, B, { tipo: 'offertaAsta', importo: 100 }).stato;
   assert.equal(s.asta.offertaMassima, 100);
   assert.equal(s.asta.migliorOfferenteId, B);
-  H.rifiuta(s, A, { tipo: 'offertaAsta', importo: 100 }, 'OFFERTA_BASSA', 'Un\'offerta uguale alla massima non basta: deve superarla');
+  H.rifiuta(s, C, { tipo: 'offertaAsta', importo: 100 }, 'OFFERTA_BASSA', 'Un\'offerta uguale alla massima non basta: deve superarla');
+  H.rifiuta(s, A, { tipo: 'offertaAsta', importo: 200 }, 'GIOCATORE_NON_VALIDO', 'Chi ha rinunciato all\'acquisto non può offrire');
+  H.rifiuta(s, A, { tipo: 'passaAsta' }, 'GIOCATORE_NON_VALIDO', 'Chi ha rinunciato all\'acquisto non partecipa: non ha niente da passare');
   H.rifiuta(s, C, { tipo: 'offertaAsta', importo: 5000 }, 'FONDI_INSUFFICIENTI', 'Non si può offrire più di quanto si possiede');
   for (const importo of [0, -5, 1.5, '10', undefined, null]) {
-    H.rifiuta(s, A, { tipo: 'offertaAsta', importo }, 'PARAMETRI_NON_VALIDI', `L'offerta ${JSON.stringify(importo)} non è un intero positivo`);
+    H.rifiuta(s, C, { tipo: 'offertaAsta', importo }, 'PARAMETRI_NON_VALIDI', `L'offerta ${JSON.stringify(importo)} non è un intero positivo`);
   }
   H.rifiuta(s, B, { tipo: 'passaAsta' }, 'MIGLIOR_OFFERENTE', 'Il miglior offerente non può passare');
   s = H.esegui(s, B, { tipo: 'offertaAsta', importo: 120 }).stato; // può rilanciare su se stesso
   assert.equal(s.asta.offertaMassima, 120);
-  s = H.esegui(s, A, { tipo: 'passaAsta' }).stato;
-  H.rifiuta(s, A, { tipo: 'passaAsta' }, 'GIA_PASSATO', 'Chi ha già passato non può passare di nuovo');
-  H.rifiuta(s, A, { tipo: 'offertaAsta', importo: 130 }, 'GIA_PASSATO', 'Chi ha passato non può più offrire');
+  const senzaOfferte = H.esegui(H.esegui(daAcquisto(), A, { tipo: 'rifiutaAcquisto' }).stato, C, { tipo: 'passaAsta' }).stato;
+  H.rifiuta(senzaOfferte, C, { tipo: 'passaAsta' }, 'GIA_PASSATO', 'Chi ha già passato non può passare di nuovo');
+  H.rifiuta(senzaOfferte, C, { tipo: 'offertaAsta', importo: 130 }, 'GIA_PASSATO', 'Chi ha passato non può più offrire');
   const r = H.esegui(s, C, { tipo: 'passaAsta' });
   assert.equal(r.stato.asta, null, 'Regola: l\'asta termina quando resta solo il miglior offerente');
   assert.equal(voce(r.stato, 3).proprietario, B, 'la proprietà va al miglior offerente');
@@ -308,7 +313,6 @@ test('asta: offerte, rilanci e vittoria dell\'ultimo rimasto', () => {
 
 test('asta: se tutti passano senza offerte la proprietà resta alla banca', () => {
   let s = H.esegui(daAcquisto(), A, { tipo: 'rifiutaAcquisto' }).stato;
-  s = H.esegui(s, A, { tipo: 'passaAsta' }).stato;
   s = H.esegui(s, B, { tipo: 'passaAsta' }).stato;
   assert.equal(s.fase, 'asta', 'finché manca un giocatore l\'asta resta aperta');
   s = H.esegui(s, C, { tipo: 'passaAsta' }).stato;
@@ -317,12 +321,12 @@ test('asta: se tutti passano senza offerte la proprietà resta alla banca', () =
   assert.equal(s.asta, null);
 });
 
-test('asta: con due giocatori basta un\'offerta dopo il passo dell\'altro; dopo un doppio si rilancia', () => {
+test('asta: con due giocatori basta un\'offerta dell\'altro; dopo un doppio si rilancia', () => {
   let s = H.modifica(H.nuovaPartita(2), (x) => { giocatore(x, A).posizione = 3; x.fase = 'daDecidereAcquisto'; x.turno.doppiConsecutivi = 1; });
   s = H.esegui(s, A, { tipo: 'rifiutaAcquisto' }).stato;
-  s = H.esegui(s, A, { tipo: 'passaAsta' }).stato;
+  assert.deepEqual(s.asta.partecipanti, [B], 'chi ha rinunciato resta fuori: in gara c\'è solo l\'altro');
   const r = H.esegui(s, B, { tipo: 'offertaAsta', importo: 10 });
-  assert.equal(voce(r.stato, 3).proprietario, B, 'unico rimasto con un\'offerta: vince subito');
+  assert.equal(voce(r.stato, 3).proprietario, B, 'unico in gara con un\'offerta: vince subito');
   assert.equal(r.stato.fase, 'daLanciare', 'Regola: se la mossa era un doppio, dopo l\'asta si lancia ancora');
 });
 

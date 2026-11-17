@@ -107,7 +107,7 @@ test('inattività: in asta passa chi non risponde; sulla casella libera l\'acqui
     stanze.programmaInattivita(stanza, { ora });
     scadi(stanza, ora);
     assert.equal(stanza.stato.fase, 'asta', 'chi non decide manda la casella all\'asta');
-    assert.equal(stanze.TEMPI.INATTIVITA_ASTA_MS, 60 * 1000);
+    assert.equal(stanze.TEMPI.INATTIVITA_ASTA_MS, 30 * 1000);
     assert.equal(stanza.inattivita.scadeIl, ora() + stanze.TEMPI.INATTIVITA_ASTA_MS, 'in asta il tempo è più breve');
     // Uno offre, gli altri non rispondono: passano e l'asta si chiude.
     const offerente = ids.find((id) => id !== diTurno);

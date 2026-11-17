@@ -270,6 +270,11 @@ export function motivoAzione(p, id, tipo) {
   if (f === 'asta' && !['offertaAsta', 'passaAsta', 'vendiCasa', 'ipoteca'].includes(tipo)) {
     return 'Aspetta la fine dell’asta in corso';
   }
+  if (f === 'lancioAffitto' && ['finisciTurno', 'compra', 'rifiutaAcquisto', 'costruisci', 'disipoteca', 'vendiCasa', 'ipoteca', 'pagaCauzione', 'usaCartaPrigione'].includes(tipo)) {
+    return mio
+      ? 'Prima lancia i dadi per l’affitto della società'
+      : `${nomeDi(p, p.turno && p.turno.giocatoreId)} deve prima lanciare i dadi per l’affitto`;
+  }
   if (f === 'debito' && ['lanciaDadi', 'finisciTurno', 'compra', 'rifiutaAcquisto', 'costruisci', 'disipoteca', 'pagaCauzione', 'usaCartaPrigione'].includes(tipo)) {
     return p.debito && p.debito.giocatoreId === id
       ? 'Prima salda il debito'
@@ -324,6 +329,7 @@ export function motivoAzione(p, id, tipo) {
       if (f !== 'asta' || !p.asta) return 'Nessuna asta in corso';
       if ((p.asta.passati || []).includes(id)) return 'Hai già passato';
       if (tipo === 'passaAsta' && p.asta.migliorOfferenteId === id) return 'Hai l’offerta più alta: non puoi passare';
+      if (p.asta.esclusoId === id) return 'Hai rinunciato all’acquisto: a questa asta non partecipi';
       return 'Non partecipi a questa asta';
     case 'dichiaraBancarotta':
       return 'Si può solo quando hai un debito che non riesci a pagare';
@@ -950,11 +956,68 @@ function avviso(testo, livello = 'info') {
   return el('p', { class: `riquadro riquadro--${livello}`, text: testo });
 }
 
+/**
+ * Conto alla rovescia fino a `alle` (ora di questo browser, in millisecondi):
+ * una barra che si svuota e i secondi che restano. Si aggiorna da solo e si
+ * ferma quando esce dalla pagina.
+ */
+export function contoAllaRovescia(alle, durataMs, etichetta) {
+  const numero = el('span', { class: 'tempo__numero' });
+  const riempimento = el('span', { class: 'tempo__riempimento' });
+  const box = el('div', { class: 'tempo', role: 'timer' },
+    el('span', { class: 'tempo__etichetta', text: etichetta }),
+    el('span', { class: 'tempo__barra', 'aria-hidden': 'true' }, riempimento),
+    numero);
+  const aggiornaTempo = () => {
+    const resta = Math.max(0, alle - Date.now());
+    const secondi = Math.ceil(resta / 1000);
+    numero.textContent = `${secondi} s`;
+    riempimento.style.transform = `scaleX(${durataMs > 0 ? Math.min(1, resta / durataMs) : 0})`;
+    box.classList.toggle('tempo--poco', secondi <= 10);
+  };
+  aggiornaTempo();
+  const id = setInterval(() => {
+    if (!box.isConnected) clearInterval(id);
+    else aggiornaTempo();
+  }, 250);
+  if (id && typeof id.unref === 'function') id.unref();
+  return box;
+}
+
 // ===========================================================================
 // Tipi di dialogo
 // ===========================================================================
 
 const TIPI = {};
+
+/**
+ * Cosa si sta per costruire su `indice` e quanto resta dopo: il testo della
+ * conferma che compare prima di spendere.
+ * @returns {{cosa: string, costo: number, resta: number, testo: string}}
+ */
+export function riepilogoCostruzione(p, id, indice) {
+  const c = CASELLE[indice];
+  const s = statoProp(p, indice);
+  const io = giocatoreDa(p, id);
+  const albergo = s.caseCostruite === 4;
+  const cosa = albergo ? 'un albergo' : (s.caseCostruite === 0 ? 'la prima casa' : `la ${['', 'seconda', 'terza', 'quarta'][s.caseCostruite]} casa`);
+  const costo = c.costoCasa;
+  const resta = (io ? io.denaro : 0) - costo;
+  return {
+    cosa, costo, resta,
+    testo: `Costruire ${cosa} su ${c.nome} costa ${euro(costo)}: ti resteranno ${euro(resta)}.${albergo ? ' Le 4 case tornano alla banca.' : ''}`,
+  };
+}
+
+/** Riquadro «confermi?» per una costruzione, con Annulla e Conferma. */
+function confermaCostruzione(ctx, indice, { annulla, conferma, chiave }) {
+  const r = riepilogoCostruzione(ctx.p, ctx.mio, indice);
+  return el('div', { class: 'conferma-costruzione', role: 'group', 'aria-label': 'Conferma la costruzione' },
+    el('p', { class: 'conferma-costruzione__testo', text: r.testo }),
+    el('div', { class: 'conferma-costruzione__azioni' },
+      el('button', { type: 'button', class: 'btn btn--quieto btn--piccolo', dataset: { chiave: `${chiave}-annulla` }, text: 'Annulla', onclick: annulla }),
+      el('button', { type: 'button', class: 'btn btn--primario btn--piccolo', dataset: { chiave: `${chiave}-conferma` }, text: `Conferma: ${euro(r.costo)}`, onclick: conferma })));
+}
 
 // --- Dettaglio casella ----------------------------------------------------
 
@@ -964,7 +1027,18 @@ TIPI.dettaglioCasella = {
   prepara(ctx) { ctx.indice = indiceDaDati(ctx.dati) ?? 0; },
   titolo: (ctx) => (CASELLE[ctx.indice] ? CASELLE[ctx.indice].nome : 'Casella'),
   corpo(ctx) {
-    return [contratto(ctx.p, ctx.indice), statoCasella(ctx.p, ctx.indice)];
+    const { p, mio, indice } = ctx;
+    // La conferma vale finché si può ancora costruire lì.
+    if (ctx.daConfermare && motivoCostruisci(p, mio, indice)) ctx.daConfermare = false;
+    return [
+      contratto(p, indice),
+      statoCasella(p, indice),
+      ctx.daConfermare ? confermaCostruzione(ctx, indice, {
+        chiave: 'dc-costruisci',
+        annulla: () => { ctx.daConfermare = false; ridisegna(ctx); },
+        conferma: () => { ctx.daConfermare = false; ctx.invia({ tipo: 'costruisci', casella: indice }); ridisegna(ctx); },
+      }) : null,
+    ];
   },
   piede(ctx) {
     const { p, mio, indice } = ctx;
@@ -973,12 +1047,18 @@ TIPI.dettaglioCasella = {
     const out = [];
     if (acquistabile(c) && mio && s.proprietario === mio) {
       if (c.tipo === 'proprieta') {
+        // Costruire costa: prima si vede il conto, poi si conferma.
         out.push(pulsante({
           testo: s.caseCostruite === 4 ? 'Costruisci l’albergo' : 'Costruisci una casa',
           dettaglio: euro(c.costoCasa),
           chiave: 'dc-costruisci',
-          motivo: motivoCostruisci(p, mio, indice),
-          onclick: () => ctx.invia({ tipo: 'costruisci', casella: indice }),
+          motivo: motivoCostruisci(p, mio, indice) || (ctx.daConfermare ? 'Conferma o annulla qui sopra' : null),
+          onclick: () => {
+            ctx.daConfermare = true;
+            ridisegna(ctx);
+            const conferma = ctx.dialog.querySelector('[data-chiave="dc-costruisci-conferma"]');
+            if (conferma) conferma.focus();
+          },
         }));
         const blocco = venditaInBlocco(p, indice);
         out.push(pulsante({
@@ -1035,10 +1115,12 @@ TIPI.acquisto = {
         el('div', null, el('dt', { text: 'Prezzo' }), el('dd', { text: `−${euro(c.prezzo)}` })),
         el('div', { class: 'conto__totale' }, el('dt', { text: 'Ti resterebbero' }), el('dd', { class: resta < 0 ? 'negativo' : null, text: euro(resta) }))),
       resta < 0
-        ? avviso('Non hai abbastanza denaro. Puoi ipotecare o vendere case dal pannello e poi comprare, oppure metterla all’asta.', 'avviso')
+        ? avviso(ctx.p.regole && ctx.p.regole.aste === false
+          ? 'Non hai abbastanza denaro. Puoi ipotecare o vendere case dal pannello e poi comprare, oppure rinunciare.'
+          : 'Non hai abbastanza denaro. Puoi ipotecare o vendere case dal pannello e poi comprare, oppure metterla all’asta: se la contenderanno gli altri, tu no.', 'avviso')
         : el('p', { class: 'testo-secondario', text: ctx.p.regole && ctx.p.regole.aste === false
           ? 'Se rinunci, la proprietà resta alla banca: chi ci arriva dopo potrà comprarla.'
-          : 'Se rinunci, la proprietà va all’asta tra tutti i giocatori, te compreso.' }),
+          : 'Se rinunci, la proprietà va all’asta tra gli altri giocatori: tu non potrai partecipare.' }),
     ];
   },
   piede(ctx) {
@@ -1067,6 +1149,72 @@ TIPI.acquisto = {
 
 function minimoAsta(asta) {
   return (asta.offertaMassima || 0) + (asta.incrementoMinimo || 1);
+}
+
+/** I rilanci rapidi dell'asta: ogni pulsante offre subito l'offerta più alta più `n` euro. */
+export const RILANCI_RAPIDI = Object.freeze([10, 50, 100]);
+
+/**
+ * Cosa offre il pulsante «+n» dell'asta e, se non si può, perché. Chi ha già
+ * l'offerta più alta non rilancia su se stesso con un tocco (un doppio clic
+ * gli costerebbe caro): se vuole, scrive lui la cifra.
+ * @returns {{importo: number, motivo: string|null}}
+ */
+export function rilancioRapido(asta, denaro, n, mioId = null) {
+  const importo = ((asta && asta.offertaMassima) || 0) + n;
+  let motivo = null;
+  if (mioId && asta && asta.migliorOfferenteId === mioId) motivo = 'Hai già l’offerta più alta';
+  else if (importo > denaro) motivo = `Per offrire ${euro(importo)} ti mancano ${euro(importo - denaro)}`;
+  return { importo, motivo };
+}
+
+/**
+ * Le proprietà di un giocatore riassunte colore per colore:
+ * [{ gruppo, nome, colore, possedute, totale, completo, nomi }].
+ */
+export function gruppiPosseduti(p, id) {
+  const perGruppo = new Map();
+  for (const c of proprietaDi(p, id)) {
+    if (!perGruppo.has(c.gruppo)) perGruppo.set(c.gruppo, []);
+    perGruppo.get(c.gruppo).push(c);
+  }
+  return [...perGruppo.entries()].map(([gruppo, caselle]) => {
+    const totale = indiciGruppo(gruppo).length;
+    return {
+      gruppo,
+      nome: nomeGruppo(gruppo),
+      colore: (GRUPPI[gruppo] && GRUPPI[gruppo].colore) || coloreCasella(caselle[0]),
+      possedute: caselle.length,
+      totale,
+      completo: caselle.length === totale && totale > 1,
+      nomi: caselle.map((c) => (statoProp(p, c.indice).ipotecata ? `${c.nome} (ipotecata)` : c.nome)),
+    };
+  });
+}
+
+/** Riga dell'asta per un giocatore: denaro, stato e proprietà colore per colore. */
+function rigaAsta(p, id, mio, stato, gruppoInPalio) {
+  const g = giocatoreDa(p, id);
+  const nome = g ? g.nome : 'Un giocatore';
+  const gruppi = gruppiPosseduti(p, id);
+  const beni = gruppi.length
+    ? el('ul', { class: 'asta-beni', 'aria-label': `Proprietà di ${nome}` }, gruppi.map((x) => el('li', {
+      class: ['asta-bene', x.completo && 'asta-bene--completo', x.gruppo === gruppoInPalio && 'asta-bene--in-palio'].filter(Boolean).join(' '),
+      style: { '--colore': x.colore },
+      title: x.nomi.join(', '),
+    },
+    el('span', { class: 'asta-bene__colore', 'aria-hidden': 'true' }),
+    el('span', { class: 'asta-bene__nome', text: x.nome }),
+    el('span', { class: 'asta-bene__quante', text: `${x.possedute} di ${x.totale}` }),
+    el('span', { class: 'visivamente-nascosto', text: `: ${x.nomi.join(', ')}` }))))
+    : el('p', { class: 'asta-beni asta-beni--vuoto', text: 'Nessuna proprietà' });
+  return el('li', { class: `asta-partecipante asta-partecipante--${stato.replace(/\s/g, '-')}`, dataset: { id } },
+    el('span', { class: 'asta-partecipante__chi' },
+      pallino(g ? g.colore : '#888'),
+      el('span', { class: 'asta-partecipante__nome', text: id === mio ? `${nome} (tu)` : nome })),
+    el('span', { class: 'asta-partecipante__denaro', text: euro(g ? g.denaro : 0) }),
+    el('span', { class: 'asta-partecipante__stato', text: stato }),
+    beni);
 }
 
 TIPI.asta = {
@@ -1100,7 +1248,9 @@ TIPI.asta = {
     const inTesta = asta.migliorOfferenteId;
     const partecipa = asta.partecipanti.includes(mio);
     const passato = asta.passati.includes(mio);
+    const escluso = asta.esclusoId === mio;
     const minimo = minimoAsta(asta);
+    const inGara = partecipa && !passato;
 
     const offerta = el('div', { class: `asta-offerta${inTesta === mio ? ' asta-offerta--mia' : ''}` },
       el('span', { class: 'asta-offerta__etichetta', text: inTesta ? 'Offerta più alta' : 'Nessuna offerta' }),
@@ -1109,22 +1259,34 @@ TIPI.asta = {
         ? (inTesta === mio ? 'È la tua' : nomeGiocatoreEl(p, inTesta))
         : `Si parte da ${euro(minimo)}`));
 
-    const partecipanti = el('ul', { class: 'asta-partecipanti', 'aria-label': 'Partecipanti' },
-      asta.partecipanti.map((id) => {
-        const g = giocatoreDa(p, id);
-        const st = id === inTesta ? 'in testa' : asta.passati.includes(id) ? 'ha passato' : 'in gara';
-        return el('li', { class: `asta-partecipante asta-partecipante--${st.replace(/\s/g, '-')}` },
-          pallino(g ? g.colore : '#888'),
-          el('span', { class: 'asta-partecipante__nome', text: id === mio ? `${g ? g.nome : ''} (tu)` : (g ? g.nome : '') }),
-          el('span', { class: 'asta-partecipante__stato', text: st }));
-      }));
+    // Il timer del server: riparte a ogni offerta o passo; allo scadere chi non ha passato passa.
+    const sc = p.scadenza;
+    let tempo = null;
+    if (sc && Number.isFinite(sc.alle)) {
+      let etichetta = 'Tempo rimasto';
+      if (inTesta === mio) etichetta = 'Se nessuno rilancia, è tua tra';
+      else if (inGara) etichetta = inTesta ? 'Rilancia o passa entro' : 'Offri o passa entro';
+      tempo = contoAllaRovescia(sc.alle, sc.durataMs, etichetta);
+    }
+
+    const gruppoInPalio = CASELLE[asta.casella] ? CASELLE[asta.casella].gruppo : null;
+    const statoDi = (id) => (id === inTesta ? 'in testa' : asta.passati.includes(id) ? 'ha passato' : 'in gara');
+    const righe = asta.partecipanti.map((id) => rigaAsta(p, id, mio, statoDi(id), gruppoInPalio));
+    if (asta.esclusoId && giocatoreDa(p, asta.esclusoId)) {
+      righe.push(rigaAsta(p, asta.esclusoId, mio, 'ha rinunciato', gruppoInPalio));
+    }
+    const partecipanti = el('section', { class: 'asta-chi', 'aria-label': 'Giocatori' },
+      el('h3', { class: 'sottotitolo', text: 'Chi partecipa: denaro e proprietà' }),
+      el('ul', { class: 'asta-partecipanti' }, righe));
 
     const parti = [
       el('div', { class: 'asta-griglia' }, contratto(p, ctx.indice, { compatto: true }), offerta),
-      partecipanti,
+      tempo,
     ];
 
-    if (!partecipa) {
+    if (escluso) {
+      parti.push(avviso('Hai rinunciato all’acquisto: a questa asta non partecipi, ma puoi seguirla da qui.'));
+    } else if (!partecipa) {
       parti.push(avviso('Non partecipi a questa asta: puoi seguirla da qui.'));
     } else if (passato) {
       parti.push(avviso('Hai passato: segui come va a finire.'));
@@ -1137,14 +1299,19 @@ TIPI.asta = {
         'aria-describedby': `${idAiuto} ${idErr}`,
       });
       const errore = el('p', { class: 'errore-campo', id: idErr, 'aria-live': 'assertive' });
-      const rapidi = [10, 50, 100].map((n) => el('button', {
-        type: 'button', class: 'btn btn--piccolo', dataset: { chiave: `asta-piu-${n}` },
-        'aria-label': `Offri ${n} euro più dell’offerta attuale`, text: `+${n}`,
-        onclick: () => {
-          campo.value = String(Math.min(io.denaro, (asta.offertaMassima || 0) + n));
-          campo.focus();
-        },
-      }));
+      // «+10» offre subito: niente campo da riempire e poi confermare, il tempo corre.
+      const rapidi = RILANCI_RAPIDI.map((n) => {
+        const { importo, motivo } = rilancioRapido(asta, io.denaro, n, mio);
+        const btn = pulsante({
+          testo: `+${n}`, dettaglio: euro(importo), motivo, chiave: `asta-piu-${n}`, classe: 'btn--piccolo',
+          onclick: () => {
+            const ora = rilancioRapido(ctx.p.asta, ctx.io.denaro, n, ctx.mio);
+            if (!ora.motivo) ctx.invia({ tipo: 'offertaAsta', importo: ora.importo });
+          },
+        });
+        btn._btn.setAttribute('aria-label', `Offri subito ${euro(importo)}: ${n} euro più dell’offerta più alta`);
+        return btn;
+      });
       const modulo = el('form', {
         class: 'asta-modulo', novalidate: true,
         onsubmit: (e) => {
@@ -1162,16 +1329,20 @@ TIPI.asta = {
           ctx.invia({ tipo: 'offertaAsta', importo });
         },
       },
-      el('label', { for: campo.id, class: 'etichetta-campo', text: 'La tua offerta in euro' }),
-      el('div', { class: 'asta-modulo__riga' }, campo, ...rapidi),
+      el('div', { class: 'asta-rapidi', role: 'group', 'aria-label': 'Rilancia subito' },
+        el('span', { class: 'etichetta-campo', text: 'Rilancia subito' }),
+        el('div', { class: 'asta-rapidi__pulsanti' }, rapidi)),
+      el('label', { for: campo.id, class: 'etichetta-campo', text: 'Oppure scrivi la tua offerta in euro' }),
+      el('div', { class: 'asta-modulo__riga' }, campo,
+        el('button', {
+          type: 'submit', class: 'btn btn--primario', dataset: { chiave: 'asta-offri' },
+          disabled: io.denaro < minimo, text: 'Offri',
+        })),
       el('p', { class: 'aiuto-campo', id: idAiuto, text: io.denaro < minimo ? `Ti servirebbero almeno ${euro(minimo)}: hai ${euro(io.denaro)}.` : `Minimo ${euro(minimo)}, massimo ${euro(io.denaro)} (il tuo denaro).` }),
-      errore,
-      el('button', {
-        type: 'submit', class: 'btn btn--primario btn--largo', dataset: { chiave: 'asta-offri' },
-        disabled: io.denaro < minimo, text: 'Fai l’offerta',
-      }));
+      errore);
       parti.push(modulo);
     }
+    parti.push(partecipanti);
     return parti;
   },
   dopoRidisegno(ctx) {
@@ -1458,11 +1629,42 @@ function voceGestione(ctx, c, modalita) {
     motivo = motivoDisipoteca(p, mio, c.indice);
     azione = 'disipoteca';
   }
+  // Costruire costa: il primo clic mostra il conto, il secondo conferma.
+  const daConfermare = modalita === 'costruisci' && ctx.daConfermare === c.indice && !motivo;
   const btn = pulsante({
     testo, dettaglio, motivo, chiave: `gest-${modalita}-${c.indice}`, classe: 'btn--piccolo',
-    onclick: () => ctx.invia({ tipo: azione, casella: c.indice }),
+    onclick: () => {
+      if (modalita !== 'costruisci') {
+        ctx.invia({ tipo: azione, casella: c.indice });
+        return;
+      }
+      ctx.daConfermare = c.indice;
+      ridisegna(ctx);
+      const conferma = ctx.dialog.querySelector(`[data-chiave="gest-costruisci-${c.indice}-conferma"]`);
+      if (conferma) conferma.focus();
+    },
   });
   btn._btn.setAttribute('aria-label', `${testo} ${c.nome}, ${dettaglio}`);
+  if (daConfermare) {
+    return el('li', { class: 'voce-gestione voce-gestione--conferma' },
+      el('span', { class: 'voce-gestione__nome voce-gestione__nome--fermo' }, etichettaCasella(c.indice, p)),
+      confermaCostruzione(ctx, c.indice, {
+        chiave: `gest-costruisci-${c.indice}`,
+        annulla: () => {
+          ctx.daConfermare = null;
+          ridisegna(ctx);
+          const torna = ctx.dialog.querySelector(`[data-chiave="gest-costruisci-${c.indice}"]`);
+          if (torna) torna.focus();
+        },
+        conferma: () => {
+          ctx.daConfermare = null;
+          ctx.invia({ tipo: 'costruisci', casella: c.indice });
+          ridisegna(ctx);
+          const torna = ctx.dialog.querySelector(`[data-chiave="gest-costruisci-${c.indice}"]`);
+          if (torna) torna.focus();
+        },
+      }));
+  }
   return el('li', { class: `voce-gestione${ctx.evidenzia === c.indice ? ' voce-gestione--evidenziata' : ''}` },
     el('button', {
       type: 'button', class: 'voce-gestione__nome', dataset: { chiave: `gest-info-${c.indice}` },
@@ -1500,7 +1702,7 @@ TIPI.gestione = {
           el('input', {
             type: 'radio', name: nomeGruppoRadio, id: idR, value: m.id, checked: ctx.modalita === m.id,
             'data-non-conservare': true,
-            onchange: () => { ctx.modalita = m.id; ridisegna(ctx); },
+            onchange: () => { ctx.modalita = m.id; ctx.daConfermare = null; ridisegna(ctx); },
           }),
           el('label', { for: idR, text: m.etichetta }));
       }));
@@ -2054,6 +2256,9 @@ TIPI.finePartita = {
         el('span', { class: 'classifica__nome', text: g.id === ctx.mio ? `${g.nome} (tu)` : g.nome }),
         el('span', { class: 'classifica__valore', text: g.fallito ? (ritirati.has(g.id) ? 'ha abbandonato' : 'bancarotta') : euro(patrimonio(p, g.id)) })))),
       el('p', { class: 'testo-secondario', text: 'Il patrimonio conta denaro, proprietà al prezzo di listino (metà se ipotecate) e case al costo di costruzione.' }),
+      Number.isFinite(p.chiusuraAlle)
+        ? contoAllaRovescia(p.chiusuraAlle, p.chiusuraDurataMs || 30000, 'La stanza si chiude tra')
+        : null,
     ];
   },
   piede: (ctx) => [chiudiPulsante(ctx, 'Chiudi', { primario: true })],

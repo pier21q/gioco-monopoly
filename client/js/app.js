@@ -459,6 +459,10 @@ export function toastPerEvento(evento, partita, mioId) {
     case 'astaFine':
     case 'scambioAccettato':
       return { testo, livello: 'info' };
+    case 'affittoDaLanciare':
+      return suDiMe
+        ? { testo: `Lancia i dadi: pagherai ${d.moltiplicatore || 10} volte il risultato ${d.aId ? `a ${nome(d.aId)}` : ''}`.trim(), livello: 'avviso', durata: 7000 }
+        : null;
     case 'carta':
       // La carta compare grande sul tabellone e nella cronaca (letta dagli
       // screen reader): il messaggio a comparsa la ripeteva soltanto.
@@ -718,7 +722,9 @@ async function avvia() {
   function stanzaPersa(messaggio) {
     if (!store.getState().io && !daRiprendere) return;
     tornaAllInizio({ mantieniConnessione: true });
-    mostraToast(messaggio || 'La stanza è stata chiusa.', { livello: 'avviso', durata: 7000 });
+    // A partita finita la stanza si chiude da sola: non è un problema, è il saluto.
+    const finita = /^La partita è finita/.test(messaggio || '');
+    mostraToast(messaggio || 'La stanza è stata chiusa.', { livello: finita ? 'successo' : 'avviso', durata: finita ? 10000 : 7000 });
   }
 
   /** Dimentica stanza e sessione e torna al form iniziale. */
@@ -836,6 +842,14 @@ async function avvia() {
         if (nuova.codice && nuova.codice !== s.io.codice) return;
         const stessa = Boolean(s.partita) && s.partita.codice === nuova.codice;
         if (stessa && nuova.versione < s.partita.versione) return;
+        // I tempi arrivano come "millisecondi da adesso": qui diventano un'ora
+        // di questo browser, che le finestre usano per il conto alla rovescia.
+        const adesso = Date.now();
+        if (nuova.scadenza && Number.isFinite(nuova.scadenza.traMs)) nuova.scadenza.alle = adesso + nuova.scadenza.traMs;
+        if (Number.isFinite(nuova.chiusuraTraMs)) {
+          nuova.chiusuraAlle = adesso + nuova.chiusuraTraMs;
+          nuova.chiusuraDurataMs = Math.max(nuova.chiusuraTraMs, s.partita?.chiusuraDurataMs || 0);
+        }
         // Negli aggiornamenti il log è accorciato: lo si ricuce con quello noto.
         const partita = stessa ? { ...nuova, log: unisciLog(s.partita.log, nuova.log) } : nuova;
         const parziale = { partita };

@@ -309,9 +309,20 @@ Il gioco segue il regolamento classico dell'edizione italiana, in euro.
   di fila si va in prigione.
 - **Via.** 200 € ogni volta che si passa o si arriva sul Via.
 - **Acquisti.** Chi arriva su una proprietà libera può comprarla al prezzo di
-  listino; se rinuncia, la proprietà va all'asta.
-- **Aste.** Partecipano tutti i giocatori in gara, anche chi ha rinunciato.
-  Ogni offerta deve superare la precedente; chi passa esce dall'asta.
+  listino; se rinuncia, la proprietà va all'asta fra gli altri.
+- **Aste.** Partecipano tutti i giocatori in gara **tranne chi ha rinunciato
+  all'acquisto**: chi non ha voluto pagare il prezzo di listino non può
+  riprendersela a meno (nel gioco da tavolo potrebbe). Ogni offerta deve
+  superare la precedente; chi passa esce dall'asta. C'è un **timer di 30
+  secondi** che si vede nella finestra e riparte a ogni offerta o passo: allo
+  scadere chi non ha passato passa, quindi la proprietà va a chi ha l'offerta
+  più alta, o resta alla banca se nessuno ha offerto. La finestra mostra anche
+  quanto denaro ha ogni giocatore e le sue proprietà colore per colore (in
+  evidenza il colore della proprietà all'asta). I pulsanti **+10, +50 e +100**
+  offrono subito l'offerta più alta più quella cifra; chi è già in testa li
+  trova spenti, così un doppio clic non lo fa rilanciare su se stesso (può
+  sempre scrivere lui una cifra). Le aste della banca, quando un giocatore
+  fallisce o abbandona, restano aperte a tutti.
 - **Affitti.** Terreni: affitto base, raddoppiato con il gruppo completo senza
   case, poi secondo case e albergo. Stazioni: 25, 50, 100 o 200 € secondo
   quante ne ha il proprietario. Società: 4 o 10 volte il lancio dei dadi.
@@ -319,6 +330,9 @@ Il gioco segue il regolamento classico dell'edizione italiana, in euro.
 - **Case e alberghi.** Si costruisce solo con il gruppo completo e senza
   ipoteche nel gruppo, in modo uniforme. L'albergo sostituisce 4 case. La banca
   ha 32 case e 12 alberghi. Le costruzioni si rivendono a metà prezzo.
+  Prima di spendere il gioco chiede conferma: il primo clic su «Casa» o
+  «Albergo» mostra cosa si costruisce, quanto costa e quanto denaro resta, e
+  si costruisce solo premendo «Conferma».
   Nelle regole della partita si può scegliere la variante **Solo dove
   ti fermi**: si costruisce su un colore solo nel turno in cui la propria
   pedina si ferma su una sua casella (e sempre solo con il gruppo completo).
@@ -330,6 +344,10 @@ Il gioco segue il regolamento classico dell'edizione italiana, in euro.
   prigione". Chi riceve una proprietà ipotecata paga subito il 10% di
   interesse. Può esserci una sola proposta in attesa alla volta.
 - **Probabilità e Imprevisti.** 16 carte per mazzo, mescolate a inizio partita.
+  Quando la carta «Andate alla società più vicina» porta su una società di un
+  altro giocatore, i dadi per l'affitto li lancia chi ha pescato (con il
+  pulsante o toccando i dadi sul tabellone): paga 10 volte il risultato. Quel
+  lancio non muove la pedina e un doppio non dà diritto a rilanciare.
 - **Tasse.** Tassa patrimoniale 200 €, tassa di lusso 100 €.
 - **Prigione.** Si esce con un doppio (tre tentativi), pagando 50 € o usando
   la carta. Al terzo tentativo fallito si pagano i 50 € e si esce. Anche dalla
@@ -338,7 +356,9 @@ Il gioco segue il regolamento classico dell'edizione italiana, in euro.
   deve vendere case, ipotecare o scambiare. Se non basta dichiara bancarotta e
   i suoi beni passano al creditore; se il creditore è la banca, le proprietà
   vanno all'asta.
-- **Fine partita.** Vince l'ultimo giocatore rimasto.
+- **Fine partita.** Vince l'ultimo giocatore rimasto. La classifica resta
+  sullo schermo per 30 secondi, poi la stanza si chiude da sola e tutti tornano
+  alla pagina iniziale; si chiude subito se escono tutti.
 
 Cose che funzionano in modo diverso dal gioco da tavolo:
 
@@ -368,9 +388,14 @@ Cose che funzionano in modo diverso dal gioco da tavolo:
 - Se chi ha l'offerta più alta in un'asta abbandona, l'asta riparte da zero e
   chi aveva passato davanti a quell'offerta torna a poter offrire.
 - Anche chi resta collegato ma non gioca ha un tempo massimo: 3 minuti per il
-  proprio turno (poi rinuncia all'acquisto o salta il turno), 60 secondi per
-  rispondere in un'asta (poi passa), 5 minuti per saldare un debito (poi
-  bancarotta). Trenta secondi prima compare un avviso. Riconnettersi non fa
+  proprio turno (poi rinuncia all'acquisto o salta il turno), 15 secondi per
+  finire il turno dopo aver lanciato i dadi (il conto alla rovescia si vede nel
+  pannello, a tutti; ogni mossa lo fa ripartire, e mentre si aspetta la
+  risposta a uno scambio valgono i 3 minuti), 30 secondi per
+  rispondere in un'asta (poi passa: è il timer che si vede nella finestra),
+  un minuto per lanciare i dadi chiesti dalla carta della società (poi li
+  lancia il gioco e il turno passa), 5 minuti per saldare un debito (poi
+  bancarotta). Trenta secondi prima compare un avviso, tranne che in asta. Riconnettersi non fa
   ripartire il tempo; qualunque mossa sì. Dopo due giri interi di turni saltati
   senza che nessuno giochi, la partita smette di avanzare da sola e aspetta.
 
@@ -410,7 +435,7 @@ servirebbero account o un servizio di protezione davanti.
 | Stanza creata in cui non è mai entrato nessuno | 2 minuti |
 | Tutti i giocatori scollegati (sala d'attesa o partita) | 10 minuti |
 | Sala d'attesa con un solo giocatore, senza che succeda niente | 30 minuti |
-| Partita finita | 30 minuti |
+| Partita finita | 30 secondi (subito, se escono tutti) |
 | Nessun cambiamento, in qualunque stato | 2 ore |
 | Partita ripristinata dal salvataggio in cui non rientra nessuno | 2 ore |
 

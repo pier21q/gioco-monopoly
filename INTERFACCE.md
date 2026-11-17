@@ -215,7 +215,8 @@ sostituisce il proprio.
 | `daLanciare` | il giocatore di turno deve lanciare (o, se in prigione, scegliere come uscire) | `lanciaDadi`, `pagaCauzione`, `usaCartaPrigione` (turno) · gestione (§2.4) |
 | `mossa` | lancio fatto e casella risolta; il giocatore può gestire proprietà e poi chiudere il turno | `finisciTurno` (turno) · gestione |
 | `daDecidereAcquisto` | il giocatore di turno è su una casella libera | `compra`, `rifiutaAcquisto` (turno) · gestione |
-| `asta` | asta in corso per `asta.casella` | `offertaAsta`, `passaAsta` (ogni partecipante) · `vendiCasa`, `ipoteca` (tutti) |
+| `lancioAffitto` | la carta "società più vicina" ha portato il giocatore di turno su una società altrui: deve lanciare i dadi per l'affitto (`lancioAffitto: { giocatoreId, casella, creditoreId, moltiplicatore }`, `null` nelle altre fasi) | `lanciaDadi` (turno): i dadi finiscono in `stato.dadi`, il doppio non conta, la pedina non si muove, si paga `moltiplicatore × totale` al proprietario di adesso; poi `mossa` o `daLanciare` · niente gestione finché non lancia |
+| `asta` | asta in corso per `asta.casella` | `offertaAsta`, `passaAsta` (ogni partecipante) · `vendiCasa`, `ipoteca` (ogni partecipante) |
 | `debito` | `debito.giocatoreId` deve pagare `debito.importo` e non ha liquidità | `vendiCasa`, `ipoteca`, `dichiaraBancarotta` (debitore) · `proponiScambio` (chiunque: anche il creditore può offrire uno scambio al debitore) · `accettaScambio`/`rifiutaScambio` (destinatario) |
 | `finePartita` | resta un solo giocatore non fallito | nessuna |
 
@@ -293,6 +294,7 @@ della banca.
   "migliorOfferenteId": "b3m8w1zt",
   "partecipanti": ["a7k2x9pq", "b3m8w1zt", "c9r4n2vd"],
   "passati": ["c9r4n2vd"],
+  "esclusoId": "d5t1q8ke",
   "incrementoMinimo": 1,
   "iniziataIl": 1763204080000
 }
@@ -301,8 +303,15 @@ della banca.
 * Asta all'inglese libera: chiunque in `partecipanti` e non in `passati` può
   offrire un importo `>= offertaMassima + incrementoMinimo` e `<=` del proprio
   denaro. Il miglior offerente non può passare.
-* Partecipano tutti i giocatori non falliti, incluso chi ha rifiutato
-  l'acquisto. `partecipanti` è nell'ordine dei giocatori.
+* Partecipano tutti i giocatori non falliti **tranne chi ha rinunciato
+  all'acquisto** (`esclusoId`: anche per tempo scaduto o disconnessione): chi
+  non ha voluto pagare il prezzo di listino non può riprendersela all'asta, e
+  non è in `partecipanti`. Nelle aste della banca (beni di chi fallisce o
+  abbandona) `esclusoId` è `null` e partecipano tutti. `partecipanti` è
+  nell'ordine dei giocatori.
+* L'asta ha un **timer di 30 secondi** (`INATTIVITA_ASTA_MS`, §3.4) che
+  riparte a ogni offerta o passo e che i client mostrano nella finestra
+  (`stato.scadenza`, §1.9 quater): allo scadere chi non ha passato passa.
 * Termina quando tutti tranne il miglior offerente hanno passato (la proprietà
   va a lui per `offertaMassima`), oppure quando tutti hanno passato senza
   offerte (resta alla banca). Poi la fase torna a `mossa` del giocatore di
@@ -379,6 +388,18 @@ regole.
 | `asta.faseDopo` | fase | fase a cui si torna quando l'asta si chiude |
 
 Il client può ignorarli; `statoPubblico` li lascia (non sono segreti).
+
+### 1.9 quater Tempi che restano (solo nello stato inviato ai client)
+
+`stanze.statoPerClient` aggiunge, quando ci sono:
+
+| Campo | Tipo | Note |
+|---|---|---|
+| `scadenza` | `{ traMs, durataMs, giocatori }` | il timer d'inattività in corso (§3.4): fra quanti millisecondi **dall'invio** scade, quanto dura in tutto e chi deve agire. Assente in `lobby`, a partita finita e quando il timer è fermo. Il client lo usa per il conto alla rovescia dell'asta e per quello della fine del turno (fase `mossa`, nel pannello) |
+| `chiusuraTraMs` | `number` | solo in `finePartita`: fra quanti millisecondi la stanza si chiude da sola (§3.4) |
+
+Sono durate e non orari perché l'orologio del browser non è quello del server:
+il client le somma al proprio `Date.now()` quando riceve lo stato.
 
 ### 1.9 ter Regole, lancio iniziale e piatto
 
@@ -493,9 +514,9 @@ Legenda "chi": **T** = solo giocatore di turno · **D** = solo debitore ·
 
 | `tipo` | Parametri | Chi | Fasi | Effetto | Errori tipici |
 |---|---|---|---|---|---|
-| `lanciaDadi` | — | T | `daLanciare`, `ordine` | In fase `ordine` è il lancio iniziale (§1.9 ter): nessun movimento. Altrimenti tira due dadi (`contesto.random`). Se libero: avanza, +200 se passa dal Via, risolve la casella (§8). Se in prigione: col doppio esce e avanza (senza secondo lancio); altrimenti `turniInPrigione+1`; al terzo fallimento paga 50 (o `debito`) e avanza. Doppio → `daLanciare` di nuovo; terzo doppio → prigione, fase `mossa`. | `FASE_ERRATA`, `NON_IL_TUO_TURNO` |
+| `lanciaDadi` | — | T | `daLanciare`, `ordine`, `lancioAffitto` | In fase `ordine` è il lancio iniziale (§1.9 ter): nessun movimento. In fase `lancioAffitto` è il lancio per l'affitto della società (§1.2): nessun movimento, il doppio non conta. Altrimenti tira due dadi (`contesto.random`). Se libero: avanza, +200 se passa dal Via, risolve la casella (§8). Se in prigione: col doppio esce e avanza (senza secondo lancio); altrimenti `turniInPrigione+1`; al terzo fallimento paga 50 (o `debito`) e avanza. Doppio → `daLanciare` di nuovo; terzo doppio → prigione, fase `mossa`. | `FASE_ERRATA`, `NON_IL_TUO_TURNO` |
 | `compra` | — | T | `daDecidereAcquisto` | Paga il prezzo di listino, diventa proprietario. Fase → `mossa` (o `daLanciare` se il lancio era doppio). | `FONDI_INSUFFICIENTI` |
-| `rifiutaAcquisto` | — | T | `daDecidereAcquisto` | Avvia l'asta (`asta` valorizzata, fase `asta`); con la variante `aste: false` la casella resta alla banca (evento `acquistoRifiutato`, fase `mossa`). Se è l'unico giocatore non fallito la casella resta alla banca. | |
+| `rifiutaAcquisto` | — | T | `daDecidereAcquisto` | Avvia l'asta fra gli altri (`asta` valorizzata con `esclusoId` = chi rinuncia, fase `asta`); con la variante `aste: false` la casella resta alla banca (evento `acquistoRifiutato`, fase `mossa`). Se è l'unico giocatore non fallito la casella resta alla banca. | |
 | `offertaAsta` | `importo` intero | P | `asta` | Offerta `>= offertaMassima + incrementoMinimo` e `<= denaro`. | `OFFERTA_BASSA`, `FONDI_INSUFFICIENTI`, `GIA_PASSATO` |
 | `passaAsta` | — | P | `asta` | Esce dall'asta. Il miglior offerente non può passare. Chiude l'asta quando resta uno solo. | `MIGLIOR_OFFERENTE`, `GIA_PASSATO` |
 | `costruisci` | `casella` | T | gestione | Costruisce una casa (o l'albergo se a 4 case) su `casella`. Richiede gruppo completo, nessuna ipoteca nel gruppo, costruzione uniforme (differenza max 1 nel gruppo), scorte in banca, denaro. Con `stato.regole.costruzione === 'sosta'` serve anche che la pedina si sia fermata in questo turno su una casella del gruppo: il gruppo è in `turno.soste`, oppure la pedina è sul gruppo e la fase è diversa da `daLanciare` (o `doppiConsecutivi > 0`). | `GRUPPO_INCOMPLETO`, `NON_SULLA_CASELLA`, `COSTRUZIONE_NON_UNIFORME`, `CASE_ESAURITE`, `ALBERGHI_ESAURITI`, `IPOTECATA`, `FONDI_INSUFFICIENTI`, `NON_EDIFICABILE` |
@@ -542,19 +563,21 @@ Esempi di oggetto `azione`:
 * Asta: l'offerta deve **superare** quella corrente, quindi i pareggi sono
   impossibili (vale l'offerta arrivata prima). Il miglior offerente può
   rilanciare su sé stesso. I giocatori disconnessi all'avvio dell'asta
-  partono già in `passati`.
+  partono già in `passati`. Chi ha rinunciato all'acquisto non è fra i
+  partecipanti: le sue `offertaAsta`/`passaAsta` e, durante l'asta, anche
+  `vendiCasa`/`ipoteca` danno `GIOCATORE_NON_VALIDO`.
 
 ### 2.5 Altri export di `motore.js`
 
 | Export | Descrizione |
 |---|---|
 | `AZIONI` | array frozen dei 17 `tipo` ammessi (nell'ordine della tabella §2.4) |
-| `FASI` | array frozen delle 7 fasi |
+| `FASI` | array frozen delle 9 fasi |
 | `azioniDisponibili(stato, giocatoreId) → string[]` | i `tipo` che `giocatoreId` può eseguire adesso (per abilitare i pulsanti del client). Non valuta i parametri. |
 | `statoPubblico(stato) → StatoPartita` | copia senza `mazzi`, con `azioni` per giocatore (quella che va ai client) |
 | `prossimoGiocatore(stato) → giocatoreId` | prossimo non fallito **e connesso** dopo il giocatore di turno (se nessun altro è connesso: il prossimo non fallito) |
 | `gestisciDisconnessione(stato, giocatoreId, {random, ora}) → { stato, eventi }` | chiamata da `stanze.js` quando un disconnesso blocca la partita, dopo la tolleranza di §3.4: annulla il suo scambio pendente, lo fa passare all'asta (se non è il miglior offerente), se è di turno in `daDecidereAcquisto` apre l'asta, in `daLanciare`/`mossa` passa il turno. Un debito resta in attesa. Se non c'è nulla da fare ritorna lo stesso `stato` ed `eventi: []` (versione invariata). |
-| `gestisciInattivita(stato, giocatoreId, {random, ora}) → { stato, eventi }` | come `gestisciDisconnessione`, per un giocatore collegato che non agisce in tempo (§3.4): **non** annulla gli scambi pendenti; in `daDecidereAcquisto` e `daLanciare`/`mossa` emette `turnoSaltato` con `motivo: 'inattivo'`. |
+| `gestisciInattivita(stato, giocatoreId, {random, ora}) → { stato, eventi }` | come `gestisciDisconnessione`, per un giocatore collegato che non agisce in tempo (§3.4): **non** annulla gli scambi pendenti; in `daDecidereAcquisto` e `daLanciare`/`mossa` emette `turnoSaltato` con `motivo: 'inattivo'` (in `mossa` il testo dice che il turno passa, non che viene saltato). |
 | `scadeScambio(stato, scambioId, {ora, secondi}) → { stato, eventi }` | lo scambio in attesa `scambioId` decade senza risposta (§3.4): `stato.scambio` torna `null`, evento `scambioRifiutato` con `daId: null` e `motivo: 'scaduto'`. Se quello scambio non è più in attesa: stesso `stato`, `eventi: []`. |
 | `chiDeveAgire(stato) → string[]` | chi tiene ferma la partita adesso: il debitore, i partecipanti all'asta che non hanno passato (escluso il miglior offerente) o il giocatore di turno. |
 | `calcolaAffitto(stato, casella, opz?) → { importo, moltiplicatore? }` | affitto corrente di una casella posseduta (società: usa `stato.dadi`) |
@@ -700,10 +723,16 @@ Esempi:
    **Inattività dei collegati.** C'è anche un timer per stanza
    (`stanze.programmaInattivita`) per chi è collegato ma non agisce
    (`motore.chiDeveAgire`): 3 minuti per il turno
-   (`INATTIVITA_TURNO_MS`), 60 s in asta (`INATTIVITA_ASTA_MS`), 5 minuti per
-   un debito (`INATTIVITA_DEBITO_MS`). 30 s prima arriva a tutti un `evento`
-   `avvisoInattivita` (`dati: { giocatori, secondi, debito }`, non entra nel
-   log). Allo scadere: debito → `abbandona` per il debitore (`motivo: 'debito'`); altrimenti
+   (`INATTIVITA_TURNO_MS`), 15 s in fase `mossa` per finire il turno
+   (`INATTIVITA_FINE_TURNO_MS`; con uno scambio in attesa vale
+   `INATTIVITA_TURNO_MS`, e il timer riparte anche quando cambia solo la
+   durata, per esempio quando lo scambio scade), 30 s in asta (`INATTIVITA_ASTA_MS`), 60 s per i
+   dadi del lancio iniziale o dell'affitto di una società
+   (`INATTIVITA_ORDINE_MS`), 5 minuti per un debito (`INATTIVITA_DEBITO_MS`).
+   Il tempo che resta viaggia nello stato (`scadenza`, §1.9 quater). 30 s
+   prima arriva a tutti un `evento` `avvisoInattivita`
+   (`dati: { giocatori, secondi, debito }`, non entra nel log), tranne che in
+   asta, dove il conto alla rovescia è nella finestra. Allo scadere: debito → `abbandona` per il debitore (`motivo: 'debito'`); altrimenti
    `motore.gestisciInattivita` per ognuno. Il timer riparte solo quando la
    partita va avanti (`stanza.progresso`), non a connessioni e riconnessioni;
    si ferma se nessuno in gara è collegato o dopo due giri interi di turni
@@ -716,7 +745,11 @@ Esempi:
    entrato da 2 minuti, ha tutti i giocatori scollegati da 10 minuti
    (`STANZA_VUOTA_MS`), è una sala d'attesa con un solo giocatore ferma da 30
    minuti (`LOBBY_SOLITARIA_MS`), è inattiva da 2 ore,
-   o quando la partita è in `finePartita` da 30 minuti. Le stanze ripristinate
+   o quando la partita è in `finePartita` da 30 secondi (`FINE_PARTITA_MS`).
+   A partita finita di norma ci pensa prima `stanze.sorvegliaFine`: un timer
+   chiude la stanza 30 secondi dopo la fine, oppure subito se non è più
+   collegato nessuno; il messaggio dell'errore dice chi ha vinto («La partita
+   è finita: ha vinto Anna. La stanza è stata chiusa.»). Le stanze ripristinate
    dal salvataggio (`stanze.importa`) partono senza `vuotaDal`: aspettano le 2
    ore, e i 10 minuti valgono solo dopo che qualcuno è rientrato e uscito. Ai socket ancora
    collegati arriva `errore STANZA_INESISTENTE` (senza `rif`) e poi la
@@ -1001,9 +1034,9 @@ hanno più senso (asta finita, debito saldato, scambio risolto).
 | `tipo` | `dati` | Azioni emesse |
 |---|---|---|
 | `acquisto` | `{}` | `compra` / `rifiutaAcquisto` |
-| `asta` | `{}` | `offertaAsta {importo}` / `passaAsta` |
+| `asta` | `{}` | `offertaAsta {importo}` / `passaAsta`. Mostra il conto alla rovescia (`stato.scadenza`), denaro e proprietà di ogni giocatore colore per colore, e i rilanci rapidi «+10 / +50 / +100» che offrono subito l'offerta più alta più quella cifra (`dialoghi.rilancioRapido`; spenti per chi è già in testa) |
 | `scambio` | `{}` (mostra la proposta pendente) oppure `{ nuovo: true, aId? }` (nuova proposta) | `proponiScambio` / `accettaScambio` / `rifiutaScambio` |
-| `gestione` | `{ modalita: 'costruisci' \| 'vendi' \| 'ipoteca' \| 'disipoteca' }` | `costruisci` / `vendiCasa` / `ipoteca` / `disipoteca` |
+| `gestione` | `{ modalita: 'costruisci' \| 'vendi' \| 'ipoteca' \| 'disipoteca' }` | `costruisci` / `vendiCasa` / `ipoteca` / `disipoteca`. Per costruire servono due passi: il primo clic mostra il conto (`dialoghi.riepilogoCostruzione`: cosa si costruisce, quanto costa, quanto resta), «Conferma» invia l'azione |
 | `costruzioni`, `ipoteca` | `{ indice?, modalita? }`: alias di `gestione` con la casella evidenziata | come `gestione` |
 | `prigione` | `{}` | `lanciaDadi` / `pagaCauzione` / `usaCartaPrigione` |
 | `debito` | `{}` | `vendiCasa` / `ipoteca` / `proponiScambio` / apre `bancarotta` |
@@ -1168,7 +1201,8 @@ Esempi:
 | `turno` | `{ giocatoreId, numero }` |
 | `turnoSaltato` | `{ giocatoreId, motivo: 'disconnesso' \| 'inattivo' }` |
 | `avvisoInattivita` | `{ giocatori: string[], secondi, debito: bool }`: solo come `evento` del server 30 s prima dello scadere del tempo (§3.4), non entra nel log |
-| `dadi` | `{ dadi: [d1, d2], doppio, inPrigione, doppiConsecutivi, perAffitto? }` (`perAffitto: true` per il lancio della carta "società più vicina") |
+| `dadi` | `{ dadi: [d1, d2], doppio, inPrigione, doppiConsecutivi, perAffitto?, motivo? }` (`perAffitto: true` per il lancio della carta "società più vicina", fatto dal giocatore in fase `lancioAffitto`: il `doppio` qui non conta; `motivo: 'disconnesso' \| 'inattivo'` se l'ha lanciato il gioco al posto suo) |
+| `affittoDaLanciare` | `{ daId, aId, casella, moltiplicatore }`: la carta chiede a `daId` di lanciare i dadi per l'affitto della società (fase `lancioAffitto`) |
 | `movimento` | `{ da, a, passi, passatoDalVia, causa: 'dadi' \| 'carta' }` (`passi` negativo per `indietro`) |
 | `passaggioVia` | `{ importo, doppio }` (`doppio: true` con la variante `viaDoppio` fermandosi sul Via: 400 €) |
 | `acquisto` | `{ casella, prezzo, tramite: 'banca' \| 'asta' }` |
@@ -1180,7 +1214,7 @@ Esempi:
 | `pagamento` | `{ daId, aId \| null, importo, motivo }` (carte, cauzione, interessi, riparazioni) |
 | `prigione` | `{ motivo: 'casella' \| 'carta' \| 'treDoppi' }` |
 | `uscitaPrigione` | `{ modo: 'cauzione' \| 'carta' \| 'doppio' \| 'terzoTurno' }` |
-| `astaInizio` | `{ casella, partecipanti, riparte? }` (`riparte: true` quando il miglior offerente ha abbandonato: offerta azzerata, `asta.iniziataIl` nuovo, chi aveva passato torna in gara tranne falliti e scollegati) |
+| `astaInizio` | `{ casella, partecipanti, esclusoId, riparte? }` (`esclusoId`: chi ha rinunciato all'acquisto e non partecipa, `null` nelle aste della banca; `riparte: true` quando il miglior offerente ha abbandonato: offerta azzerata, `asta.iniziataIl` nuovo, chi aveva passato torna in gara tranne falliti e scollegati) |
 | `astaOfferta` | `{ casella, importo }` |
 | `astaPasso` | `{ casella }` |
 | `astaFine` | `{ casella, vincitoreId \| null, importo }` |
@@ -1260,7 +1294,9 @@ Regolamento ufficiale, con queste scelte esplicite:
    in qualunque momento del proprio `daLanciare`. In prigione si incassano
    affitti e si può gestire il patrimonio.
 7. **Tre doppi** consecutivi → prigione.
-8. **Asta** all'inglese libera (§1.6), incremento minimo 1 €.
+8. **Asta** all'inglese libera (§1.6), incremento minimo 1 €, senza chi ha
+   rinunciato all'acquisto, con 30 secondi di tempo che ripartono a ogni
+   offerta.
 9. **Scambi**: solo caselle senza costruzioni; ipotecate trasferibili con
    interesse immediato del 10% a carico di chi riceve; carte prigione
    scambiabili; una sola proposta pendente per partita.
@@ -1276,8 +1312,9 @@ Regolamento ufficiale, con queste scelte esplicite:
     resta un solo giocatore non fallito.
 11. **Carte**: `esciGratis` resta al giocatore e torna in coda al **suo** mazzo
     quando usata; le altre tornano in coda subito. I turni hanno un limite di
-    tempo solo contro chi non gioca affatto (§3.4: 3 minuti, 60 s in asta,
-    5 minuti per un debito).
+    tempo solo contro chi non gioca affatto (§3.4: 3 minuti, 30 s in asta,
+    5 minuti per un debito). La carta "società più vicina" non lancia i dadi
+    da sola: li lancia il giocatore (fase `lancioAffitto`, §1.2).
 12. **Disconnessioni e abbandono**: in partita il giocatore resta e può
     riconnettersi col token. Quando il turno passa, i disconnessi vengono
     **saltati** (evento `turnoSaltato`); se il disconnesso è già di turno,

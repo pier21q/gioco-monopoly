@@ -1380,7 +1380,9 @@ function aggiornaDadi(ist, { partita, perId }, iniziale_) {
     zona.classList.remove('doppio');
     return false;
   }
-  const doppio = dadi[0] === dadi[1];
+  // Il lancio per l'affitto di una società (carta) non conta come doppio.
+  const perAffitto = Boolean(ev && ev.evento.dati && ev.evento.dati.perAffitto);
+  const doppio = dadi[0] === dadi[1] && !perAffitto;
   const chi = ev && perId.get(ev.evento.giocatoreId);
   const etichetta = `Ultimo lancio${chi ? ` di ${chi.nome}` : ''}: ${dadi[0]} e ${dadi[1]}, totale ${dadi[0] + dadi[1]}${doppio ? ', doppio' : ''}`;
   zona.setAttribute('aria-label', etichetta);

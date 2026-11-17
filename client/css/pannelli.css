@@ -1299,9 +1299,81 @@
   100% { transform: none; }
 }
 
+/* Conto alla rovescia (asta, fine del turno, chiusura della stanza a partita finita) */
+.pn-turno__tempo[hidden] {
+  display: none;
+}
+
+.pn-turno__tempo .tempo {
+  padding-block: var(--spazio-1, 0.25rem);
+}
+
+.pn-turno__tempo .tempo__numero {
+  font-size: var(--testo-m, 1rem);
+}
+
+.tempo {
+  display: grid;
+  grid-template-columns: auto minmax(3rem, 1fr) auto;
+  align-items: center;
+  gap: var(--spazio-3, 0.75rem);
+  padding: 0.45rem 0.75rem;
+  border-radius: var(--pn-raggio-m);
+  background: var(--pn-superficie-2);
+  font-size: var(--testo-s, 0.875rem);
+}
+
+.tempo__etichetta {
+  color: var(--pn-tenue);
+}
+
+.tempo__barra {
+  height: 0.45rem;
+  overflow: hidden;
+  border-radius: var(--raggio-pieno, 999px);
+  background: var(--pn-bordo);
+}
+
+.tempo__riempimento {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: var(--pn-primario);
+  transform-origin: left center;
+  transition: transform 250ms linear;
+}
+
+.tempo__numero {
+  min-width: 2.6rem;
+  font-family: var(--pn-titoli);
+  font-size: var(--testo-l, 1.25rem);
+  font-weight: 800;
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+
+.tempo--poco .tempo__riempimento {
+  background: var(--pn-errore);
+}
+
+.tempo--poco .tempo__numero {
+  color: var(--pn-errore);
+}
+
+/* Chi partecipa: una riga per giocatore con denaro, stato e proprietà */
+.asta-chi {
+  display: grid;
+  gap: var(--spazio-2, 0.5rem);
+}
+
+.asta-chi .sottotitolo {
+  margin: 0;
+  color: var(--pn-tenue);
+  font-size: var(--testo-s, 0.875rem);
+}
+
 .asta-partecipanti {
-  display: flex;
-  flex-wrap: wrap;
+  display: grid;
   gap: var(--spazio-2, 0.5rem);
   margin: 0;
   padding: 0;
@@ -1309,29 +1381,119 @@
 }
 
 .asta-partecipante {
-  display: inline-flex;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
   align-items: center;
-  gap: 0.4rem;
-  padding: 0.25rem 0.65rem;
+  gap: 0.3rem var(--spazio-3, 0.75rem);
+  padding: 0.5rem 0.75rem;
   border: 1px solid var(--pn-bordo);
-  border-radius: var(--raggio-pieno, 999px);
+  border-radius: var(--pn-raggio-m);
   font-size: var(--testo-s, 0.875rem);
 }
 
+.asta-partecipante__chi {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  min-width: 0;
+  font-weight: 700;
+}
+
+.asta-partecipante__nome {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.asta-partecipante__denaro {
+  font-family: var(--pn-titoli);
+  font-size: var(--testo-m, 1rem);
+  font-weight: 800;
+  font-variant-numeric: tabular-nums;
+}
+
 .asta-partecipante__stato {
+  min-width: 5.2rem;
   color: var(--pn-tenue);
   font-size: var(--testo-xs, 0.75rem);
+  text-align: right;
 }
 
 .asta-partecipante--in-testa {
   border-color: var(--pn-primario);
   background: var(--pn-primario-tenue);
+}
+
+.asta-partecipante--in-testa .asta-partecipante__stato {
+  color: var(--pn-primario);
   font-weight: 700;
 }
 
-.asta-partecipante--ha-passato {
-  opacity: 0.6;
-  text-decoration: line-through;
+.asta-partecipante--ha-passato,
+.asta-partecipante--ha-rinunciato {
+  border-style: dashed;
+}
+
+.asta-partecipante--ha-passato .asta-partecipante__chi,
+.asta-partecipante--ha-rinunciato .asta-partecipante__chi {
+  font-weight: 400;
+  color: var(--pn-tenue);
+}
+
+.asta-beni {
+  grid-column: 1 / -1;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.3rem;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.asta-beni--vuoto {
+  color: var(--pn-tenue);
+  font-size: var(--testo-xs, 0.75rem);
+}
+
+.asta-bene {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  padding: 0.1rem 0.45rem 0.1rem 0.3rem;
+  border: 1px solid var(--pn-bordo);
+  border-radius: var(--pn-raggio-s);
+  background: var(--pn-superficie);
+  font-size: var(--testo-xs, 0.75rem);
+  line-height: 1.5;
+}
+
+.asta-bene__colore {
+  width: 0.7rem;
+  height: 0.7rem;
+  flex: none;
+  border-radius: 3px;
+  background: var(--colore, #4a6168);
+  box-shadow: inset 0 0 0 1px rgb(0 0 0 / 0.25);
+}
+
+.asta-bene__quante {
+  color: var(--pn-tenue);
+  font-variant-numeric: tabular-nums;
+}
+
+.asta-bene--completo {
+  border-color: var(--pn-bordo-forte);
+  font-weight: 700;
+}
+
+.asta-bene--completo .asta-bene__quante {
+  color: inherit;
+}
+
+/* Lo stesso colore della proprietà all'asta: è quello che conta per decidere. */
+.asta-bene--in-palio {
+  border-color: var(--pn-primario);
+  box-shadow: 0 0 0 1px var(--pn-primario);
 }
 
 .asta-modulo {
@@ -1339,14 +1501,63 @@
   gap: var(--spazio-2, 0.5rem);
 }
 
+.asta-rapidi {
+  display: grid;
+  gap: var(--spazio-1, 0.25rem);
+}
+
+.asta-rapidi__pulsanti {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: var(--spazio-2, 0.5rem);
+}
+
+.asta-rapidi__pulsanti .azione,
+.asta-rapidi__pulsanti .btn {
+  width: 100%;
+}
+
 .asta-modulo__riga {
   display: flex;
-  flex-wrap: wrap;
   gap: var(--spazio-2, 0.5rem);
 }
 
 .asta-modulo__riga input {
-  flex: 1 1 8rem;
+  flex: 1 1 6rem;
+  min-width: 0;
+}
+
+/* Conferma prima di costruire */
+.conferma-costruzione {
+  display: grid;
+  gap: var(--spazio-2, 0.5rem);
+  padding: var(--spazio-3, 0.75rem);
+  border: 1px solid var(--pn-primario);
+  border-radius: var(--pn-raggio-m);
+  background: var(--pn-primario-tenue);
+}
+
+.conferma-costruzione__testo {
+  margin: 0;
+  line-height: 1.4;
+}
+
+.conferma-costruzione__azioni {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--spazio-2, 0.5rem);
+}
+
+.voce-gestione.voce-gestione--conferma {
+  grid-template-columns: minmax(0, 1fr);
+  gap: var(--spazio-1, 0.25rem);
+  padding: 0.4rem 0;
+}
+
+.voce-gestione__nome--fermo {
+  display: flex;
+  align-items: center;
+  cursor: default;
 }
 
 /* Scambio */

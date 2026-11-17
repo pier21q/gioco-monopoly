@@ -193,6 +193,8 @@ function simula(seme, nGiocatori, passiMax) {
       if (g.inPrigione && g.cartePrigione > 0) fatto = prova(turno, { tipo: 'usaCartaPrigione' });
       else if (g.inPrigione && g.denaro >= 50 && scelte() < 0.4) fatto = prova(turno, { tipo: 'pagaCauzione' });
       if (!fatto) fatto = prova(turno, { tipo: 'lanciaDadi' });
+    } else if (s.fase === 'lancioAffitto') {
+      fatto = prova(turno, { tipo: 'lanciaDadi' });
     } else if (s.fase === 'mossa') {
       for (const [k, v] of Object.entries(s.proprieta).filter(([, x]) => x.proprietario === turno)) {
         const dado = scelte();

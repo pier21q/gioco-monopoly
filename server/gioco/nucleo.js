@@ -119,6 +119,7 @@ function normalizzaStato(stato) {
   if (!Array.isArray(stato.asteInAttesa)) stato.asteInAttesa = [];
   if (!stato.cartePrigioneDi || typeof stato.cartePrigioneDi !== 'object') stato.cartePrigioneDi = {};
   if (!stato.mazzi) stato.mazzi = { probabilita: [], imprevisti: [] };
+  if (stato.lancioAffitto === undefined) stato.lancioAffitto = null;
   return stato;
 }
 
@@ -396,24 +397,29 @@ function continuaCatena(stato, ctx) {
 // ---------------------------------------------------------------------------
 
 /**
- * Avvia un'asta all'inglese per `indice`. Partecipano tutti i non falliti;
- * chi è disconnesso parte già "passato" per non bloccare la partita.
+ * Avvia un'asta all'inglese per `indice`. Partecipano tutti i non falliti
+ * tranne `esclusoId`: chi ha rinunciato a comprare la casella al prezzo di
+ * listino non può riprendersela all'asta. Chi è disconnesso parte già
+ * "passato" per non bloccare la partita.
  */
-function avviaAsta(stato, ctx, indice, faseDopo) {
-  const vivi = stato.giocatori.filter((g) => !g.fallito);
+function avviaAsta(stato, ctx, indice, faseDopo, { esclusoId = null } = {}) {
+  const vivi = stato.giocatori.filter((g) => !g.fallito && g.id !== esclusoId);
+  const escluso = esclusoId ? trova(stato, esclusoId) : null;
   stato.asta = {
     casella: indice,
     offertaMassima: 0,
     migliorOfferenteId: null,
     partecipanti: vivi.map((g) => g.id),
     passati: vivi.filter((g) => g.connesso === false).map((g) => g.id),
+    esclusoId: escluso ? escluso.id : null,
     incrementoMinimo: INCREMENTO_MINIMO_ASTA,
     iniziataIl: ctx.t,
     faseDopo,
   };
   stato.fase = 'asta';
-  emetti(ctx, 'astaInizio', null, `Asta per ${casella(indice).nome}`,
-    { casella: indice, partecipanti: stato.asta.partecipanti.slice() });
+  emetti(ctx, 'astaInizio', null,
+    escluso ? `Asta per ${casella(indice).nome}: ${escluso.nome} ha rinunciato e non partecipa` : `Asta per ${casella(indice).nome}`,
+    { casella: indice, partecipanti: stato.asta.partecipanti.slice(), esclusoId: stato.asta.esclusoId });
   verificaChiusuraAsta(stato, ctx);
 }
 
@@ -491,6 +497,7 @@ function passaTurno(stato, ctx) {
   }
   const numero = (stato.turno.numero || 0) + 1;
   stato.turno = { giocatoreId: prossimo, numero, doppiConsecutivi: 0, soste: [] };
+  stato.lancioAffitto = null;
   impostaFase(stato, 'daLanciare');
   emetti(ctx, 'turno', prossimo, `Turno ${numero}: tocca ${aChi(nomeDi(stato, prossimo))}`,
     { giocatoreId: prossimo, numero });
@@ -518,6 +525,7 @@ function verificaFinePartita(stato, ctx) {
   stato.scambio = null;
   stato.debitiInAttesa = [];
   stato.asteInAttesa = [];
+  stato.lancioAffitto = null;
   emetti(ctx, 'finePartita', stato.vincitoreId,
     stato.vincitoreId ? `${nomeDi(stato, stato.vincitoreId)} vince la partita!` : 'La partita è finita senza vincitori',
     { vincitoreId: stato.vincitoreId });

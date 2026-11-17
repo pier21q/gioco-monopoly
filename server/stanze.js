@@ -46,11 +46,20 @@ const TEMPI = Object.freeze({
   // Stanza creata ma in cui non è mai entrato nessuno.
   STANZA_MAI_USATA_MS: 2 * 60 * 1000,
   STANZA_INATTIVA_MS: 2 * 60 * 60 * 1000,
-  FINE_PARTITA_MS: 30 * 60 * 1000,
+  // A partita finita la stanza resta aperta il tempo di leggere la classifica,
+  // poi si chiude da sola (subito, se sono usciti tutti).
+  FINE_PARTITA_MS: 30 * 1000,
   // Giocatori connessi che non agiscono: dopo questi tempi la partita va avanti da sola.
   INATTIVITA_TURNO_MS: 3 * 60 * 1000,
-  INATTIVITA_ASTA_MS: 60 * 1000,
-  // Lancio iniziale per decidere chi comincia: basta un clic, si aspetta meno.
+  // Dadi già lanciati (fase `mossa`): resta solo da finire il turno, e i client
+  // mostrano il conto alla rovescia. Ogni mossa (costruire, ipotecare…) lo fa
+  // ripartire; con uno scambio in attesa vale il tempo normale del turno.
+  INATTIVITA_FINE_TURNO_MS: 15 * 1000,
+  // Timer dell'asta: riparte a ogni offerta o passo e i client lo mostrano
+  // nella finestra; allo scadere chi non ha ancora passato passa.
+  INATTIVITA_ASTA_MS: 30 * 1000,
+  // Lancio iniziale per decidere chi comincia, o dadi chiesti da una carta:
+  // basta un clic, si aspetta meno.
   INATTIVITA_ORDINE_MS: 60 * 1000,
   INATTIVITA_DEBITO_MS: 5 * 60 * 1000,
   PREAVVISO_INATTIVITA_MS: 30 * 1000,
@@ -60,6 +69,8 @@ const TEMPI = Object.freeze({
 const ID_STANZA = '_stanza';
 /** Chiave del timer di scadenza dello scambio in attesa. */
 const ID_SCAMBIO = '_scambio';
+/** Chiave del timer che chiude la stanza a partita finita. */
+const ID_FINE = '_fine';
 
 /** Numero casuale in [0, 1) da crypto: codici stanza, dadi e mazzi non prevedibili. */
 function casualeSicuro() {
@@ -410,14 +421,15 @@ function bloccaIlGioco(stato, id) {
   if (fase === 'asta' && asta) {
     return asta.partecipanti.includes(id) && !asta.passati.includes(id) && asta.migliorOfferenteId !== id;
   }
-  return turno.giocatoreId === id && ['ordine', 'daLanciare', 'mossa', 'daDecidereAcquisto'].includes(fase);
+  return turno.giocatoreId === id && ['ordine', 'daLanciare', 'mossa', 'daDecidereAcquisto', 'lancioAffitto'].includes(fase);
 }
 
 /**
  * Programma (se non sono già in corso) i timer dei giocatori disconnessi: la
  * tolleranza per chi tiene fermo turno/asta/scambio, la bancarotta d'ufficio
  * per un debito, l'abbandono d'ufficio per chi non torna e il passaggio del
- * ruolo di host; più l'inattività dei connessi e la scadenza dello scambio.
+ * ruolo di host; più l'inattività dei connessi, la scadenza dello scambio e la
+ * chiusura della stanza a partita finita.
  * Va richiamata dopo ogni cambio di stato, perché un disconnesso può diventare
  * "bloccante" anche più tardi (per esempio quando una carta gli addebita una
  * somma che non ha).
@@ -427,6 +439,32 @@ function sorvegliaDisconnessi(stanza, { ora = Date.now, random = casualeSicuro }
   sorvegliaHost(stanza, { ora });
   sorvegliaScambio(stanza, { ora, random });
   programmaInattivita(stanza, { ora, random });
+  sorvegliaFine(stanza, { ora });
+}
+
+/**
+ * A partita finita la stanza si chiude da sola: FINE_PARTITA_MS dopo la fine,
+ * oppure subito se non è più collegato nessuno. Il codice torna libero e chi è
+ * ancora dentro torna alla pagina d'ingresso con il nome del vincitore.
+ */
+function sorvegliaFine(stanza, { ora = Date.now } = {}) {
+  const stato = stanza.stato;
+  if (stanza.chiusa || !stato || stato.fase !== 'finePartita') return;
+  const chiudi = () => chiudiStanza(stanza, messaggioFine(stanza));
+  if (![...stanza.giocatori.values()].some((g) => g.connesso)) {
+    // Non subito: chi ci ha chiamato sta ancora lavorando sulla stanza.
+    programmaTimer(stanza, ID_FINE, 'chiusura', 0, chiudi);
+    return;
+  }
+  if (stanza.finitaIl) return;
+  stanza.finitaIl = ora();
+  programmaTimer(stanza, ID_FINE, 'chiusura', TEMPI.FINE_PARTITA_MS, chiudi);
+}
+
+function messaggioFine(stanza) {
+  const stato = stanza.stato;
+  const vincitore = stato && stato.vincitoreId ? stato.giocatori.find((g) => g.id === stato.vincitoreId) : null;
+  return `La partita è finita${vincitore ? `: ha vinto ${vincitore.nome}` : ''}. La stanza è stata chiusa.`;
 }
 
 function sorvegliaAssenti(stanza, { ora, random }) {
@@ -599,9 +637,11 @@ function sbloccaDisconnesso(stanza, giocatoreId, { ora = Date.now, random = casu
 // Inattività dei giocatori connessi
 // ---------------------------------------------------------------------------
 
-function durataInattivita(fase) {
+function durataInattivita(stato) {
+  const fase = stato.fase;
+  if (fase === 'mossa') return stato.scambio ? TEMPI.INATTIVITA_TURNO_MS : TEMPI.INATTIVITA_FINE_TURNO_MS;
   if (fase === 'asta') return TEMPI.INATTIVITA_ASTA_MS;
-  if (fase === 'ordine') return TEMPI.INATTIVITA_ORDINE_MS;
+  if (fase === 'ordine' || fase === 'lancioAffitto') return TEMPI.INATTIVITA_ORDINE_MS;
   if (fase === 'debito') return TEMPI.INATTIVITA_DEBITO_MS;
   return TEMPI.INATTIVITA_TURNO_MS;
 }
@@ -625,12 +665,18 @@ function programmaInattivita(stanza, { ora = Date.now, random = casualeSicuro } 
     return;
   }
   const chiave = stanza.progresso;
-  if (stanza.inattivita && stanza.inattivita.chiave === chiave) return;
+  const durata = durataInattivita(stato);
+  // Riparte anche se cambia la durata a parità di progresso: uno scambio che
+  // scade da solo non è una mossa, ma riporta la fase `mossa` ai 15 secondi.
+  if (stanza.inattivita && stanza.inattivita.chiave === chiave && stanza.inattivita.durata === durata) return;
   annullaTimer(stanza, ID_STANZA);
-  const durata = durataInattivita(stato.fase);
-  stanza.inattivita = { chiave, scadeIl: ora() + durata, giocatori: daAspettare };
-  programmaTimer(stanza, ID_STANZA, 'preavviso', Math.max(0, durata - TEMPI.PREAVVISO_INATTIVITA_MS),
-    () => preavvisaInattivita(stanza, chiave, { ora }));
+  stanza.inattivita = { chiave, scadeIl: ora() + durata, durata, giocatori: daAspettare };
+  // Il preavviso serve dove il tempo non si vede: nell'asta c'è il conto alla
+  // rovescia nella finestra, e comunque dura meno del preavviso.
+  if (durata > TEMPI.PREAVVISO_INATTIVITA_MS) {
+    programmaTimer(stanza, ID_STANZA, 'preavviso', durata - TEMPI.PREAVVISO_INATTIVITA_MS,
+      () => preavvisaInattivita(stanza, chiave, { ora }));
+  }
   programmaTimer(stanza, ID_STANZA, 'scadenza', durata,
     () => scadutaInattivita(stanza, chiave, { ora, random }));
 }
@@ -815,13 +861,24 @@ function applica(stanza, giocatoreId, azione, { random = casualeSicuro, ora = Da
 }
 
 /**
- * Lo stato come va inviato ai client (senza mazzi). Di norma il log è
+ * Lo stato come va inviato ai client (senza mazzi, con i tempi che restano). Di norma il log è
  * accorciato agli ultimi LOG_BREVE eventi; con `completo: true` (ingresso e
  * riconnessione) arriva tutto, così il client ricostruisce la cronaca.
  */
-function statoPerClient(stanza, { completo = false } = {}) {
+function statoPerClient(stanza, { completo = false, ora = Date.now } = {}) {
   const stato = motore.statoPubblico(stanza.stato);
   stato.adminId = stanza.adminId || null;
+  // Tempo che resta, in millisecondi dall'invio (gli orologi dei client non
+  // sono quello del server): `scadenza` per chi deve giocare, `chiusuraTraMs`
+  // per la stanza a partita finita.
+  const resta = (alle, massimo) => Math.max(0, Math.min(massimo, alle - ora()));
+  const i = stanza.inattivita;
+  if (i && stato.fase !== 'lobby' && stato.fase !== 'finePartita') {
+    stato.scadenza = { traMs: resta(i.scadeIl, i.durata), durataMs: i.durata, giocatori: i.giocatori.slice() };
+  }
+  if (stato.fase === 'finePartita' && stanza.finitaIl) {
+    stato.chiusuraTraMs = resta(stanza.finitaIl + TEMPI.FINE_PARTITA_MS, TEMPI.FINE_PARTITA_MS);
+  }
   if (!completo && Array.isArray(stato.log) && stato.log.length > P.LIMITI.LOG_BREVE) {
     stato.log = stato.log.slice(-P.LIMITI.LOG_BREVE);
   }
@@ -853,7 +910,9 @@ function diffondiAggiornamento(stanza, eventi) {
  * Scadenze: mai usata 2 minuti; tutti scollegati 10 minuti (le partite appena
  * ripristinate dal salvataggio aspettano invece STANZA_INATTIVA_MS, finché non
  * rientra qualcuno); sala d'attesa con un solo giocatore ferma da 30 minuti;
- * nessun cambiamento da 2 ore; partita finita da 30 minuti.
+ * nessun cambiamento da 2 ore; partita finita da 30 secondi (di norma la
+ * chiude prima `sorvegliaFine`: qui è la rete di sicurezza per le partite
+ * finite ripristinate dal salvataggio).
  * @returns {number} stanze rimosse
  */
 function pulisci({ ora = Date.now } = {}) {

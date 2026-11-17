@@ -383,3 +383,101 @@ test('tabellone.calcolaPercorso: la pedina fa la strada vera, lancio e poi carta
   // In prigione si va con un salto.
   assert.deepEqual(t.calcolaPercorso(30, 10, libero, { id: A, inPrigione: true }, []), []);
 });
+
+test('dialoghi: asta, rilanci rapidi che offrono subito e proprietà dei giocatori colore per colore', { skip: SALTA }, async () => {
+  const d = await C.carica('dialoghi.js');
+  const { A, B, C: CARLA } = H.ID;
+  assert.deepEqual([...d.RILANCI_RAPIDI], [10, 50, 100]);
+  // «+n» offre l'offerta più alta più n, mai il contenuto del campo.
+  assert.deepEqual(d.rilancioRapido({ offertaMassima: 0, migliorOfferenteId: null }, 1500, 10, A), { importo: 10, motivo: null });
+  assert.deepEqual(d.rilancioRapido({ offertaMassima: 20, migliorOfferenteId: B }, 45, 10, A), { importo: 30, motivo: null });
+  assert.match(d.rilancioRapido({ offertaMassima: 20, migliorOfferenteId: B }, 45, 50, A).motivo, /ti mancano 25/);
+  assert.equal(d.rilancioRapido({ offertaMassima: 20, migliorOfferenteId: A }, 1500, 10, A).motivo, 'Hai già l’offerta più alta',
+    'chi è in testa non rilancia su se stesso con un tocco (doppio clic)');
+
+  // Quello che il pulsante promette è quello che il motore accetta.
+  const acquisto = H.modifica(H.nuovaPartita(), (x) => { H.giocatore(x, A).posizione = 3; x.fase = 'daDecidereAcquisto'; });
+  let asta = H.esegui(acquisto, A, { tipo: 'rifiutaAcquisto' }).stato;
+  asta = H.esegui(asta, B, { tipo: 'offertaAsta', importo: d.rilancioRapido(asta.asta, 1500, 10, B).importo }).stato;
+  const rilancio = d.rilancioRapido(asta.asta, 1500, 50, CARLA);
+  assert.equal(rilancio.importo, 60);
+  assert.equal(H.esegui(asta, CARLA, { tipo: 'offertaAsta', importo: rilancio.importo }).stato.asta.offertaMassima, 60);
+
+  // Chi ha rinunciato vede perché non può offrire; gli altri hanno via libera.
+  const pubblico = motore.statoPubblico(asta);
+  assert.match(d.motivoAzione(pubblico, A, 'offertaAsta'), /Hai rinunciato all’acquisto/);
+  assert.match(d.motivoAzione(pubblico, A, 'passaAsta'), /Hai rinunciato all’acquisto/);
+  assert.equal(d.motivoAzione(pubblico, CARLA, 'offertaAsta'), null);
+
+  // Le proprietà nella finestra dell'asta: un'etichetta per colore, con quante su quante.
+  const ricco = motore.statoPubblico(H.ipotecate(H.assegna(H.nuovaPartita(), A, 6, 8, 9, 5, 12), 12));
+  const gruppi = d.gruppiPosseduti(ricco, A);
+  assert.deepEqual(gruppi.map((g) => [g.possedute, g.totale, g.completo]).sort(), [[1, 2, false], [1, 4, false], [3, 3, true]]);
+  const celeste = gruppi.find((g) => g.completo);
+  assert.deepEqual(celeste.nomi, [6, 8, 9].map((i) => TAB.casella(i).nome));
+  assert.match(gruppi.find((g) => g.totale === 2).nomi[0], /\(ipotecata\)$/);
+  assert.deepEqual(d.gruppiPosseduti(ricco, B), []);
+});
+
+test('dialoghi: prima di costruire si vede il conto, uguale a quello che fa il motore', { skip: SALTA }, async () => {
+  const d = await C.carica('dialoghi.js');
+  const { A } = H.ID;
+  const base = H.turnoDi(H.assegna(H.nuovaPartita(2), A, 6, 8, 9), A, 'mossa');
+  const prima = d.riepilogoCostruzione(motore.statoPubblico(base), A, 8);
+  assert.deepEqual([prima.cosa, prima.costo, prima.resta], ['la prima casa', 50, 1450]);
+  assert.match(prima.testo, /Costruire la prima casa su .+ costa 50\s€: ti resteranno 1\.450\s€\./);
+  const costruita = H.esegui(base, A, { tipo: 'costruisci', casella: 8 });
+  assert.equal(H.giocatore(costruita.stato, A).denaro, prima.resta, 'il resto annunciato è quello vero');
+
+  const quattro = H.costruito(base, { 6: 4, 8: 4, 9: 4 });
+  const albergo = d.riepilogoCostruzione(motore.statoPubblico(quattro), A, 8);
+  assert.equal(albergo.cosa, 'un albergo');
+  assert.match(albergo.testo, /Le 4 case tornano alla banca\.$/);
+  assert.equal(d.riepilogoCostruzione(motore.statoPubblico(H.costruito(base, { 6: 2, 8: 2, 9: 1 })), A, 9).cosa, 'la seconda casa');
+});
+
+test('client: i dadi della carta «società più vicina» li lancia il giocatore, e il client lo dice', { skip: SALTA }, async () => {
+  const d = await C.carica('dialoghi.js');
+  const pn = await C.carica('pannelli.js');
+  const app = await C.carica('app.js');
+  const { A, B } = H.ID;
+  const base = H.modifica(H.assegna(H.nuovaPartita(), B, 28), (x) => {
+    x.mazzi.imprevisti = ['I04', ...x.mazzi.imprevisti.filter((id) => id !== 'I04')];
+  });
+  const pescata = H.arrivaSu(base, A, 22, 1, 2);
+  const p = motore.statoPubblico(pescata.stato);
+  assert.equal(p.fase, 'lancioAffitto');
+
+  assert.equal(d.motivoAzione(p, A, 'lanciaDadi'), null, 'il pulsante dei dadi è acceso per chi ha pescato');
+  assert.match(d.motivoAzione(p, A, 'finisciTurno'), /Prima lancia i dadi per l’affitto/);
+  assert.match(d.motivoAzione(p, A, 'costruisci'), /Prima lancia i dadi per l’affitto/);
+  assert.match(d.motivoAzione(p, B, 'ipoteca'), /Anna deve prima lanciare i dadi/);
+  assert.equal(pn.puoLanciare({ partita: p, io: { giocatoreId: A } }), true, 'anche i dadi sul tabellone si possono toccare');
+  assert.equal(pn.puoLanciare({ partita: p, io: { giocatoreId: B } }), false);
+
+  const richiesta = pescata.eventi.find((e) => e.tipo === 'affittoDaLanciare');
+  assert.match(pn.testoEvento(richiesta, p), /Anna deve lanciare i dadi: pagherà 10 volte il risultato a Bruno/);
+  assert.match(app.toastPerEvento(richiesta, p, A).testo, /Lancia i dadi: pagherai 10 volte il risultato a Bruno/);
+  assert.equal(app.toastPerEvento(richiesta, p, B), null);
+
+  const lanciata = H.lancia(pescata.stato, A, 3, 3);
+  const dadi = lanciata.eventi.find((e) => e.tipo === 'dadi');
+  assert.match(dadi.testo, /per l'affitto della società$/);
+  // Senza il testo del server (cronaca ricostruita) il client non scrive «doppio»: per l'affitto non conta.
+  assert.equal(pn.testoEvento({ ...dadi, testo: undefined }, p), 'Anna lancia 3 e 3 per l’affitto della società');
+  assert.match(pn.testoEvento({ ...richiesta, testo: undefined }, p), /pagherà 10 volte il risultato a Bruno per /);
+  const apertura = { tipo: 'astaInizio', giocatoreId: null, dati: { casella: 3, esclusoId: A } };
+  assert.match(pn.testoEvento(apertura, p), /Anna ha rinunciato e non partecipa/);
+});
+
+test('pannelli.tempoFineTurno: il conto alla rovescia per finire il turno, per tutti', { skip: SALTA }, async () => {
+  const pn = await C.carica('pannelli.js');
+  const { A, B } = H.ID;
+  const p = motore.statoPubblico(H.turnoDi(H.nuovaPartita(2), A, 'mossa'));
+  assert.equal(pn.tempoFineTurno(p, A), null, 'senza scadenza dal server niente timer');
+  p.scadenza = { traMs: 15000, durataMs: 15000, giocatori: [A], alle: 1000 };
+  assert.deepEqual(pn.tempoFineTurno(p, A), { alle: 1000, durataMs: 15000, etichetta: 'Il turno finisce da solo tra' });
+  assert.equal(pn.tempoFineTurno(p, B).etichetta, 'Il turno di Anna finisce tra');
+  assert.equal(pn.tempoFineTurno({ ...p, fase: 'daLanciare' }, A), null, 'prima di lanciare non c’è');
+  assert.equal(pn.tempoFineTurno({ ...p, scambio: { id: 'x' } }, A), null, 'con uno scambio in attesa vale il tempo lungo');
+});
