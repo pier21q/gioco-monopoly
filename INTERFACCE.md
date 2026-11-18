@@ -260,6 +260,10 @@ stanza, o `null`. Messaggi e regole in §3.7.
 * `turno.soste` elenca i gruppi colore delle caselle `proprieta` su cui la
   pedina di turno si è fermata in questo turno (anche prima di un doppio).
   Riparte vuoto a ogni cambio di turno; serve alla regola `'sosta'` (§2.4).
+* `turno.costruite` (`{ indiceCasella: n }`, assente finché non si costruisce)
+  conta le costruzioni fatte in questo turno su ogni terreno; sparisce a ogni
+  cambio di turno e a ogni doppio, e serve alla variante `limiteCostruzioni`
+  (§2.4).
 
 * `turno.numero` parte da 1 e cresce a ogni `finisciTurno` (o fine turno
   automatica dopo prigione / bancarotta).
@@ -309,8 +313,9 @@ della banca.
   non è in `partecipanti`. Nelle aste della banca (beni di chi fallisce o
   abbandona) `esclusoId` è `null` e partecipano tutti. `partecipanti` è
   nell'ordine dei giocatori.
-* L'asta ha un **timer di 30 secondi** (`INATTIVITA_ASTA_MS`, §3.4) che
-  riparte a ogni offerta o passo e che i client mostrano nella finestra
+* L'asta ha un **timer di 20 secondi** (`INATTIVITA_ASTA_MS`, §3.4) che
+  riparte a ogni offerta, non quando qualcuno passa (`stanze.soloPassiInAsta`:
+  la chiave del timer è `progresso - tempoFermo`), e che i client mostrano nella finestra
   (`stato.scadenza`, §1.9 quater): allo scadere chi non ha passato passa.
 * Termina quando tutti tranne il miglior offerente hanno passato (la proprietà
   va a lui per `offertaMassima`), oppure quando tutti hanno passato senza
@@ -406,7 +411,7 @@ il client le somma al proprio `Date.now()` quando riceve lo stato.
 
 | Campo | Tipo | Note |
 |---|---|---|
-| `regole` | oggetto | le regole della partita (catalogo in `server/gioco/regole.js`): `denaroIniziale` (1000/1500/2000/2500), `proprietaIniziali` (0–3 a testa), `costruzione` (`'libera'`/`'sosta'`), `aste` (bool), `parcheggio` (bool), `viaDoppio` (bool), `affittoInPrigione` (bool). Gli stati salvati senza una chiave usano il predefinito (`regole.valore`). |
+| `regole` | oggetto | le regole della partita (catalogo in `server/gioco/regole.js`): `denaroIniziale` (1000/1500/2000/2500), `proprietaIniziali` (0–3 a testa), `costruzione` (`'libera'`/`'sosta'`), `limiteCostruzioni` (0 = senza limite, oppure 1/2/3 costruzioni a turno su ogni terreno), `scorteIllimitate` (bool: la banca non finisce mai case e alberghi), `aste` (bool), `parcheggio` (bool), `viaDoppio` (bool), `affittoInPrigione` (bool). Gli stati salvati senza una chiave usano il predefinito (`regole.valore`). |
 | `regoleImpostate` | bool | in `lobby`: true quando host o admin hanno compilato la finestra delle regole (`impostaRegole` o `avviaPartita` con `regole`). Senza, `avviaPartita` è rifiutato con `REGOLE_DA_IMPOSTARE`. |
 | `ordine` | oggetto \| null | solo in fase `ordine`: `{ giro, gruppi, lanci, storico }`. `gruppi` sono le posizioni ancora da decidere dalla più alta (`[[A], [B, C], [D]]` = A primo, B e C da spareggiare per 2° e 3°); `lanci` i dadi del giro in corso; `storico` i giri chiusi. |
 | `piatto` | intero | piatto del Parcheggio gratuito (variante `parcheggio`): ci finiscono tasse, carte da pagare alla banca e cauzioni; chi si ferma sulla casella 20 lo incassa (evento `piatto`). |
@@ -459,7 +464,7 @@ const stato = motore.creaPartita({
     denaroIniziale: 1500,           // default 1500
     ordineCasuale: true,            // default true: mescola l'ordine di turno (ignorato con lancioIniziale)
     lancioIniziale: false,          // true: si parte in fase 'ordine' (il server lo usa sempre)
-    // e le altre regole di §1.9 ter: proprietaIniziali, costruzione, aste, parcheggio, viaDoppio, affittoInPrigione
+    // e le altre regole di §1.9 ter: proprietaIniziali, costruzione, limiteCostruzioni, scorteIllimitate, aste, parcheggio, viaDoppio, affittoInPrigione
   },
 });
 ```
@@ -520,7 +525,7 @@ Legenda "chi": **T** = solo giocatore di turno · **D** = solo debitore ·
 | `rifiutaAcquisto` | — | T | `daDecidereAcquisto` | Avvia l'asta fra gli altri (`asta` valorizzata con `esclusoId` = chi rinuncia, fase `asta`); con la variante `aste: false` la casella resta alla banca (evento `acquistoRifiutato`, fase `mossa`). Se è l'unico giocatore non fallito la casella resta alla banca. | |
 | `offertaAsta` | `importo` intero | P | `asta` | Offerta `>= offertaMassima + incrementoMinimo` e `<= denaro`. | `OFFERTA_BASSA`, `FONDI_INSUFFICIENTI`, `GIA_PASSATO` |
 | `passaAsta` | — | P | `asta` | Esce dall'asta. Il miglior offerente non può passare. Chiude l'asta quando resta uno solo. | `MIGLIOR_OFFERENTE`, `GIA_PASSATO` |
-| `costruisci` | `casella` | T | gestione | Costruisce una casa (o l'albergo se a 4 case) su `casella`. Richiede gruppo completo, nessuna ipoteca nel gruppo, costruzione uniforme (differenza max 1 nel gruppo), scorte in banca, denaro. Con `stato.regole.costruzione === 'sosta'` serve anche che la pedina si sia fermata in questo turno su una casella del gruppo: il gruppo è in `turno.soste`, oppure la pedina è sul gruppo e la fase è diversa da `daLanciare` (o `doppiConsecutivi > 0`). | `GRUPPO_INCOMPLETO`, `NON_SULLA_CASELLA`, `COSTRUZIONE_NON_UNIFORME`, `CASE_ESAURITE`, `ALBERGHI_ESAURITI`, `IPOTECATA`, `FONDI_INSUFFICIENTI`, `NON_EDIFICABILE` |
+| `costruisci` | `casella` | T | gestione | Costruisce una casa (o l'albergo se a 4 case) su `casella`. Richiede gruppo completo, nessuna ipoteca nel gruppo, costruzione uniforme (differenza max 1 nel gruppo), scorte in banca, denaro. Con `stato.regole.costruzione === 'sosta'` serve anche che la pedina si sia fermata in questo turno su una casella del gruppo: il gruppo è in `turno.soste`, oppure la pedina è sul gruppo e la fase è diversa da `daLanciare` (o `doppiConsecutivi > 0`). Con `stato.regole.limiteCostruzioni` a 1, 2 o 3 su ogni casella si costruisce al massimo quel numero di volte per turno (l'albergo conta uno; l'uniformità resta): il conto è in `turno.costruite` (`{ indiceCasella: n }`, assente finché non si costruisce), si azzera a `passaTurno` e a ogni doppio lanciato per muoversi (`lanciaDadi`), e vendere non lo riduce. Con `stato.regole.scorteIllimitate === true` non valgono `CASE_ESAURITE` e `ALBERGHI_ESAURITI` (i contatori `caseDisponibili`/`alberghiDisponibili` continuano a muoversi, anche sotto zero, ma non contano) e `vendiCasa` su un albergo torna sempre a 4 case. | `GRUPPO_INCOMPLETO`, `NON_SULLA_CASELLA`, `LIMITE_COSTRUZIONI`, `COSTRUZIONE_NON_UNIFORME`, `CASE_ESAURITE`, `ALBERGHI_ESAURITI`, `IPOTECATA`, `FONDI_INSUFFICIENTI`, `NON_EDIFICABILE` |
 | `vendiCasa` | `casella` | T, D, P | gestione + `debito` + `asta` | Vende una casa alla banca a **metà** del `costoCasa`, rispettando l'uniformità. Un albergo torna a 4 case se la banca ne ha 4; altrimenti si vendono insieme **tutte le costruzioni del gruppo** (ogni terreno a `caseCostruite` 0, un evento `vendita` per terreno con `gruppoIntero: true`, ricavo metà del costo di ciò che c'era), così il gruppo resta uniforme. | `NESSUNA_COSTRUZIONE`, `COSTRUZIONE_NON_UNIFORME` |
 | `ipoteca` | `casella` | T, D, P | gestione + `debito` + `asta` | Incassa `CASELLE[i].ipoteca`; richiede `caseCostruite === 0` su **tutto il gruppo**. | `HA_COSTRUZIONI`, `GIA_IPOTECATA` |
 | `disipoteca` | `casella` | T | gestione | Paga `ipoteca + ceil(10%)`, toglie l'ipoteca. | `NON_IPOTECATA`, `FONDI_INSUFFICIENTI` |
@@ -733,7 +738,9 @@ Esempi:
    scambio (`stanza.decisione` = `numeroTurno|giocatoreId`). Il timer riparte
    anche quando cambia solo la durata, a parità di progresso; un secondo
    `prendoTempo` non cambia niente. Le proposte di scambio non allungano il
-   turno di nessuno. 30 s in asta (`INATTIVITA_ASTA_MS`), 60 s per i
+   turno di nessuno. 20 s in asta (`INATTIVITA_ASTA_MS`; un «Passa» che
+   lascia aperta l'asta con la stessa offerta non fa ripartire il timer,
+   aggiorna solo chi si aspetta), 60 s per i
    dadi del lancio iniziale o dell'affitto di una società
    (`INATTIVITA_ORDINE_MS`), 5 minuti per un debito (`INATTIVITA_DEBITO_MS`).
    Il tempo che resta viaggia nello stato (`scadenza`, §1.9 quater). 30 s
@@ -1310,8 +1317,8 @@ Regolamento ufficiale, con queste scelte esplicite:
    affitti e si può gestire il patrimonio.
 7. **Tre doppi** consecutivi → prigione.
 8. **Asta** all'inglese libera (§1.6), incremento minimo 1 €, senza chi ha
-   rinunciato all'acquisto, con 30 secondi di tempo che ripartono a ogni
-   offerta.
+   rinunciato all'acquisto, con 20 secondi di tempo che ripartono a ogni
+   offerta (non a ogni passo).
 9. **Scambi**: solo caselle senza costruzioni; ipotecate trasferibili con
    interesse immediato del 10% a carico di chi riceve; carte prigione
    scambiabili; una sola proposta pendente per partita.
@@ -1327,7 +1334,7 @@ Regolamento ufficiale, con queste scelte esplicite:
     resta un solo giocatore non fallito.
 11. **Carte**: `esciGratis` resta al giocatore e torna in coda al **suo** mazzo
     quando usata; le altre tornano in coda subito. I turni hanno un limite di
-    tempo solo contro chi non gioca affatto (§3.4: 3 minuti, 30 s in asta,
+    tempo solo contro chi non gioca affatto (§3.4: 3 minuti, 20 s in asta,
     5 minuti per un debito). La carta "società più vicina" non lancia i dadi
     da sola: li lancia il giocatore (fase `lancioAffitto`, §1.2).
 12. **Disconnessioni e abbandono**: in partita il giocatore resta e può

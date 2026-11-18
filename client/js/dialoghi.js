@@ -344,6 +344,54 @@ function denaroDi(p, id) {
   return g ? g.denaro || 0 : 0;
 }
 
+/**
+ * Variante «Case per turno» (`regole.limiteCostruzioni`: 1, 2 o 3 per terreno,
+ * 0 = senza limite): quante costruzioni sono già state fatte in questo turno
+ * sulla casella e qual è il massimo. null se la variante è spenta. Stessa
+ * regola di limiteCostruzioni in server/gioco/motore.js.
+ * @returns {{fatte: number, limite: number} | null}
+ */
+export function costruzioniDelTurno(p, indice) {
+  const limite = p && p.regole ? p.regole.limiteCostruzioni : 0;
+  if (!Number.isInteger(limite) || limite <= 0) return null;
+  const fatte = (p.turno && p.turno.costruite && p.turno.costruite[indice]) || 0;
+  return { fatte, limite };
+}
+
+/** Lo stesso conto sommato su tutto il colore (per il distintivo in Gestione). */
+export function costruzioniDelTurnoSulGruppo(p, gruppo) {
+  const conti = indiciGruppo(gruppo).map((i) => costruzioniDelTurno(p, i));
+  if (conti.some((x) => !x)) return null;
+  return { fatte: conti.reduce((t, x) => t + x.fatte, 0), limite: conti.reduce((t, x) => t + x.limite, 0) };
+}
+
+/**
+ * Case e alberghi che la banca ha ancora: Infinity con la variante «Senza
+ * tetto» (`regole.scorteIllimitate`), altrimenti i contatori dello stato.
+ * @returns {{case: number, alberghi: number}}
+ */
+export function scorteBanca(p) {
+  if (p && p.regole && p.regole.scorteIllimitate === true) return { case: Infinity, alberghi: Infinity };
+  return { case: (p && p.caseDisponibili) ?? 32, alberghi: (p && p.alberghiDisponibili) ?? 12 };
+}
+
+/** «28», oppure «senza tetto» con la variante delle scorte illimitate. */
+function quanteInBanca(n) {
+  return Number.isFinite(n) ? String(n) : 'senza tetto';
+}
+
+/** Il conto «2 di 4 in questo turno» accanto al colore, quando si costruisce con la variante attiva. */
+function distintivoLimite(p, gruppo, mio, modalita) {
+  if (modalita !== 'costruisci' || !p.turno || p.turno.giocatoreId !== mio || !possiedeGruppo(p, gruppo, mio)) return null;
+  const conto = costruzioniDelTurnoSulGruppo(p, gruppo);
+  if (!conto) return null;
+  const pieno = conto.fatte >= conto.limite;
+  return el('span', {
+    class: `distintivo distintivo--${pieno ? 'avviso' : 'neutro'}`,
+    text: `${conto.fatte} di ${conto.limite} in questo turno`,
+  });
+}
+
 export function motivoCostruisci(p, id, indice) {
   const fase = motivoAzione(p, id, 'costruisci');
   if (fase) return fase;
@@ -363,13 +411,19 @@ export function motivoCostruisci(p, id, indice) {
     if (!fermo) return `Costruisci qui solo nel turno in cui ti fermi sul gruppo ${nomeGruppo(c.gruppo).toLowerCase()}`;
   }
   const gruppo = indiciGruppo(c.gruppo).map((i) => statoProp(p, i));
+  // Variante «Case per turno»: un massimo di costruzioni a turno su ogni terreno.
+  const conto = costruzioniDelTurno(p, indice);
+  if (conto && conto.fatte >= conto.limite) {
+    return `In questo turno hai già costruito ${conto.limite === 1 ? 'una casa' : `${conto.limite} case`} su ${c.nome}: è il massimo, continua al prossimo`;
+  }
   if (gruppo.some((x) => x.ipotecata)) return 'Nel gruppo c’è una proprietà ipotecata';
   if (s.caseCostruite >= 5) return 'C’è già un albergo';
   const minimo = Math.min(...gruppo.map((x) => x.caseCostruite));
   if (s.caseCostruite > minimo) return 'Costruisci prima sulle altre proprietà del gruppo';
+  const scorte = scorteBanca(p);
   if (s.caseCostruite === 4) {
-    if ((p.alberghiDisponibili ?? 12) <= 0) return 'La banca ha finito gli alberghi';
-  } else if ((p.caseDisponibili ?? 32) <= 0) return 'La banca ha finito le case';
+    if (scorte.alberghi <= 0) return 'La banca ha finito gli alberghi';
+  } else if (scorte.case <= 0) return 'La banca ha finito le case';
   if (denaroDi(p, id) < c.costoCasa) return `Ti servono ${euro(c.costoCasa)}`;
   return null;
 }
@@ -399,7 +453,7 @@ export function venditaInBlocco(p, indice, sim = null, caseInBanca = null) {
   const c = CASELLE[indice];
   if (!c || c.tipo !== 'proprieta') return null;
   const quante = (i) => (sim ? (sim[i] ? sim[i].caseCostruite : 0) : statoProp(p, i).caseCostruite);
-  const banca = caseInBanca ?? (p && p.caseDisponibili) ?? 32;
+  const banca = caseInBanca ?? scorteBanca(p).case;
   if (quante(indice) !== 5 || banca >= 4) return null;
   const caselle = indiciGruppo(c.gruppo).filter((i) => quante(i) > 0);
   const ricavo = caselle.reduce((tot, i) => tot + (quante(i) * CASELLE[i].costoCasa) / 2, 0);
@@ -443,7 +497,7 @@ export function pianoLiquidazione(p, id, mancante) {
   for (const c of proprietaDi(p, id)) sim[c.indice] = { ...statoProp(p, c.indice) };
   const passi = [];
   let raccolto = 0;
-  let caseInBanca = (p && p.caseDisponibili) ?? 32;
+  let caseInBanca = scorteBanca(p).case;
   for (let giro = 0; giro < 200 && raccolto < mancante; giro += 1) {
     const ipotecabili = Object.keys(sim).map(Number).filter((i) => {
       const c = CASELLE[i];
@@ -1799,8 +1853,8 @@ TIPI.gestione = {
       }));
     const info = el('dl', { class: 'conto conto--in-linea' },
       el('div', null, el('dt', { text: 'Il tuo denaro' }), el('dd', { text: euro(io.denaro) })),
-      el('div', null, el('dt', { text: 'Case in banca' }), el('dd', { text: String(p.caseDisponibili ?? 32) })),
-      el('div', null, el('dt', { text: 'Alberghi in banca' }), el('dd', { text: String(p.alberghiDisponibili ?? 12) })));
+      el('div', null, el('dt', { text: 'Case in banca' }), el('dd', { text: quanteInBanca(scorteBanca(p).case) })),
+      el('div', null, el('dt', { text: 'Alberghi in banca' }), el('dd', { text: quanteInBanca(scorteBanca(p).alberghi) })));
 
     const modo = MODALITA.find((m) => m.id === ctx.modalita);
     const generale = motivoAzione(p, mio, modo.azione);
@@ -1828,12 +1882,13 @@ TIPI.gestione = {
         'aria-label': nomeGruppo(g),
       },
       el('h3', { class: 'gruppo-gestione__titolo' }, nomeGruppo(g),
-        possiedeGruppo(p, g, mio) ? el('span', { class: 'distintivo distintivo--ok', text: 'completo' }) : null),
+        possiedeGruppo(p, g, mio) ? el('span', { class: 'distintivo distintivo--ok', text: 'completo' }) : null,
+        distintivoLimite(p, g, mio, ctx.modalita)),
       el('ul', null, caselle.map((c) => voceGestione(ctx, c, ctx.modalita))))))
       : el('p', { class: 'vuoto', text: vuoti[ctx.modalita] });
 
     // Con meno di 4 case in banca un albergo non può tornare a 4 case.
-    const pocheCase = ctx.modalita === 'vendi' && (p.caseDisponibili ?? 32) < 4
+    const pocheCase = ctx.modalita === 'vendi' && scorteBanca(p).case < 4
       && mie.some((c) => statoProp(p, c.indice).caseCostruite === 5);
     return [scelta, info, generale ? avviso(generale, 'avviso') : null,
       pocheCase ? avviso('La banca ha meno di 4 case: un albergo non può tornare a 4 case, quindi vendendolo si vendono insieme tutte le costruzioni del suo gruppo, a metà prezzo.', 'info') : null,

@@ -48,6 +48,28 @@ const REGOLE = Object.freeze([
     ],
   },
   {
+    chiave: 'limiteCostruzioni',
+    titolo: 'Case per turno',
+    descrizione: 'Quante case (o alberghi) si possono costruire in un solo turno su ogni terreno, sempre in modo uniforme sul colore. Dopo un doppio il conto riparte.',
+    predefinito: 0,
+    valori: [
+      { valore: 0, etichetta: 'Senza limite', descrizione: 'Regola classica: quante ne vuoi, se hai i soldi.' },
+      { valore: 1, etichetta: '1 per terreno', descrizione: 'Variante: una casa a turno su ogni terreno (2 o 3 per colore).' },
+      { valore: 2, etichetta: '2 per terreno', descrizione: 'Variante: due case a turno su ogni terreno (4 o 6 per colore).' },
+      { valore: 3, etichetta: '3 per terreno', descrizione: 'Variante: tre case a turno su ogni terreno (6 o 9 per colore).' },
+    ],
+  },
+  {
+    chiave: 'scorteIllimitate',
+    titolo: 'Case e alberghi in banca',
+    descrizione: 'Quante case e quanti alberghi ha la banca in tutto.',
+    predefinito: false,
+    valori: [
+      { valore: false, etichetta: '32 case e 12 alberghi', descrizione: 'Regola classica: quando finiscono non si costruisce più finché qualcuno non ne vende.' },
+      { valore: true, etichetta: 'Senza tetto', descrizione: 'Variante: la banca non finisce mai né le case né gli alberghi.' },
+    ],
+  },
+  {
     chiave: 'aste',
     titolo: 'Proprietà non comprate',
     descrizione: 'Cosa succede quando chi ci arriva sopra non la compra.',

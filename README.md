@@ -173,6 +173,8 @@ pulsante **Regole** in alto le mostra a tutti.
 | Denaro iniziale | 1.000 €, **1.500 €**, 2.000 €, 2.500 € |
 | Proprietà all'inizio | **nessuna**, 1, 2 o 3 a testa: estratte a caso, gratis, mai un colore completo (per velocizzare l'inizio) |
 | Come si costruisce | **quando vuoi**, oppure solo dove ti fermi |
+| Case per turno | **senza limite**, oppure al massimo 1, 2 o 3 a turno su ogni terreno, sempre in modo uniforme sul colore (l'albergo conta come una casa; dopo un doppio il conto riparte; in Gestione accanto al colore si vede quante ne hai già fatte) |
+| Case e alberghi in banca | **32 case e 12 alberghi**, oppure senza tetto: la banca non li finisce mai |
 | Proprietà non comprate | **vanno all'asta**, oppure restano alla banca |
 | Parcheggio gratuito | **non succede niente**, oppure si vince il piatto: tasse, carte da pagare alla banca e cauzioni finiscono nel piatto, e chi si ferma sul Parcheggio lo incassa |
 | Fermarsi sul Via | **200 €**, oppure 400 € se ci si ferma proprio sopra |
@@ -313,8 +315,9 @@ Il gioco segue il regolamento classico dell'edizione italiana, in euro.
 - **Aste.** Partecipano tutti i giocatori in gara **tranne chi ha rinunciato
   all'acquisto**: chi non ha voluto pagare il prezzo di listino non può
   riprendersela a meno (nel gioco da tavolo potrebbe). Ogni offerta deve
-  superare la precedente; chi passa esce dall'asta. C'è un **timer di 30
-  secondi** che si vede nella finestra e riparte a ogni offerta o passo: allo
+  superare la precedente; chi passa esce dall'asta. C'è un **timer di 20
+  secondi** che si vede nella finestra e riparte a ogni offerta (non quando
+  qualcuno passa): allo
   scadere chi non ha passato passa, quindi la proprietà va a chi ha l'offerta
   più alta, o resta alla banca se nessuno ha offerto. La finestra mostra anche
   quanto denaro ha ogni giocatore e le sue proprietà colore per colore (in
@@ -397,7 +400,7 @@ Cose che funzionano in modo diverso dal gioco da tavolo:
   pannello, a tutti, e ogni mossa lo fa ripartire), che diventano un minuto
   quando si sta decidendo: aprire la gestione (costruire, vendere, ipotecare,
   riscattare), una nuova proposta di scambio o il dettaglio di una casella,
-  oppure fare una di queste mosse; 30 secondi per
+  oppure fare una di queste mosse; 20 secondi per
   rispondere in un'asta (poi passa: è il timer che si vede nella finestra),
   un minuto per lanciare i dadi chiesti dalla carta della società (poi li
   lancia il gioco e il turno passa), 5 minuti per saldare un debito (poi

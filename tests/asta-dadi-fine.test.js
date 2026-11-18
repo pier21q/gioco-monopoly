@@ -5,7 +5,7 @@
  *
  * Tre regole aggiunte insieme:
  *   - asta: chi rinuncia all'acquisto non partecipa, e il timer dell'asta
- *     (30 secondi, riparte a ogni offerta) arriva ai client dentro lo stato;
+ *     (20 secondi, riparte a ogni offerta ma non a ogni passo) arriva ai client dentro lo stato;
  *   - carta "società più vicina": i dadi dell'affitto li lancia il giocatore
  *     (fase 'lancioAffitto'), il gioco solo se lui non c'è o non lancia;
  *   - a partita finita la stanza si chiude da sola dopo 30 secondi, o subito
@@ -204,7 +204,7 @@ function partita(ora, nomi) {
   return { stanza, ids, socket };
 }
 
-test('timer dell\'asta: 30 secondi mandati ai client, ripartono a ogni offerta, senza preavviso', (t) => {
+test('timer dell\'asta: 20 secondi mandati ai client, ripartono a ogni offerta, senza preavviso', (t) => {
   const { ora, avanti } = orologio(t);
   const { stanza, ids } = partita(ora, ['Anna', 'Bruno', 'Carla']);
   try {
@@ -215,21 +215,21 @@ test('timer dell\'asta: 30 secondi mandati ai client, ripartono a ogni offerta, 
     assert.equal(stanze.applica(stanza, diTurno, { tipo: 'rifiutaAcquisto' }, { ora }).errore, undefined);
     assert.equal(stanza.stato.fase, 'asta');
 
-    assert.equal(T.INATTIVITA_ASTA_MS, 30 * SECONDO);
+    assert.equal(T.INATTIVITA_ASTA_MS, 20 * SECONDO);
     const scadenza = stanze.statoPerClient(stanza, { ora }).scadenza;
     assert.deepEqual({ ...scadenza, giocatori: [...scadenza.giocatori].sort() },
-      { traMs: 30 * SECONDO, durataMs: 30 * SECONDO, giocatori: [primo, secondo].sort() });
+      { traMs: 20 * SECONDO, durataMs: 20 * SECONDO, giocatori: [primo, secondo].sort() });
     assert.equal(stanza.timer.has('_stanza|preavviso'), false, 'il tempo si vede nella finestra: niente preavviso');
     assert.equal(stanza.timer.has('_stanza|scadenza'), true);
 
     avanti(10 * SECONDO);
-    assert.equal(stanze.statoPerClient(stanza, { ora }).scadenza.traMs, 20 * SECONDO, 'chi rientra a metà vede il tempo che resta');
+    assert.equal(stanze.statoPerClient(stanza, { ora }).scadenza.traMs, 10 * SECONDO, 'chi rientra a metà vede il tempo che resta');
 
     assert.equal(stanze.applica(stanza, primo, { tipo: 'offertaAsta', importo: 10 }, { ora }).errore, undefined);
     assert.deepEqual(stanze.statoPerClient(stanza, { ora }).scadenza,
-      { traMs: 30 * SECONDO, durataMs: 30 * SECONDO, giocatori: [secondo] });
+      { traMs: 20 * SECONDO, durataMs: 20 * SECONDO, giocatori: [secondo] });
 
-    avanti(29 * SECONDO);
+    avanti(19 * SECONDO);
     assert.equal(stanza.stato.fase, 'asta');
     avanti(SECONDO);
     assert.equal(stanza.stato.asta, null, 'scaduto il tempo chi non ha rilanciato passa e l\'asta si chiude');
@@ -239,14 +239,50 @@ test('timer dell\'asta: 30 secondi mandati ai client, ripartono a ogni offerta, 
   }
 });
 
-test('timer dell\'asta: se nessuno offre in 30 secondi la casella resta alla banca', (t) => {
+test('timer dell\'asta: «Passa» non fa ripartire il tempo, un\'offerta sì', (t) => {
+  const { ora, avanti } = orologio(t);
+  const { stanza, ids } = partita(ora, ['Anna', 'Bruno', 'Carla', 'Dario']);
+  try {
+    const diTurno = stanza.stato.turno.giocatoreId;
+    const [primo, secondo, terzo] = ids.filter((id) => id !== diTurno);
+    stanza.stato = H.modifica(stanza.stato, (s) => { giocatore(s, diTurno).posizione = 1; s.fase = 'daDecidereAcquisto'; });
+    assert.equal(stanze.applica(stanza, diTurno, { tipo: 'rifiutaAcquisto' }, { ora }).errore, undefined);
+
+    avanti(8 * SECONDO);
+    assert.equal(stanze.applica(stanza, primo, { tipo: 'passaAsta' }, { ora }).errore, undefined);
+    let sc = stanze.statoPerClient(stanza, { ora }).scadenza;
+    assert.equal(sc.traMs, 12 * SECONDO, 'dopo un passo il tempo continua da dov\'era');
+    assert.deepEqual([...sc.giocatori].sort(), [secondo, terzo].sort(), 'chi ha passato non è più atteso');
+
+    // Un'offerta invece fa ripartire i 20 secondi; il passo dopo no.
+    avanti(5 * SECONDO);
+    assert.equal(stanze.applica(stanza, secondo, { tipo: 'offertaAsta', importo: 10 }, { ora }).errore, undefined);
+    assert.equal(stanze.statoPerClient(stanza, { ora }).scadenza.traMs, 20 * SECONDO);
+    avanti(15 * SECONDO);
+    assert.equal(stanza.stato.fase, 'asta');
+    sc = stanze.statoPerClient(stanza, { ora }).scadenza;
+    assert.deepEqual([sc.traMs, sc.giocatori], [5 * SECONDO, [terzo]]);
+
+    avanti(4 * SECONDO);
+    assert.equal(stanza.stato.fase, 'asta', 'a 19 secondi dall\'offerta l\'asta è ancora aperta');
+    avanti(SECONDO);
+    assert.equal(stanza.stato.asta, null, 'a 20 secondi dall\'offerta si chiude, anche se nel mezzo qualcuno ha passato');
+    assert.equal(stanza.stato.proprieta['1'].proprietario, secondo);
+  } finally {
+    stanze.azzera();
+  }
+});
+
+test('timer dell\'asta: se nessuno offre in 20 secondi la casella resta alla banca', (t) => {
   const { ora, avanti } = orologio(t);
   const { stanza } = partita(ora, ['Anna', 'Bruno', 'Carla']);
   try {
     const diTurno = stanza.stato.turno.giocatoreId;
     stanza.stato = H.modifica(stanza.stato, (s) => { giocatore(s, diTurno).posizione = 1; s.fase = 'daDecidereAcquisto'; });
     stanze.applica(stanza, diTurno, { tipo: 'rifiutaAcquisto' }, { ora });
-    avanti(30 * SECONDO);
+    avanti(19 * SECONDO);
+    assert.ok(stanza.stato.asta, 'a 19 secondi è ancora aperta');
+    avanti(SECONDO);
     assert.equal(stanza.stato.asta, null);
     assert.equal(stanza.stato.proprieta['1'].proprietario, null);
     assert.equal(stanza.stato.turno.giocatoreId, diTurno, 'il turno resta di chi aveva rinunciato');

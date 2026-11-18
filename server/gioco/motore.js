@@ -88,6 +88,28 @@ function fermoSulGruppo(stato, g, gruppo) {
   return stato.fase !== 'daLanciare' || stato.turno.doppiConsecutivi > 0;
 }
 
+/**
+ * Variante «Case per turno» (`regole.limiteCostruzioni`: 0 = senza limite,
+ * oppure 1, 2 o 3): quante costruzioni si possono fare in un turno su ogni
+ * terreno. L'albergo conta come una costruzione; l'obbligo di costruire in
+ * modo uniforme sul colore resta. Dopo un doppio il conto riparte.
+ */
+function limiteCostruzioni(stato) {
+  const n = REG.valore(stato, 'limiteCostruzioni');
+  return Number.isInteger(n) && n > 0 ? n : 0;
+}
+
+/** Quante costruzioni ha già fatto in questo turno sulla casella (`turno.costruite`). */
+function costruiteNelTurno(stato, indice) {
+  const fatte = stato.turno && stato.turno.costruite;
+  return (fatte && fatte[indice]) || 0;
+}
+
+/** Variante «Senza tetto»: la banca non finisce mai case e alberghi. */
+function scorteIllimitate(stato) {
+  return REG.valore(stato, 'scorteIllimitate') === true;
+}
+
 /** Ricorda che la pedina di turno si è fermata su una casella del gruppo (regola 'sosta'). */
 function registraSosta(stato, g, c) {
   if (c.tipo !== 'proprieta' || !stato.turno || stato.turno.giocatoreId !== g.id) return;
@@ -760,6 +782,8 @@ const GESTORI = {
 
     const doppiConsecutivi = doppio ? stato.turno.doppiConsecutivi + 1 : 0;
     stato.turno.doppiConsecutivi = doppiConsecutivi;
+    // Variante «Case per turno»: con un doppio si rigioca, e il conto delle case riparte.
+    if (doppio) delete stato.turno.costruite;
     emetti(ctx, 'dadi', g.id, `${g.nome} lancia ${d1} e ${d2}${doppio ? ' (doppio!)' : ''}`,
       { dadi: [d1, d2], doppio, inPrigione: false, doppiConsecutivi });
 
@@ -851,6 +875,12 @@ const GESTORI = {
       return errore('NON_SULLA_CASELLA',
         `In questa partita costruisci sul gruppo ${nomeGruppo} solo nel turno in cui ti fermi su una sua casella`, { casella: i });
     }
+    const limite = limiteCostruzioni(stato);
+    if (limite > 0 && costruiteNelTurno(stato, i) >= limite) {
+      return errore('LIMITE_COSTRUZIONI',
+        `In questa partita su ogni terreno si ${limite === 1 ? 'costruisce al massimo una casa' : `costruiscono al massimo ${limite} case`} per turno: su ${c.nome} continua al prossimo`,
+        { casella: i, limite });
+    }
     const ipotecata = gruppo.find((j) => voceDi(stato, j).ipotecata);
     if (ipotecata !== undefined) {
       return errore('IPOTECATA', `Non puoi costruire: ${casella(ipotecata).nome} (gruppo ${nomeGruppo}) è ipotecata`, { casella: ipotecata });
@@ -866,10 +896,11 @@ const GESTORI = {
         { casella: i });
     }
     const albergo = voce.caseCostruite === 4;
-    if (albergo && stato.alberghiDisponibili < 1) {
+    const senzaTetto = scorteIllimitate(stato);
+    if (albergo && !senzaTetto && stato.alberghiDisponibili < 1) {
       return errore('ALBERGHI_ESAURITI', 'La banca non ha più alberghi disponibili (sono 12 in tutto)');
     }
-    if (!albergo && stato.caseDisponibili < 1) {
+    if (!albergo && !senzaTetto && stato.caseDisponibili < 1) {
       return errore('CASE_ESAURITE', 'La banca non ha più case disponibili (sono 32 in tutto)');
     }
     if (g.denaro < c.costoCasa) return fondiInsufficienti(g, c.costoCasa, albergo ? 'Un albergo' : 'Una casa');
@@ -883,6 +914,9 @@ const GESTORI = {
       stato.caseDisponibili -= 1;
       voce.caseCostruite += 1;
     }
+    // Il conto serve alla variante «Case per turno»; si azzera con il turno (passaTurno).
+    if (!stato.turno.costruite || typeof stato.turno.costruite !== 'object') stato.turno.costruite = {};
+    stato.turno.costruite[i] = costruiteNelTurno(stato, i) + 1;
     emetti(ctx, 'costruzione', g.id,
       `${g.nome} costruisce ${albergo ? 'un albergo' : 'una casa'} su ${c.nome} per ${euro(c.costoCasa)}`,
       { casella: i, caseCostruite: voce.caseCostruite, costo: c.costoCasa });
@@ -915,7 +949,7 @@ const GESTORI = {
     // 4 case. Venderne uno solo per intero lascerebbe il gruppo sbilanciato
     // (albergo, albergo, terreno vuoto): si vendono insieme tutte le
     // costruzioni del gruppo, a metà prezzo, e i terreni restano vuoti.
-    if (albergo && stato.caseDisponibili < 4) {
+    if (albergo && !scorteIllimitate(stato) && stato.caseDisponibili < 4) {
       const nomeGruppo = TAB.GRUPPI[c.gruppo].nome;
       for (const j of gruppo) {
         const v = voceDi(stato, j);

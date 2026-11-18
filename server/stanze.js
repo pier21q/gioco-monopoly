@@ -62,9 +62,9 @@ const TEMPI = Object.freeze({
   // dettaglio di una casella, oppure ha già costruito, ipotecato, scambiato in
   // questo turno) ha un minuto. Le proposte di scambio non fermano il turno.
   INATTIVITA_DECISIONE_MS: 60 * 1000,
-  // Timer dell'asta: riparte a ogni offerta o passo e i client lo mostrano
-  // nella finestra; allo scadere chi non ha ancora passato passa.
-  INATTIVITA_ASTA_MS: 30 * 1000,
+  // Timer dell'asta: riparte a ogni offerta (non quando qualcuno passa) e i
+  // client lo mostrano nella finestra; allo scadere chi non ha passato passa.
+  INATTIVITA_ASTA_MS: 20 * 1000,
   // Lancio iniziale per decidere chi comincia, o dadi chiesti da una carta:
   // basta un clic, si aspetta meno.
   INATTIVITA_ORDINE_MS: 60 * 1000,
@@ -662,7 +662,7 @@ function sbloccaDisconnesso(stanza, giocatoreId, { ora = Date.now, random = casu
   }
   stanza.stato = esito.stato;
   stanza.aggiornataIl = ora();
-  stanza.progresso += 1;
+  avanza(stanza, stato);
   sorvegliaDisconnessi(stanza, { ora, random });
   diffondiAggiornamento(stanza, esito.eventi);
 }
@@ -695,6 +695,28 @@ function durataInattivita(stanza) {
 }
 
 /**
+ * true se fra `prima` e `dopo` è successo solo che qualcuno ha passato in
+ * un'asta che resta aperta con la stessa offerta: non è un motivo per far
+ * ripartire il timer dell'asta (ripartirebbe a ogni «Passa»).
+ */
+function soloPassiInAsta(prima, dopo) {
+  const a = prima && prima.fase === 'asta' ? prima.asta : null;
+  const b = dopo && dopo.fase === 'asta' ? dopo.asta : null;
+  return !!a && !!b && a.casella === b.casella && a.iniziataIl === b.iniziataIl
+    && a.offertaMassima === b.offertaMassima && a.migliorOfferenteId === b.migliorOfferenteId
+    && b.passati.length > a.passati.length;
+}
+
+/**
+ * La partita è andata avanti: `progresso` cresce sempre, ma i passi in asta
+ * non spostano la chiave del timer d'inattività (`progresso - tempoFermo`).
+ */
+function avanza(stanza, prima) {
+  stanza.progresso += 1;
+  if (soloPassiInAsta(prima, stanza.stato)) stanza.tempoFermo = (stanza.tempoFermo || 0) + 1;
+}
+
+/**
  * (Ri)programma il timer d'inattività della stanza. Riparte da capo solo
  * quando la partita è andata avanti (`stanza.progresso` cambiato): connessioni
  * e riconnessioni non lo azzerano. Si ferma se nessun giocatore in gara è
@@ -712,12 +734,16 @@ function programmaInattivita(stanza, { ora = Date.now, random = casualeSicuro } 
     stanza.inattivita = null;
     return;
   }
-  const chiave = stanza.progresso;
+  const chiave = stanza.progresso - (stanza.tempoFermo || 0);
   const durata = durataInattivita(stanza);
   // Riparte anche se cambia la durata a parità di progresso: chi apre la
   // gestione per decidere passa dai 15 secondi al minuto (una volta sola: un
   // secondo «prendoTempo» non cambia la durata e non fa ripartire niente).
-  if (stanza.inattivita && stanza.inattivita.chiave === chiave && stanza.inattivita.durata === durata) return;
+  if (stanza.inattivita && stanza.inattivita.chiave === chiave && stanza.inattivita.durata === durata) {
+    // Stesso timer (per esempio dopo un «Passa» in asta): cambia solo chi si aspetta.
+    stanza.inattivita.giocatori = daAspettare;
+    return;
+  }
   annullaTimer(stanza, ID_STANZA);
   stanza.inattivita = { chiave, scadeIl: ora() + durata, durata, giocatori: daAspettare };
   // Il preavviso serve dove il tempo non si vede: nell'asta e per finire il
@@ -904,9 +930,10 @@ function applica(stanza, giocatoreId, azione, { random = casualeSicuro, ora = Da
   if (azione && AZIONI_DECISIONE.has(azione.tipo) && stanza.stato.turno && stanza.stato.turno.giocatoreId === giocatoreId) {
     stanza.decisione = chiaveDecisione(stanza.stato);
   }
+  const prima = stanza.stato;
   stanza.stato = esito.stato;
   stanza.aggiornataIl = typeof esito.stato.aggiornataIl === 'number' ? esito.stato.aggiornataIl : ora();
-  stanza.progresso += 1;
+  avanza(stanza, prima);
   stanza.saltiInattivita = 0;
   sorvegliaDisconnessi(stanza, { ora, random });
   return { eventi: Array.isArray(esito.eventi) ? esito.eventi : [] };

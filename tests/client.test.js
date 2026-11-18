@@ -502,3 +502,42 @@ test('dialoghi: chiedere tempo per decidere e prendere tempo su una proposta', {
   assert.equal(d.motivoTempoScambio({ scadenzaScambio: { durataMs: 90000, massimoMs: 150000 } }), null);
   assert.match(d.motivoTempoScambio({ scadenzaScambio: { durataMs: 150000, massimoMs: 150000 } }), /al massimo 2:30/);
 });
+
+test('dialoghi.motivoCostruisci: con «Case per turno» il pulsante si spegne al limite, come nel motore', { skip: SALTA }, async () => {
+  const d = await C.carica('dialoghi.js');
+  const { A } = H.ID;
+  let s = H.soldi(H.assegna(H.nuovaPartita(2, { limiteCostruzioni: 2 }), A, 1, 3, 6, 8, 9), A, 5000);
+  s = H.turnoDi(s, A, 'mossa');
+  for (const casella of [1, 3, 1]) s = H.esegui(s, A, { tipo: 'costruisci', casella }).stato;
+  let p = motore.statoPubblico(s);
+  assert.match(d.motivoCostruisci(p, A, 1), /hai già costruito 2 case su Vicolo Corto/);
+  assert.equal(d.motivoCostruisci(p, A, 3), null, 'sull\'altro terreno la seconda si può ancora');
+  s = H.esegui(s, A, { tipo: 'costruisci', casella: 3 }).stato;
+  p = motore.statoPubblico(s);
+  assert.match(d.motivoCostruisci(p, A, 3), /hai già costruito 2 case su Vicolo Stretto/);
+  H.rifiuta(s, A, { tipo: 'costruisci', casella: 1 }, 'LIMITE_COSTRUZIONI');
+  assert.equal(d.motivoCostruisci(p, A, 6), null, 'sugli altri colori si costruisce ancora');
+  assert.deepEqual(d.costruzioniDelTurno(p, 1), { fatte: 2, limite: 2 });
+  assert.deepEqual(d.costruzioniDelTurnoSulGruppo(p, 'marrone'), { fatte: 4, limite: 4 });
+  assert.deepEqual(d.costruzioniDelTurnoSulGruppo(p, 'celeste'), { fatte: 0, limite: 6 });
+  assert.equal(d.costruzioniDelTurno({ ...p, regole: { ...p.regole, limiteCostruzioni: 0 } }, 1), null, 'senza la variante niente conto');
+  const uno = { ...p, regole: { ...p.regole, limiteCostruzioni: 1 }, turno: { ...p.turno, costruite: { 6: 1 } } };
+  assert.match(d.motivoCostruisci(uno, A, 6), /hai già costruito una casa su /);
+});
+
+test('dialoghi.scorteBanca: con «Senza tetto» la banca non finisce mai, e il client non spegne i pulsanti', { skip: SALTA }, async () => {
+  const d = await C.carica('dialoghi.js');
+  const { A } = H.ID;
+  const base = (opzioni) => H.modifica(H.turnoDi(H.soldi(H.assegna(H.nuovaPartita(2, opzioni), A, 1, 3), A, 5000), A, 'mossa'),
+    (x) => { x.caseDisponibili = 0; x.alberghiDisponibili = 0; });
+  const classica = motore.statoPubblico(base());
+  assert.deepEqual(d.scorteBanca(classica), { case: 0, alberghi: 0 });
+  assert.equal(d.motivoCostruisci(classica, A, 1), 'La banca ha finito le case');
+  const libera = motore.statoPubblico(base({ scorteIllimitate: true }));
+  assert.deepEqual(d.scorteBanca(libera), { case: Infinity, alberghi: Infinity });
+  assert.equal(d.motivoCostruisci(libera, A, 1), null);
+  // Albergo da vendere con la banca a zero: con «Senza tetto» torna a 4 case, niente vendita in blocco.
+  const alberghi = (opzioni) => motore.statoPubblico(H.modifica(H.costruito(base(opzioni), { 1: 5, 3: 5 }), (x) => { x.caseDisponibili = 0; }));
+  assert.ok(d.venditaInBlocco(alberghi(), 1));
+  assert.equal(d.venditaInBlocco(alberghi({ scorteIllimitate: true }), 1), null);
+});

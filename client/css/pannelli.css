@@ -1801,6 +1801,7 @@
 .gruppo-gestione__titolo {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: var(--spazio-2, 0.5rem);
   margin: 0 0 var(--spazio-1, 0.25rem);
   font-size: var(--testo-s, 0.875rem);
